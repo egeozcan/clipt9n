@@ -41,8 +41,8 @@ fn main() -> anyhow::Result<()> {
     let plat = platform::current();
     if let Err(e) = plat.ensure_hotkey_permissions() {
         tracing::error!(error = %e, "hotkey permission check failed");
-        // Continue running so the user sees the System Settings prompt and
-        // can grant + relaunch. Exit with non-zero so launchd doesn't loop.
+        // ensure_hotkey_permissions has already opened System Settings;
+        // exit non-zero so the user grants permission and relaunches.
         return Err(anyhow::anyhow!(e));
     }
 
