@@ -1,9 +1,4 @@
-mod clipboard;
-mod config;
-mod error;
-mod llm;
-mod secrets;
-mod translator;
+use clipt9n::{clipboard, config, error, llm, secrets, translator};
 
 fn main() {
     println!("clipt9n stub — implemented in Task 13");
