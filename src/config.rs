@@ -15,6 +15,8 @@ use crate::error::TranslateError;
 pub struct Config {
     pub provider: ProviderConfig,
     pub languages: LanguagesConfig,
+    pub hotkey: HotkeyConfig,
+    pub ui: UiConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -94,6 +96,47 @@ impl Default for LanguagesConfig {
 pub struct LanguageSlot {
     pub label: String,
     pub code: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HotkeyConfig {
+    /// "cmd" → Cmd on macOS, Ctrl on Linux/Windows. "ctrl" → Ctrl on every OS.
+    /// "alt" / "super" allowed but unmapped (passthrough).
+    pub modifier: String,
+    pub shift: bool,
+    /// Key name accepted by `global-hotkey::hotkey::Code`. Single uppercase letter
+    /// like "T" maps to `Code::KeyT`.
+    pub key: String,
+    pub enabled: bool,
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            modifier: "cmd".into(),
+            shift: true,
+            key: "T".into(),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct UiConfig {
+    /// "normal" or "compact". Drives prompt window width (520 vs 460).
+    pub density: String,
+    pub show_preview: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            density: "normal".into(),
+            show_preview: true,
+        }
+    }
 }
 
 impl Config {
@@ -191,6 +234,42 @@ code = "fr"
         assert_eq!(cfg.label_for_code("en").unwrap(), "English");
         assert_eq!(cfg.label_for_code("de").unwrap(), "Deutsch");
         assert_eq!(cfg.label_for_code("tr").unwrap(), "Türkçe");
+    }
+
+    #[test]
+    fn default_hotkey_is_cmd_shift_t() {
+        let cfg = Config::default();
+        assert_eq!(cfg.hotkey.modifier, "cmd");
+        assert!(cfg.hotkey.shift);
+        assert_eq!(cfg.hotkey.key, "T");
+        assert!(cfg.hotkey.enabled);
+    }
+
+    #[test]
+    fn default_ui_density_is_normal() {
+        let cfg = Config::default();
+        assert_eq!(cfg.ui.density, "normal");
+        assert!(cfg.ui.show_preview);
+    }
+
+    #[test]
+    fn loads_hotkey_override() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[hotkey]
+modifier = "ctrl"
+shift = false
+key = "Y"
+enabled = true
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.hotkey.modifier, "ctrl");
+        assert!(!cfg.hotkey.shift);
+        assert_eq!(cfg.hotkey.key, "Y");
     }
 
     #[test]
