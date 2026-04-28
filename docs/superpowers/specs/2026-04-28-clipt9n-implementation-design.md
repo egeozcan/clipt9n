@@ -209,7 +209,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 - `cargo-bundle` config for `.app`; ad-hoc signing in CI; README documents notarization for personal distribution
 - GitHub Actions: build matrix (5 targets compile, macOS test); release workflow on `v*.*.*` tag
 - README, LICENSE, CHANGELOG
-- Cross-platform abstraction lint: a script that greps for `#[cfg(target_os` outside `platform/` and `secrets.rs` and fails CI if found
+- Cross-platform abstraction lint: a script that greps for `#[cfg(target_os` and `#[cfg(unix)` anywhere outside `src/platform/` and fails CI if found. **No exceptions** — the `keyring` crate exposes a unified API, so `secrets.rs` does not need cfg blocks; if a future need arises (e.g., a Linux-only Secret Service capability check), the platform-specific code goes in `platform/linux.rs` and is exposed through a trait function.
 - Manual: VoiceOver pass on all windows; contrast verified with macOS Display Accommodations
 
 **Exit criteria:**
