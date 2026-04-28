@@ -1,8 +1,8 @@
-//! `config.toml` loader. M1 only reads the subset of the spec §6 schema that
-//! M1 actually uses: `[provider]`, `[provider.api_key]`, `[languages]`. Other
-//! sections (`[hotkey]`, `[ui]`, `[history]`, `[tray]`, `[templates]`,
-//! `[glossary]`, `[logging]`) are loaded into the struct but not consumed by
-//! M1 — later milestones add behavior. Defaults applied when fields are absent.
+//! `config.toml` loader. Reads the spec §6 schema. M1–M3 only consume
+//! `[provider]`, `[provider.api_key]`, `[languages]`, `[hotkey]`, `[ui]`.
+//! M4 adds `[glossary]` and `[templates]`. Other sections (`[history]`,
+//! `[tray]`, `[logging]`) are still loaded into the struct but unused
+//! pending later milestones. Defaults applied when fields are absent.
 
 use std::path::Path;
 
@@ -17,6 +17,8 @@ pub struct Config {
     pub languages: LanguagesConfig,
     pub hotkey: HotkeyConfig,
     pub ui: UiConfig,
+    pub glossary: GlossaryConfig,
+    pub templates: TemplatesConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -139,6 +141,58 @@ impl Default for UiConfig {
             density: "normal".into(),
             show_preview: true,
             confirm_size_threshold: 2000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GlossaryConfig {
+    /// When false, the glossary loader is bypassed entirely and
+    /// `{{ glossary_block }}` always renders empty.
+    pub enabled: bool,
+    /// Path to the glossary TOML file, relative to the config dir.
+    pub file: String,
+    /// Whether term matching against source text is case-sensitive.
+    /// Default false (case-insensitive); spec §6 default.
+    pub case_sensitive: bool,
+    /// One of "auto", "word_boundary", "substring". Spec §5.4. The
+    /// glossary parser validates this value at load; arbitrary strings
+    /// fall back to "auto" with a warn log.
+    pub matching: String,
+}
+
+impl Default for GlossaryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file: "glossary.toml".into(),
+            case_sensitive: false,
+            matching: "auto".into(),
+        }
+    }
+}
+
+/// Path (relative to config dir) for an override file. `None` or
+/// `Some("")` means "use built-in for this action". Default values
+/// point at the conventional `templates/<action>.j2` paths; the
+/// override loader treats those as opt-in (file must exist).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TemplatesConfig {
+    pub translate: Option<String>,
+    pub fix_grammar: Option<String>,
+    pub rewrite: Option<String>,
+    pub custom: Option<String>,
+}
+
+impl Default for TemplatesConfig {
+    fn default() -> Self {
+        Self {
+            translate: Some("templates/translate.j2".into()),
+            fix_grammar: Some("templates/fix_grammar.j2".into()),
+            rewrite: Some("templates/rewrite.j2".into()),
+            custom: Some("templates/custom.j2".into()),
         }
     }
 }
@@ -415,5 +469,76 @@ enabled = true
             TranslateError::UnsupportedLanguage(code) => assert_eq!(code, "fr"),
             other => panic!("expected UnsupportedLanguage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn default_glossary_is_enabled_with_default_path() {
+        let cfg = Config::default();
+        assert!(cfg.glossary.enabled);
+        assert_eq!(cfg.glossary.file, "glossary.toml");
+        assert!(!cfg.glossary.case_sensitive);
+        assert_eq!(cfg.glossary.matching, "auto");
+    }
+
+    #[test]
+    fn loads_glossary_overrides() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[glossary]
+enabled = false
+file = "my-glossary.toml"
+case_sensitive = true
+matching = "word_boundary"
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert!(!cfg.glossary.enabled);
+        assert_eq!(cfg.glossary.file, "my-glossary.toml");
+        assert!(cfg.glossary.case_sensitive);
+        assert_eq!(cfg.glossary.matching, "word_boundary");
+    }
+
+    #[test]
+    fn default_template_paths_point_at_templates_dir() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.templates.translate.as_deref(),
+            Some("templates/translate.j2")
+        );
+        assert_eq!(
+            cfg.templates.fix_grammar.as_deref(),
+            Some("templates/fix_grammar.j2")
+        );
+        assert_eq!(
+            cfg.templates.rewrite.as_deref(),
+            Some("templates/rewrite.j2")
+        );
+        assert_eq!(cfg.templates.custom.as_deref(), Some("templates/custom.j2"));
+    }
+
+    #[test]
+    fn loads_template_overrides() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[templates]
+translate = "alt/translate.j2"
+custom = ""
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.templates.translate.as_deref(), Some("alt/translate.j2"));
+        // Empty string is preserved as Some("") — Task 6 treats it as "use built-in".
+        assert_eq!(cfg.templates.custom.as_deref(), Some(""));
+        // Other templates default to their conventional paths.
+        assert_eq!(
+            cfg.templates.fix_grammar.as_deref(),
+            Some("templates/fix_grammar.j2")
+        );
     }
 }
