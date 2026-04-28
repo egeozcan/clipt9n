@@ -168,6 +168,88 @@ impl Config {
     }
 }
 
+/// Logical hotkey modifier as authored by the user. Mapped to the
+/// OS-appropriate physical modifier via `resolve_native()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modifier {
+    /// "cmd" → Meta on macOS, Ctrl on Linux/Windows.
+    Cmd,
+    /// "ctrl" → Ctrl on every OS.
+    Ctrl,
+    /// "alt" → Alt on every OS.
+    Alt,
+    /// "super" → Meta on every OS.
+    Super,
+}
+
+/// Native modifier flag returned by `resolve_native()`. Mirrors
+/// `global_hotkey::hotkey::Modifiers` shape so the main-loop conversion
+/// is a one-liner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeModifier {
+    Ctrl,
+    Alt,
+    Meta,
+}
+
+impl Modifier {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "cmd" => Some(Self::Cmd),
+            "ctrl" | "control" => Some(Self::Ctrl),
+            "alt" | "option" => Some(Self::Alt),
+            "super" | "meta" | "win" => Some(Self::Super),
+            _ => None,
+        }
+    }
+
+    pub fn resolve_native(self) -> NativeModifier {
+        match self {
+            Self::Cmd => {
+                #[cfg(target_os = "macos")]
+                {
+                    NativeModifier::Meta
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    NativeModifier::Ctrl
+                }
+            }
+            Self::Ctrl => NativeModifier::Ctrl,
+            Self::Alt => NativeModifier::Alt,
+            Self::Super => NativeModifier::Meta,
+        }
+    }
+
+    /// Human-readable form for UI strings ("Cmd", "Ctrl", "Alt", "Super").
+    pub fn display(self) -> &'static str {
+        match self {
+            Self::Cmd => "Cmd",
+            Self::Ctrl => "Ctrl",
+            Self::Alt => "Alt",
+            Self::Super => "Super",
+        }
+    }
+}
+
+impl Config {
+    /// Render the configured hotkey for UI display (e.g., "Cmd+Shift+T").
+    /// Returns "(disabled)" if `[hotkey].enabled = false`.
+    pub fn hotkey_display(&self) -> String {
+        if !self.hotkey.enabled {
+            return "(disabled)".to_string();
+        }
+        let modifier = Modifier::parse(&self.hotkey.modifier)
+            .map(Modifier::display)
+            .unwrap_or("?");
+        if self.hotkey.shift {
+            format!("{modifier}+Shift+{}", self.hotkey.key)
+        } else {
+            format!("{modifier}+{}", self.hotkey.key)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -270,6 +352,34 @@ enabled = true
         assert_eq!(cfg.hotkey.modifier, "ctrl");
         assert!(!cfg.hotkey.shift);
         assert_eq!(cfg.hotkey.key, "Y");
+    }
+
+    #[test]
+    fn hotkey_display_uses_logical_name() {
+        let cfg = Config::default();
+        // The displayed string is logical, not OS-mapped (it's a UI affordance, not a key event).
+        // On every OS, a default config shows "Cmd+Shift+T" because that's how the user wrote it.
+        assert_eq!(cfg.hotkey_display(), "Cmd+Shift+T");
+    }
+
+    #[test]
+    fn hotkey_display_no_shift() {
+        let mut cfg = Config::default();
+        cfg.hotkey.shift = false;
+        cfg.hotkey.modifier = "ctrl".into();
+        cfg.hotkey.key = "Y".into();
+        assert_eq!(cfg.hotkey_display(), "Ctrl+Y");
+    }
+
+    #[test]
+    fn resolve_modifier_returns_native_for_cmd() {
+        use crate::config::Modifier;
+        let resolved = Modifier::Cmd.resolve_native();
+        // On macOS, Cmd resolves to Meta (the global-hotkey "super"); on Linux/Windows, to Ctrl.
+        #[cfg(target_os = "macos")]
+        assert_eq!(resolved, NativeModifier::Meta);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(resolved, NativeModifier::Ctrl);
     }
 
     #[test]
