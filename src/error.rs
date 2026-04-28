@@ -38,6 +38,9 @@ pub enum TranslateError {
 
     #[error("macOS Accessibility permission not granted; the global hotkey cannot be registered without it. Open System Settings → Privacy & Security → Accessibility and enable clipt9n.")]
     AccessibilityPermissionDenied,
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 #[cfg(test)]

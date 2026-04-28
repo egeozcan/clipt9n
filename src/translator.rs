@@ -128,12 +128,17 @@ fn strip_wrapping_quotes_if_safe(text: &str, source: &str) -> String {
 fn strip_preamble(text: &str) -> std::borrow::Cow<'_, str> {
     const PREAMBLES: &[&str] = &["Here is the translation:", "Translation:", "Übersetzung:"];
     for p in PREAMBLES {
-        if text.len() >= p.len() {
-            let prefix = &text[..p.len()];
-            if prefix.eq_ignore_ascii_case(p) {
-                let rest = &text[p.len()..];
-                return std::borrow::Cow::Owned(rest.trim_start().to_string());
-            }
+        // `text.get(..n)` returns `None` if `n` is not a UTF-8 char boundary,
+        // unlike `&text[..n]` which would panic. This matters for source-text
+        // languages whose first char is multi-byte (e.g., Turkish `ı`, Cyrillic,
+        // CJK) — without `get`, byte-indexing into the prefix length panics.
+        let Some(prefix) = text.get(..p.len()) else {
+            continue;
+        };
+        if prefix.eq_ignore_ascii_case(p) {
+            // Safe: we just confirmed `p.len()` is a char boundary via `get`.
+            let rest = &text[p.len()..];
+            return std::borrow::Cow::Owned(rest.trim_start().to_string());
         }
     }
     std::borrow::Cow::Borrowed(text)
@@ -204,6 +209,26 @@ mod tests {
     #[test]
     fn preamble_is_case_insensitive() {
         assert_eq!(post_process("translation: Hallo", "Hello"), "Hallo");
+    }
+
+    #[test]
+    fn does_not_panic_on_utf8_first_char_shorter_than_preamble() {
+        // Regression: the original byte-index slice panicked on text whose
+        // first multi-byte char straddled the preamble's byte length.
+        // Turkish "ı" is 2 bytes; "Bir aracıyı" has bytes that are not on
+        // char boundaries at offsets 12 / 13 — exactly within the
+        // "Translation:" (12) and "Übersetzung:" (13) prefix probes.
+        let turkish = "Bir aracıyı M1→M2 ve M2→M3 şablonlarını takip ederek...";
+        // Should not panic; preamble doesn't match, so output equals input
+        // (modulo trim).
+        assert_eq!(post_process(turkish, "irrelevant"), turkish);
+    }
+
+    #[test]
+    fn handles_multibyte_text_with_matching_preamble() {
+        // The preamble itself is ASCII; the rest can be anything.
+        let model = "Translation: Hallöchen, schöne Welt 🌍";
+        assert_eq!(post_process(model, "Hello"), "Hallöchen, schöne Welt 🌍");
     }
 
     #[test]

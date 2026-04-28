@@ -254,15 +254,38 @@ impl ClipApp {
         ctx.request_repaint();
 
         let ctx_for_repaint = ctx.clone();
-        self.runtime.spawn(async move {
+        // Worker: runs the translation. May panic (e.g., a malformed-UTF-8
+        // bug in post-processing). On panic, the JoinHandle returns Err and
+        // the watcher below converts it into a TranslationOutcome with an
+        // Internal error — guaranteeing `tx.send` always fires exactly once,
+        // so the overlay never gets stuck.
+        let label_for_panic = action_label.clone();
+        let worker = self.runtime.spawn(async move {
             let translator = Translator::new(&cfg, provider.as_ref());
             let result = translator.execute(&action, &source_text).await;
-            let _ = tx.send(TranslationOutcome {
+            TranslationOutcome {
                 result,
                 action_label,
                 slot,
                 gen,
-            });
+            }
+        });
+        self.runtime.spawn(async move {
+            let outcome = match worker.await {
+                Ok(o) => o,
+                Err(join_err) => {
+                    tracing::error!(error = %join_err, "translation worker panicked");
+                    TranslationOutcome {
+                        result: Err(TranslateError::Internal(format!(
+                            "translation worker crashed: {join_err}"
+                        ))),
+                        action_label: label_for_panic,
+                        slot,
+                        gen,
+                    }
+                }
+            };
+            let _ = tx.send(outcome);
             ctx_for_repaint.request_repaint();
         });
     }
