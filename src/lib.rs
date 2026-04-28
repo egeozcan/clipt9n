@@ -115,6 +115,21 @@ pub async fn run() -> Result<(), TranslateError> {
 
     let provider = build_provider(&cfg, secrets.as_ref())?;
 
+    // Test-only path: when CLIPT9N_TEST_INPUT is set, skip the real clipboard
+    // and use it as source text. When CLIPT9N_TEST_PRINT_RESULT is set, print
+    // the translated result to stdout instead of writing to the clipboard.
+    // This makes `tests/cli_smoke.rs` runnable in CI without a desktop session.
+    if let Ok(input) = std::env::var("CLIPT9N_TEST_INPUT") {
+        let print_result = std::env::var("CLIPT9N_TEST_PRINT_RESULT").is_ok();
+        let translator = Translator::new(&cfg, provider.as_ref());
+        let action = cli.to_action();
+        let result = translator.execute(&action, &input).await?;
+        if print_result {
+            println!("{result}");
+        }
+        return Ok(());
+    }
+
     let mut clipboard: Box<dyn Clipboard> = Box::new(ArboardClipboard::new()?);
     let source_text = clipboard.read_text()?;
     if source_text.is_empty() {
