@@ -189,31 +189,33 @@ fn draw_populated(
             ui.add_space(6.0);
 
             // ----- Preview block -----
-            let preview = preview_text(&model.clipboard_text);
-            egui::Frame::new()
-                .fill(theme::PANEL_2)
-                .stroke(Stroke::new(1.0, theme::LINE_SOFT))
-                .corner_radius(6)
-                .inner_margin(egui::Margin::symmetric(12, 10))
-                .show(ui, |ui| {
-                    for line in preview.lines().take(3) {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("›")
-                                    .color(theme::ACCENT.linear_multiply(0.6))
-                                    .monospace(),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                RichText::new(if line.is_empty() { "\u{00A0}" } else { line })
-                                    .color(theme::INK_2)
-                                    .monospace()
-                                    .size(12.5),
-                            );
-                        });
-                    }
-                });
-            ui.add_space(14.0);
+            if cfg.ui.show_preview {
+                let preview = preview_text(&model.clipboard_text);
+                egui::Frame::new()
+                    .fill(theme::PANEL_2)
+                    .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        for line in preview.lines().take(3) {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("›")
+                                        .color(theme::ACCENT.linear_multiply(0.6))
+                                        .monospace(),
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(if line.is_empty() { "\u{00A0}" } else { line })
+                                        .color(theme::INK_2)
+                                        .monospace()
+                                        .size(12.5),
+                                );
+                            });
+                        }
+                    });
+                ui.add_space(14.0);
+            }
 
             // ----- Slot rows -----
             // Wrapped in a ScrollArea so that on monitors too small to fit
@@ -280,7 +282,7 @@ fn draw_populated(
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if model.clipboard_text.chars().count() > 2000 {
+                    if should_warn_large_paste(&model.clipboard_text, cfg) {
                         ui.label(
                             RichText::new("⚠ large paste")
                                 .color(theme::WARN)
@@ -413,6 +415,13 @@ pub fn preview_text(text: &str) -> String {
     }
 }
 
+/// Returns true when the clipboard text exceeds the configured size
+/// threshold and the prompt window should show a `⚠ large paste` indicator.
+/// Same threshold gates the size-confirm modal in `app.rs`.
+pub fn should_warn_large_paste(text: &str, cfg: &Config) -> bool {
+    text.chars().count() > cfg.ui.confirm_size_threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,5 +454,26 @@ mod tests {
         let (label, tag) = slot_strings(SLOTS[3], &cfg);
         assert_eq!(label, "Fix grammar");
         assert_eq!(tag, "conservative");
+    }
+
+    #[test]
+    fn slot_strings_unchanged_when_show_preview_false() {
+        // show_preview is a draw-layer concern (whether the preview block renders);
+        // slot label resolution is independent. Sanity-check that toggling the
+        // config flag does not change slot string output.
+        let mut cfg = Config::default();
+        cfg.ui.show_preview = false;
+        let (label, code) = slot_strings(SLOTS[0], &cfg);
+        assert_eq!(label, "English");
+        assert_eq!(code, "en");
+    }
+
+    #[test]
+    fn large_paste_threshold_uses_config_value() {
+        // The threshold helper used by the footer warning reads from cfg.
+        let mut cfg = Config::default();
+        cfg.ui.confirm_size_threshold = 100;
+        assert!(should_warn_large_paste("x".repeat(101).as_str(), &cfg));
+        assert!(!should_warn_large_paste("x".repeat(99).as_str(), &cfg));
     }
 }
