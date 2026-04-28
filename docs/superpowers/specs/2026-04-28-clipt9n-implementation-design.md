@@ -56,12 +56,12 @@ Each milestone is its own implementation plan, written and executed in a separat
 **Deliverables:**
 
 - Cargo workspace with one binary, dependencies pinned
-- `src/config.rs` loads `<config_dir>/config.toml` per spec §6 schema; defaults applied for missing keys; malformed templates abort startup with file+line; missing template files log warn and fall back to built-ins
+- `src/config.rs` loads `<config_dir>/config.toml` per spec §6 schema; defaults applied for missing keys
 - `src/clipboard.rs` — `arboard` wrapper with text-only filtering
 - `src/secrets.rs` — env-var path only in M1 (`ANTHROPIC_API_KEY`); keychain comes in M6
-- `src/llm/` — `LlmProvider` trait, `AnthropicProvider`, `OpenAiCompatibleProvider` (both); `reqwest` + `rustls-tls`, 30s timeout, retry on 5xx with 1s/2s backoff (spec §8)
+- `src/llm/` — `LlmProvider` trait, `AnthropicProvider`, `OpenAiCompatibleProvider` (both); `reqwest` + `rustls-tls`, 30s timeout, retry policy on 5xx per resolution below
 - `src/llm/prompts.rs` — built-in templates as `const &str` (translate / fix_grammar / rewrite / custom from spec §5.3)
-- `src/llm/templates.rs` — minijinja rendering with override loading
+- `src/llm/templates.rs` — minijinja rendering of built-in templates only. **No file-based override loading in M1** — that's M4's responsibility.
 - `src/translator.rs` — selects template, renders, calls provider, post-processes (spec §5.6)
 - `src/error.rs` — unified `TranslateError`
 - CLI flags: `--translate-to=<code>`, `--fix-grammar`, `--rewrite`, `--custom="..."`
@@ -72,8 +72,8 @@ Each milestone is its own implementation plan, written and executed in a separat
 1. `ANTHROPIC_API_KEY=… clipt9n --translate-to=de` reads system clipboard, returns German translation, writes to clipboard.
 2. Same for `--fix-grammar`, `--rewrite`, `--custom="..."`.
 3. Non-text clipboard exits cleanly with stderr message and non-zero status.
-4. Anthropic 5xx triggers exactly one retry with 1s/2s backoff before erroring.
-5. Unit tests pass for: post-processing (quote/preamble stripping), template rendering with and without `glossary_block`, config loading defaults, malformed-template error.
+4. Anthropic 5xx triggers **two automatic retries** before erroring: sleep 1s before retry #1, sleep 2s before retry #2 (3 attempts total). Verified via wiremock returning 503 three times. (Resolves spec §8 ambiguity — "exponential backoff (1s, 2s)" implies two retry intervals.)
+5. Unit tests pass for: post-processing (quote/preamble stripping), built-in template rendering with and without `glossary_block`, config loading defaults.
 6. CI workflow in `.github/workflows/build.yml` builds all 5 targets (compile-only).
 
 ### M2 — Prompt window + global hotkey + design tokens
@@ -106,7 +106,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 **Deliverables:**
 
 - Slots 4 (fix grammar), 5 (rewrite) wired to existing translator
-- Slot 6: opens `src/ui/custom_prompt.jsx` window per design — instruction textarea, preset chips, preview block, Cmd+Enter / Esc, primary "Run →" button
+- Slot 6: opens custom prompt window — implemented in `src/ui/custom_prompt.rs`, modeled on the design's `custom-prompt.jsx`. Instruction textarea, preset chips, preview block, Cmd+Enter / Esc, primary "Run →" button.
 - "Translating…" overlay window per design (`TranslatingWindow`): animated progress (with reduced-motion fallback), elapsed-time counter, cancel
 - `confirm_size_threshold` guard before sending oversized clipboards (modal "this is X chars, send to API?")
 - Source-preview truncation respects `[ui] show_preview = true`
@@ -124,7 +124,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 **Deliverables:**
 
 - `src/glossary.rs` — load `glossary.toml`; pair-key matching (`*`, `de->en`, etc.); `auto`/`word_boundary`/`substring` matching strategies; `whatlang` for source-language detection (with `unknown` fallback rule per spec); glossary block formatting
-- Template override loader: if `<config_dir>/templates/*.j2` exist, replace built-in for that action
+- **Template override loader** added to `src/llm/templates.rs`: if `<config_dir>/templates/*.j2` exist, replace built-in for that action. Owns malformed-template (file+line) and missing-required-variable startup errors. (M1 only renders built-ins; M4 introduces user-overridable templating in full.)
 - Glossary chip preview in prompt window (top of menu, below preview block, per design)
 - SIGHUP handler in `platform/unix.rs` (Linux/macOS) to reload glossary; tray "Reload glossary" menu item placeholder (real menu in M7)
 
@@ -134,7 +134,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 3. Auto-matching uses word_boundary for de/en/tr/fr/es and substring for zho/jpn/tha (test cases for both).
 4. Empty glossary block renders cleanly without trailing whitespace.
 5. Malformed glossary disables glossary for the session, logs warn at startup, app continues.
-6. Override `templates/translate.j2` replaces built-in; missing variable in template aborts startup with file+line.
+6. Override `templates/translate.j2` replaces built-in. Malformed template aborts startup with file+line. Template referencing an unknown variable aborts startup with file+line.
 7. SIGHUP reloads glossary without restart.
 
 ### M5 — Encrypted history + viewer
@@ -163,7 +163,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 
 - `src/secrets.rs` — keychain via `keyring` crate; resolution order keychain → env → setup wizard
 - `src/ui/setup.rs` per design `setup-wizard.jsx`: provider grid (Anthropic/OpenAI/Gemini/Ollama), key entry with show/hide, storage radio (Keychain/env), test-translation checkbox, two CheckRow status dots
-- Connectivity check: per-provider lightweight call (Anthropic: `POST /v1/messages` `max_tokens: 1`; OpenAI/Gemini/Ollama: `GET /v1/models`)
+- Connectivity check: `GET /v1/models` for **all** providers (Anthropic, OpenAI, Gemini, Ollama). Free, idempotent, doesn't spend tokens, doesn't duplicate the sample-translation step. (This corrects spec §7's `POST /v1/messages` instruction — Anthropic now exposes a `GET /v1/models` endpoint suitable for auth verification.)
 - Sample translation: `Hello, world.` → German via configured model
 - Keychain-unavailable detection (any OS): setup wizard hides keychain option, shows env-only with explanation. Spec §7 lists Linux without Secret Service as the realistic case; the check is OS-agnostic.
 - Failure recovery: stay open with key intact; "Open config" button for manual edits
@@ -273,7 +273,7 @@ The user's directive: "make sure that it'll be possible to support other platfor
 
 **Invariants held from M1:**
 
-1. **No direct OS API calls.** Every OS-touching dep is a cross-platform crate: `arboard`, `global-hotkey`, `keyring`, `notify-rust`, `tray-icon`, `directories`, `eframe`. No `objc`, no `winapi`, no Wayland-specific code.
+1. **All OS-specific code lives behind `platform/` APIs.** Cross-platform features (clipboard, hotkey, keychain, notification, tray, paths, GUI) go through wrapper crates: `arboard`, `global-hotkey`, `keyring`, `notify-rust`, `tray-icon`, `directories`, `eframe`. OS-only features the app genuinely needs — macOS Accessibility-permission detection (M2), reduced-motion query (M3), platform-native file launch for "Open glossary" (M7), Unix SIGHUP handler (M4) — live as functions in `platform/macos.rs`, `platform/linux.rs`, `platform/windows.rs`, `platform/unix.rs`, exposed through trait surfaces in `platform/mod.rs` with no-op or error-returning defaults for OSes that don't need them. **No direct OS API calls outside `platform/`.**
 2. **One mapping function for hotkey modifiers.** `config::resolve_modifier(Modifier::Cmd)` returns `Cmd` on macOS, `Ctrl` on Linux/Windows. Used everywhere — including UI strings showing the active hotkey.
 3. **`platform/` is the only place `#[cfg(target_os = …)]` and `#[cfg(unix)]` live.** Enforced by an M8 grep-lint in CI.
 4. **CI builds all 5 targets from M1.** Compile-only on Linux/Windows in v0.1; runtime tests gated on macOS. This catches accidental macOS-only API use the day it's introduced.
@@ -339,6 +339,9 @@ These are clarifications and choices that go beyond what the spec specifies:
 5. **`--ink-3` palette correction** (`#80869294` → `#9ca3b1`) is a deliberate deviation from the design handoff to satisfy WCAG AA. Documented; aesthetically very close.
 6. **In-app glossary editor (`GlossaryWindow` from design):** out of scope for v0.1 per spec §3 ("No in-app editor in v1"). The design's faux-IDE editor is a v2.0+ feature.
 7. **Reduced-motion** support is in scope; spec did not call it out but the motion in the design (translating overlay) needs it.
+8. **Anthropic connectivity check uses `GET /v1/models`** (not `POST /v1/messages` per spec §7). Anthropic now exposes a `GET /v1/models` endpoint usable for auth verification — free, idempotent, doesn't duplicate the sample-translation step.
+9. **5xx retry policy** clarified to **two retries** (1s sleep, then 2s sleep; 3 attempts total) — resolves spec §8's ambiguous "One automatic retry with exponential backoff (1s, 2s)" wording.
+10. **Template file loading owned by M4, not M1.** M1 renders built-in `const &str` templates only — the override loader, malformed-template error, and missing-variable check all land together in M4 alongside the rest of user-config-driven templating (which sits naturally next to the glossary loader, also user-config-driven).
 
 ---
 
