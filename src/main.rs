@@ -1,3 +1,4 @@
+mod clipboard;
 mod config;
 mod error;
 mod llm;
