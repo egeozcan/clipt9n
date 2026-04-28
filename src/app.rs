@@ -560,6 +560,10 @@ impl eframe::App for ClipApp {
         }
 
         // Auto-dismiss on focus loss (Spotlight-style).
+        // No `dispatch_gen` bump needed here: if we were translating, the
+        // transition to Idle leaves `current_gen = None` in
+        // `handle_translation_done`, so any in-flight outcome is detected
+        // as stale (`Some(outcome.gen) != None`) and dropped silently.
         let focused = ctx.input(|i| i.focused);
         if focused {
             self.has_been_focused = true;
