@@ -77,19 +77,33 @@ pub fn draw(ctx: &egui::Context, model: &TranslatingModel) -> Option<Translating
                 .inner_margin(body_padding)
                 .show(ui, |ui| {
                     if model.reduced_motion {
-                        // Static fallback per WCAG 2.3.3.
+                        // Static fallback per WCAG 2.3.3 (animation suppression).
+                        // The widget_info call gives the label an AccessKit
+                        // identity so screen readers announce "Translation in
+                        // progress" — without it, reduced-motion users get
+                        // zero feedback that an action is running (WCAG 4.1.3).
                         ui.add_space(8.0);
-                        ui.label(
+                        let resp = ui.label(
                             RichText::new("Translating…")
                                 .color(theme::INK)
                                 .size(13.5),
                         );
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Label,
+                                true,
+                                "Translation in progress",
+                            )
+                        });
                         ui.add_space(8.0);
                     } else {
                         draw_animated_bar(ui, model);
                     }
 
                     // Meta row: endpoint + elapsed.
+                    // TODO(M3 wiring): replace placeholder with the actual
+                    // provider endpoint host (e.g., "api.anthropic.com")
+                    // when the overlay is integrated in Task 10.
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("request → api endpoint")
@@ -253,9 +267,30 @@ mod tests {
     }
 
     #[test]
+    fn head_wraps_at_cell_boundary() {
+        // The modular `(i + cells - head) % cells` distance formula must
+        // wrap cleanly: head=15 at t=15·TICK_MS, then head=0 at t=16·TICK_MS.
+        let v_15 = compute_bar_opacities(Duration::from_millis(TICK_MS * 15), BAR_CELLS);
+        let v_16 = compute_bar_opacities(Duration::from_millis(TICK_MS * 16), BAR_CELLS);
+        let bright = |v: &[f32]| {
+            v.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap()
+        };
+        assert_eq!(bright(&v_15), 15);
+        assert_eq!(bright(&v_16), 0, "head should wrap from cell 15 back to cell 0");
+    }
+
+    #[test]
     fn format_elapsed_renders_one_decimal() {
         assert_eq!(format_elapsed(Duration::from_millis(0)), "0.0s");
-        assert_eq!(format_elapsed(Duration::from_millis(450)), "0.4s"); // 450/1000 = 0.45 → truncates to "0.4s" via :.1
+        // 450ms → 0.45_f32. f32 cannot represent 0.45 exactly; the nearest
+        // value is ≈0.4499998807, so {:.1} rounds DOWN to "0.4s" rather than
+        // up to "0.5s". The display behavior is correct (matches design's
+        // toFixed(1)) — the precision quirk is just a property of f32.
+        assert_eq!(format_elapsed(Duration::from_millis(450)), "0.4s");
         assert_eq!(format_elapsed(Duration::from_secs(2)), "2.0s");
         assert_eq!(format_elapsed(Duration::from_millis(12345)), "12.3s");
     }
