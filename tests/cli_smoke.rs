@@ -78,7 +78,10 @@ env_var = "CLIPT9N_E2E_KEY"
         output.status.success(),
         "clipt9n failed: stdout={stdout:?} stderr={stderr:?}"
     );
-    assert!(stdout.contains("Hallo, Welt."), "expected translation in stdout, got {stdout:?}");
+    assert!(
+        stdout.contains("Hallo, Welt."),
+        "expected translation in stdout, got {stdout:?}"
+    );
 }
 
 #[tokio::test]
@@ -119,7 +122,13 @@ env_var = "CLIPT9N_E2E_MISSING_KEY"
         .await
         .expect("failed to run clipt9n");
 
-    assert!(!output.status.success(), "clipt9n should fail without an API key");
+    assert!(
+        !output.status.success(),
+        "clipt9n should fail without an API key"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("API key not found"), "expected MissingApiKey error, got {stderr:?}");
+    assert!(
+        stderr.contains("API key not found"),
+        "expected MissingApiKey error, got {stderr:?}"
+    );
 }

@@ -20,10 +20,14 @@ use crate::llm::LlmProvider;
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Translate to the language identified by ISO code (must match a slot in config).
-    Translate { code: String },
+    Translate {
+        code: String,
+    },
     FixGrammar,
     Rewrite,
-    Custom { instruction: String },
+    Custom {
+        instruction: String,
+    },
 }
 
 pub struct Translator<'a> {
@@ -38,14 +42,22 @@ impl<'a> Translator<'a> {
 
     /// Run the requested action against `clipboard_text` and return the
     /// post-processed result ready to write back to the clipboard.
-    pub async fn execute(&self, action: &Action, clipboard_text: &str) -> Result<String, TranslateError> {
+    pub async fn execute(
+        &self,
+        action: &Action,
+        clipboard_text: &str,
+    ) -> Result<String, TranslateError> {
         let (kind, target_label, instruction) = self.resolve_template_inputs(action)?;
         // Glossary is M4. M1 always passes empty.
         let ctx = match kind {
-            TemplateKind::Translate => TemplateContext::for_translate(target_label.as_deref().unwrap_or(""), ""),
+            TemplateKind::Translate => {
+                TemplateContext::for_translate(target_label.as_deref().unwrap_or(""), "")
+            }
             TemplateKind::FixGrammar => TemplateContext::for_fix_grammar(""),
             TemplateKind::Rewrite => TemplateContext::for_rewrite(""),
-            TemplateKind::Custom => TemplateContext::for_custom(instruction.as_deref().unwrap_or(""), ""),
+            TemplateKind::Custom => {
+                TemplateContext::for_custom(instruction.as_deref().unwrap_or(""), "")
+            }
         };
         let system = render(kind, &ctx)?;
         let model_output = self.provider.complete(&system, clipboard_text).await?;
@@ -65,7 +77,9 @@ impl<'a> Translator<'a> {
             Action::Rewrite => (TemplateKind::Rewrite, None, None),
             Action::Custom { instruction } => {
                 if instruction.trim().is_empty() {
-                    return Err(TranslateError::InvalidClipboard("custom instruction is empty".into()));
+                    return Err(TranslateError::InvalidClipboard(
+                        "custom instruction is empty".into(),
+                    ));
                 }
                 (TemplateKind::Custom, None, Some(instruction.clone()))
             }
@@ -112,11 +126,7 @@ fn strip_wrapping_quotes_if_safe(text: &str, source: &str) -> String {
 }
 
 fn strip_preamble(text: &str) -> std::borrow::Cow<'_, str> {
-    const PREAMBLES: &[&str] = &[
-        "Here is the translation:",
-        "Translation:",
-        "Übersetzung:",
-    ];
+    const PREAMBLES: &[&str] = &["Here is the translation:", "Translation:", "Übersetzung:"];
     for p in PREAMBLES {
         if text.len() >= p.len() {
             let prefix = &text[..p.len()];
@@ -185,7 +195,10 @@ mod tests {
 
     #[test]
     fn strips_full_translation_preamble() {
-        assert_eq!(post_process("Here is the translation: Hallo", "Hello"), "Hallo");
+        assert_eq!(
+            post_process("Here is the translation: Hallo", "Hello"),
+            "Hallo"
+        );
     }
 
     #[test]
@@ -208,7 +221,10 @@ mod tests {
 
     #[test]
     fn no_op_on_clean_text() {
-        assert_eq!(post_process("Hallo, Welt.", "Hello, world."), "Hallo, Welt.");
+        assert_eq!(
+            post_process("Hallo, Welt.", "Hello, world."),
+            "Hallo, Welt."
+        );
     }
 
     // -------- Translator tests --------------------------------------------
@@ -221,10 +237,17 @@ mod tests {
 
     impl CapturingProvider {
         fn new(reply: impl Into<String>) -> Self {
-            Self { captured: Mutex::new(None), reply: reply.into() }
+            Self {
+                captured: Mutex::new(None),
+                reply: reply.into(),
+            }
         }
         fn captured(&self) -> (String, String) {
-            self.captured.lock().unwrap().clone().expect("provider was never called")
+            self.captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("provider was never called")
         }
     }
 
@@ -256,7 +279,10 @@ mod tests {
         let cfg = Config::default();
         let provider = CapturingProvider::new("He doesn't know.");
         let t = Translator::new(&cfg, &provider);
-        let result = t.execute(&Action::FixGrammar, "He dont know.").await.unwrap();
+        let result = t
+            .execute(&Action::FixGrammar, "He dont know.")
+            .await
+            .unwrap();
         assert_eq!(result, "He doesn't know.");
         let (system, _) = provider.captured();
         assert!(system.contains("IN THE SAME LANGUAGE"));
@@ -268,7 +294,10 @@ mod tests {
         let cfg = Config::default();
         let provider = CapturingProvider::new("Concise version.");
         let t = Translator::new(&cfg, &provider);
-        let _ = t.execute(&Action::Rewrite, "verbose original").await.unwrap();
+        let _ = t
+            .execute(&Action::Rewrite, "verbose original")
+            .await
+            .unwrap();
         let (system, _) = provider.captured();
         assert!(system.contains("MAY restructure sentences"));
     }
@@ -280,7 +309,9 @@ mod tests {
         let t = Translator::new(&cfg, &provider);
         let _ = t
             .execute(
-                &Action::Custom { instruction: "make this sound diplomatic".into() },
+                &Action::Custom {
+                    instruction: "make this sound diplomatic".into(),
+                },
                 "raw text",
             )
             .await
@@ -307,7 +338,12 @@ mod tests {
         let provider = CapturingProvider::new("");
         let t = Translator::new(&cfg, &provider);
         let err = t
-            .execute(&Action::Custom { instruction: "   ".into() }, "Hello")
+            .execute(
+                &Action::Custom {
+                    instruction: "   ".into(),
+                },
+                "Hello",
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, TranslateError::InvalidClipboard(_)));

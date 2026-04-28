@@ -82,10 +82,15 @@ impl LlmProvider for AnthropicProvider {
             model: &self.model,
             max_tokens: 4096,
             system,
-            messages: vec![AnthropicMessage { role: "user", content: user }],
+            messages: vec![AnthropicMessage {
+                role: "user",
+                content: user,
+            }],
         };
-        let body_bytes = serde_json::to_vec(&body)
-            .map_err(|e| TranslateError::Provider { status: 0, message: format!("serialising request: {e}") })?;
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| TranslateError::Provider {
+            status: 0,
+            message: format!("serialising request: {e}"),
+        })?;
 
         with_retry(&self.backoffs, || {
             let body_bytes = body_bytes.clone();
@@ -106,13 +111,15 @@ impl LlmProvider for AnthropicProvider {
                         let status = resp.status();
                         if status.is_success() {
                             match resp.json::<AnthropicResponse>().await {
-                                Ok(parsed) => match parsed.content.into_iter().find(|c| c.kind == "text") {
-                                    Some(c) => AttemptOutcome::Done(c.text),
-                                    None => AttemptOutcome::Fatal(TranslateError::Provider {
-                                        status: status.as_u16(),
-                                        message: "no text content in response".into(),
-                                    }),
-                                },
+                                Ok(parsed) => {
+                                    match parsed.content.into_iter().find(|c| c.kind == "text") {
+                                        Some(c) => AttemptOutcome::Done(c.text),
+                                        None => AttemptOutcome::Fatal(TranslateError::Provider {
+                                            status: status.as_u16(),
+                                            message: "no text content in response".into(),
+                                        }),
+                                    }
+                                }
                                 Err(e) => AttemptOutcome::Fatal(TranslateError::Provider {
                                     status: status.as_u16(),
                                     message: format!("parsing response: {e}"),

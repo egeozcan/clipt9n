@@ -48,11 +48,18 @@ mod tests {
             "clipboard is empty or not text"
         );
         assert_eq!(
-            TranslateError::MissingApiKey { env_var: "ANTHROPIC_API_KEY".into() }.to_string(),
+            TranslateError::MissingApiKey {
+                env_var: "ANTHROPIC_API_KEY".into()
+            }
+            .to_string(),
             "API key not found: set ANTHROPIC_API_KEY or run setup wizard"
         );
         assert_eq!(
-            TranslateError::Provider { status: 503, message: "service unavailable".into() }.to_string(),
+            TranslateError::Provider {
+                status: 503,
+                message: "service unavailable".into()
+            }
+            .to_string(),
             "provider error (503): service unavailable"
         );
         assert_eq!(

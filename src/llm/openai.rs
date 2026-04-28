@@ -88,12 +88,20 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let body = OpenAiRequest {
             model: &self.model,
             messages: vec![
-                OpenAiMessage { role: "system", content: system },
-                OpenAiMessage { role: "user", content: user },
+                OpenAiMessage {
+                    role: "system",
+                    content: system,
+                },
+                OpenAiMessage {
+                    role: "user",
+                    content: user,
+                },
             ],
         };
-        let body_bytes = serde_json::to_vec(&body)
-            .map_err(|e| TranslateError::Provider { status: 0, message: format!("serialising request: {e}") })?;
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| TranslateError::Provider {
+            status: 0,
+            message: format!("serialising request: {e}"),
+        })?;
 
         with_retry(&self.backoffs, || {
             let body_bytes = body_bytes.clone();

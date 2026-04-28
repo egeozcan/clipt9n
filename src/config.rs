@@ -83,9 +83,18 @@ pub struct LanguagesConfig {
 impl Default for LanguagesConfig {
     fn default() -> Self {
         Self {
-            slot_1: LanguageSlot { label: "English".into(), code: "en".into() },
-            slot_2: LanguageSlot { label: "Deutsch".into(), code: "de".into() },
-            slot_3: LanguageSlot { label: "Türkçe".into(), code: "tr".into() },
+            slot_1: LanguageSlot {
+                label: "English".into(),
+                code: "en".into(),
+            },
+            slot_2: LanguageSlot {
+                label: "Deutsch".into(),
+                code: "de".into(),
+            },
+            slot_3: LanguageSlot {
+                label: "Türkçe".into(),
+                code: "tr".into(),
+            },
         }
     }
 }
@@ -112,7 +121,11 @@ impl Config {
     /// Look up a target-language label by ISO code from configured slots.
     /// Returns `UnsupportedLanguage(code)` if no slot matches.
     pub fn label_for_code(&self, code: &str) -> Result<&str, TranslateError> {
-        for slot in [&self.languages.slot_1, &self.languages.slot_2, &self.languages.slot_3] {
+        for slot in [
+            &self.languages.slot_1,
+            &self.languages.slot_2,
+            &self.languages.slot_3,
+        ] {
             if slot.code == code {
                 return Ok(&slot.label);
             }
@@ -141,7 +154,9 @@ mod tests {
     #[test]
     fn loads_full_config() {
         let mut f = NamedTempFile::new().unwrap();
-        writeln!(f, r#"
+        writeln!(
+            f,
+            r#"
 [provider]
 type = "openai"
 model = "gpt-5"
@@ -155,7 +170,9 @@ env_var = "OPENAI_API_KEY"
 [languages.slot_1]
 label = "Français"
 code = "fr"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         let cfg = Config::load(f.path()).unwrap();
         assert_eq!(cfg.provider.kind, "openai");
         assert_eq!(cfg.provider.model, "gpt-5");

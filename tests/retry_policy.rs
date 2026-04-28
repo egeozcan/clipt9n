@@ -46,7 +46,10 @@ async fn anthropic_succeeds_on_first_attempt() {
         .await;
 
     let p = provider(&server);
-    let out = p.complete("you are a translator", "Hello, world.").await.unwrap();
+    let out = p
+        .complete("you are a translator", "Hello, world.")
+        .await
+        .unwrap();
     assert_eq!(out, "Hallo, Welt.");
 }
 
@@ -70,7 +73,10 @@ async fn anthropic_retries_on_503_then_succeeds_on_third_attempt() {
         .await;
 
     let p = provider(&server);
-    let out = p.complete("you are a translator", "Hello, world.").await.unwrap();
+    let out = p
+        .complete("you are a translator", "Hello, world.")
+        .await
+        .unwrap();
     assert_eq!(out, "Hallo, Welt.");
 }
 

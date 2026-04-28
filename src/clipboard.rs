@@ -36,8 +36,12 @@ impl Clipboard for ArboardClipboard {
             Ok(s) => Ok(s),
             // arboard returns `Error::ContentNotAvailable` for images / files / empty.
             // Treat all as "empty or non-text" for spec §3 UX consistency.
-            Err(arboard::Error::ContentNotAvailable) => Err(TranslateError::EmptyOrNonTextClipboard),
-            Err(e) => Err(TranslateError::InvalidClipboard(format!("reading clipboard: {e}"))),
+            Err(arboard::Error::ContentNotAvailable) => {
+                Err(TranslateError::EmptyOrNonTextClipboard)
+            }
+            Err(e) => Err(TranslateError::InvalidClipboard(format!(
+                "reading clipboard: {e}"
+            ))),
         }
     }
 
@@ -57,11 +61,17 @@ pub struct MockClipboard {
 #[cfg(test)]
 impl MockClipboard {
     pub fn with_text(text: impl Into<String>) -> Self {
-        Self { read_value: Ok(text.into()), written: None }
+        Self {
+            read_value: Ok(text.into()),
+            written: None,
+        }
     }
 
     pub fn empty() -> Self {
-        Self { read_value: Err(TranslateError::EmptyOrNonTextClipboard), written: None }
+        Self {
+            read_value: Err(TranslateError::EmptyOrNonTextClipboard),
+            written: None,
+        }
     }
 }
 
@@ -70,7 +80,9 @@ impl Clipboard for MockClipboard {
     fn read_text(&mut self) -> Result<String, TranslateError> {
         match &self.read_value {
             Ok(s) => Ok(s.clone()),
-            Err(TranslateError::EmptyOrNonTextClipboard) => Err(TranslateError::EmptyOrNonTextClipboard),
+            Err(TranslateError::EmptyOrNonTextClipboard) => {
+                Err(TranslateError::EmptyOrNonTextClipboard)
+            }
             Err(e) => Err(TranslateError::InvalidClipboard(format!("mock: {e}"))),
         }
     }
@@ -94,7 +106,10 @@ mod tests {
     #[test]
     fn mock_empty_returns_empty_or_non_text_error() {
         let mut c = MockClipboard::empty();
-        assert!(matches!(c.read_text().unwrap_err(), TranslateError::EmptyOrNonTextClipboard));
+        assert!(matches!(
+            c.read_text().unwrap_err(),
+            TranslateError::EmptyOrNonTextClipboard
+        ));
     }
 
     #[test]

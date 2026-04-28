@@ -24,7 +24,11 @@ use crate::translator::{Action, Translator};
 /// CLI arguments. Exactly one of `--translate-to`, `--fix-grammar`,
 /// `--rewrite`, `--custom` must be specified.
 #[derive(Parser, Debug)]
-#[command(name = "clipt9n", version, about = "Clipboard translator (M1: CLI walking skeleton)")]
+#[command(
+    name = "clipt9n",
+    version,
+    about = "Clipboard translator (M1: CLI walking skeleton)"
+)]
 #[command(group(ArgGroup::new("action").required(true).args(["translate_to", "fix_grammar", "rewrite", "custom"])))]
 pub struct Cli {
     /// Translate to the given ISO language code (must match a slot in config).
@@ -57,7 +61,9 @@ impl Cli {
         } else if self.rewrite {
             Action::Rewrite
         } else if let Some(instruction) = &self.custom {
-            Action::Custom { instruction: instruction.clone() }
+            Action::Custom {
+                instruction: instruction.clone(),
+            }
         } else {
             // clap's ArgGroup with `required = true` prevents reaching here.
             unreachable!("clap should have rejected missing action")
@@ -67,12 +73,14 @@ impl Cli {
 
 /// Default config path: `<config_dir>/clipboard-translator/config.toml`.
 fn default_config_path() -> Option<std::path::PathBuf> {
-    ProjectDirs::from("", "", "clipboard-translator")
-        .map(|d| d.config_dir().join("config.toml"))
+    ProjectDirs::from("", "", "clipboard-translator").map(|d| d.config_dir().join("config.toml"))
 }
 
 /// Build the configured `LlmProvider` for the current `[provider]` block.
-fn build_provider(cfg: &Config, secrets: &dyn Secrets) -> Result<Box<dyn LlmProvider>, TranslateError> {
+fn build_provider(
+    cfg: &Config,
+    secrets: &dyn Secrets,
+) -> Result<Box<dyn LlmProvider>, TranslateError> {
     let api_key = secrets.get_api_key()?;
     let timeout = Duration::from_secs(cfg.provider.timeout_seconds);
     let provider: Box<dyn LlmProvider> = match cfg.provider.kind.as_str() {
@@ -163,7 +171,9 @@ fn action_kind(a: &Action) -> &'static str {
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
     let _ = fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(false)
         .try_init();
 }

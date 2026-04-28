@@ -23,19 +23,39 @@ pub struct TemplateContext<'a> {
 impl<'a> TemplateContext<'a> {
     /// Convenience constructor for tests and call sites that only need a subset.
     pub fn for_translate(target_language: &'a str, glossary_block: &'a str) -> Self {
-        Self { source_language: "unknown", target_language, user_instruction: "", glossary_block }
+        Self {
+            source_language: "unknown",
+            target_language,
+            user_instruction: "",
+            glossary_block,
+        }
     }
 
     pub fn for_fix_grammar(glossary_block: &'a str) -> Self {
-        Self { source_language: "unknown", target_language: "", user_instruction: "", glossary_block }
+        Self {
+            source_language: "unknown",
+            target_language: "",
+            user_instruction: "",
+            glossary_block,
+        }
     }
 
     pub fn for_rewrite(glossary_block: &'a str) -> Self {
-        Self { source_language: "unknown", target_language: "", user_instruction: "", glossary_block }
+        Self {
+            source_language: "unknown",
+            target_language: "",
+            user_instruction: "",
+            glossary_block,
+        }
     }
 
     pub fn for_custom(user_instruction: &'a str, glossary_block: &'a str) -> Self {
-        Self { source_language: "unknown", target_language: "", user_instruction, glossary_block }
+        Self {
+            source_language: "unknown",
+            target_language: "",
+            user_instruction,
+            glossary_block,
+        }
     }
 }
 
@@ -72,12 +92,19 @@ impl TemplateKind {
 /// system prompt that gets sent to the LLM.
 pub fn render(kind: TemplateKind, ctx: &TemplateContext<'_>) -> Result<String, TranslateError> {
     let mut env = Environment::new();
-    env.add_template(kind.name(), kind.source())
-        .map_err(|e| TranslateError::Template(format!("built-in template '{}' failed to load: {e}", kind.name())))?;
+    env.add_template(kind.name(), kind.source()).map_err(|e| {
+        TranslateError::Template(format!(
+            "built-in template '{}' failed to load: {e}",
+            kind.name()
+        ))
+    })?;
 
-    let tmpl = env
-        .get_template(kind.name())
-        .map_err(|e| TranslateError::Template(format!("built-in template '{}' not found: {e}", kind.name())))?;
+    let tmpl = env.get_template(kind.name()).map_err(|e| {
+        TranslateError::Template(format!(
+            "built-in template '{}' not found: {e}",
+            kind.name()
+        ))
+    })?;
 
     tmpl.render(context! {
         source_language => ctx.source_language,
@@ -147,6 +174,9 @@ mod tests {
         // After empty glossary substitution there should be no trailing
         // whitespace beyond a single newline.
         let trailing = &out[out.len().saturating_sub(20)..];
-        assert!(!trailing.contains("  "), "trailing whitespace found: {trailing:?}");
+        assert!(
+            !trailing.contains("  "),
+            "trailing whitespace found: {trailing:?}"
+        );
     }
 }

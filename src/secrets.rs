@@ -20,7 +20,9 @@ pub struct EnvSecrets {
 
 impl EnvSecrets {
     pub fn new(env_var: impl Into<String>) -> Self {
-        Self { env_var: env_var.into() }
+        Self {
+            env_var: env_var.into(),
+        }
     }
 }
 
@@ -28,7 +30,9 @@ impl Secrets for EnvSecrets {
     fn get_api_key(&self) -> Result<Zeroizing<String>, TranslateError> {
         std::env::var(&self.env_var)
             .map(Zeroizing::new)
-            .map_err(|_| TranslateError::MissingApiKey { env_var: self.env_var.clone() })
+            .map_err(|_| TranslateError::MissingApiKey {
+                env_var: self.env_var.clone(),
+            })
     }
 }
 

@@ -27,10 +27,7 @@ pub enum AttemptOutcome<T, E> {
 ///
 /// Returns the first `Done` value, or the last `Retry`/`Fatal` error if all
 /// attempts fail.
-pub async fn with_retry<T, E, F, Fut>(
-    backoffs: &[Duration],
-    mut op: F,
-) -> Result<T, E>
+pub async fn with_retry<T, E, F, Fut>(backoffs: &[Duration], mut op: F) -> Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = AttemptOutcome<T, E>>,
