@@ -188,6 +188,177 @@ pub fn default_strategy(lang_iso3: &str) -> MatchingStrategy {
     }
 }
 
+/// Test whether a single glossary term matches `source_text` under the
+/// given strategy and case sensitivity. Word-boundary checks that the
+/// surrounding characters aren't ASCII alphanumerics or `_`; this is
+/// Unicode-naive but matches the spec's whitespace-language assumption.
+/// `Substring` deliberately ignores boundaries, even on whitespace
+/// languages — opt-in via `[glossary] matching = "substring"`.
+pub fn term_matches(
+    source_text: &str,
+    term: &str,
+    case_sensitive: bool,
+    strategy: MatchingStrategy,
+) -> bool {
+    if term.is_empty() || source_text.is_empty() {
+        return false;
+    }
+    let resolved = match strategy {
+        MatchingStrategy::Auto => unreachable!(
+            "term_matches is called only with a resolved strategy; \
+             callers must convert Auto via default_strategy first"
+        ),
+        s => s,
+    };
+    let (haystack, needle) = if case_sensitive {
+        (source_text.to_string(), term.to_string())
+    } else {
+        (source_text.to_lowercase(), term.to_lowercase())
+    };
+    match resolved {
+        MatchingStrategy::WordBoundary => {
+            // Plain `contains` for the substring half of the check.
+            // Then verify the surrounding characters aren't ASCII letters
+            // / digits / underscores. Since whatlang's word-boundary
+            // languages are whitespace-separated, this naive boundary test
+            // is sufficient and avoids the `regex` crate entirely.
+            let mut start = 0;
+            while let Some(pos) = haystack[start..].find(&needle) {
+                let abs = start + pos;
+                let end = abs + needle.len();
+                let pre = haystack[..abs].chars().last();
+                let post = haystack[end..].chars().next();
+                let pre_ok = pre.is_none_or(|c| !is_word_char(c));
+                let post_ok = post.is_none_or(|c| !is_word_char(c));
+                if pre_ok && post_ok {
+                    return true;
+                }
+                start = abs + needle.chars().next().map_or(1, |c| c.len_utf8());
+            }
+            false
+        }
+        MatchingStrategy::Substring => haystack.contains(&needle),
+        MatchingStrategy::Auto => unreachable!(),
+    }
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Test whether an entry's `languages` list matches the current pair key
+/// (e.g. `"de->en"`). `*` in the entry list matches any pair.
+pub fn pair_matches(entry_pairs: &[String], current_pair: &str) -> bool {
+    entry_pairs.iter().any(|p| p == "*" || p == current_pair)
+}
+
+impl Glossary {
+    /// Mutable access to entries (test-only and for in-place SIGHUP swaps).
+    /// Production callers should not modify entries directly — load a new
+    /// `Glossary` and replace the existing one wholesale.
+    #[cfg(any(test, feature = "internal-test-helpers"))]
+    pub fn entries_mut(&mut self) -> &mut Vec<GlossaryEntry> {
+        &mut self.entries
+    }
+
+    /// Return the entries that should inject into `{{ glossary_block }}`
+    /// for a translation of `source_text` from `source_lang_iso2` to
+    /// `target_lang_iso2`. Both lang codes are 2-letter ISO 639-1; pass
+    /// `None` for `source_lang_iso2` when detection failed (treated as
+    /// `unknown` — only `*`-scoped entries apply).
+    ///
+    /// When `cfg.enabled = false`, returns empty.
+    pub fn matching_entries(
+        &self,
+        source_text: &str,
+        source_lang_iso2: Option<&str>,
+        target_lang_iso2: Option<&str>,
+        cfg: &crate::config::GlossaryConfig,
+    ) -> Vec<&GlossaryEntry> {
+        if !cfg.enabled {
+            return vec![];
+        }
+        let pair_key = format!(
+            "{}->{}",
+            source_lang_iso2.unwrap_or("unknown"),
+            target_lang_iso2.unwrap_or("unknown"),
+        );
+        let strategy_cfg = MatchingStrategy::parse(&cfg.matching).unwrap_or(MatchingStrategy::Auto);
+        // For `auto`, prefer the caller-supplied iso2 (already detected
+        // for the pair key); fall back to text detection only if absent.
+        // Non-Auto strategies skip detection entirely.
+        let resolved = match strategy_cfg {
+            MatchingStrategy::Auto => {
+                default_strategy(&resolve_iso3(source_text, source_lang_iso2))
+            }
+            other => other,
+        };
+        self.entries
+            .iter()
+            .filter(|e| pair_matches(&e.languages, &pair_key))
+            .filter(|e| term_matches(source_text, &e.source, cfg.case_sensitive, resolved))
+            .collect()
+    }
+
+    /// Pair-scope-agnostic preview for the prompt window's chip strip.
+    /// Surfaces every entry whose source term matches the clipboard,
+    /// regardless of pair, so the user sees what *might* inject before
+    /// they pick a target slot. The actual translator path applies pair
+    /// scoping in `matching_entries`.
+    pub fn preview_entries(
+        &self,
+        source_text: &str,
+        source_lang_iso2: Option<&str>,
+        cfg: &crate::config::GlossaryConfig,
+    ) -> Vec<&GlossaryEntry> {
+        if !cfg.enabled {
+            return vec![];
+        }
+        let strategy_cfg = MatchingStrategy::parse(&cfg.matching).unwrap_or(MatchingStrategy::Auto);
+        // Prefer the caller-supplied source language (App detects once at
+        // show_window time); fall back to local detection only if absent.
+        let resolved = match strategy_cfg {
+            MatchingStrategy::Auto => {
+                default_strategy(&resolve_iso3(source_text, source_lang_iso2))
+            }
+            other => other,
+        };
+        self.entries
+            .iter()
+            .filter(|e| term_matches(source_text, &e.source, cfg.case_sensitive, resolved))
+            .collect()
+    }
+}
+
+/// Resolve a 3-letter ISO 639-3 language code for the auto-strategy
+/// decision. Prefers the caller-supplied iso2 (cheap reverse-map); falls
+/// back to whatlang detection on text. Returns `"unknown"` when both fail
+/// — `default_strategy` treats that as `WordBoundary`.
+fn resolve_iso3(source_text: &str, source_lang_iso2: Option<&str>) -> String {
+    if let Some(iso3) = source_lang_iso2.and_then(iso2_to_iso3) {
+        return iso3.to_string();
+    }
+    detect_source_lang(source_text).unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Reverse of `iso3_to_iso2` for the small set of CJK/Thai languages that
+/// drive the substring auto-strategy decision. Most callers don't need a
+/// full inverse — just enough to pick the right strategy.
+fn iso2_to_iso3(iso2: &str) -> Option<&'static str> {
+    match iso2 {
+        "ja" => Some("jpn"),
+        "zh" => Some("zho"),
+        "th" => Some("tha"),
+        "lo" => Some("lao"),
+        "my" => Some("mya"),
+        "km" => Some("khm"),
+        // For all other pair-key languages, returning None means we'll
+        // fall back to running detect_source_lang again — fine, since
+        // those map to word_boundary anyway.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -381,5 +552,255 @@ source = "no-target-here"
             Some(MatchingStrategy::Auto)
         );
         assert!(MatchingStrategy::parse("garbage").is_none());
+    }
+
+    // ---- term_matches ----
+
+    #[test]
+    fn word_boundary_matches_full_word() {
+        assert!(term_matches(
+            "We have a Smart Table here",
+            "Smart Table",
+            false,
+            MatchingStrategy::WordBoundary,
+        ));
+    }
+
+    #[test]
+    fn word_boundary_does_not_match_inside_word() {
+        // "case" inside "casein" — classic spec example.
+        assert!(!term_matches(
+            "We use casein protein",
+            "case",
+            false,
+            MatchingStrategy::WordBoundary,
+        ));
+    }
+
+    #[test]
+    fn substring_matches_inside_word() {
+        // CJK/Thai-style: substring would catch "case" in "casein".
+        assert!(term_matches(
+            "We use casein protein",
+            "case",
+            false,
+            MatchingStrategy::Substring,
+        ));
+    }
+
+    #[test]
+    fn case_insensitive_match_is_default() {
+        assert!(term_matches(
+            "we have a SMART TABLE here",
+            "Smart Table",
+            false,
+            MatchingStrategy::WordBoundary,
+        ));
+    }
+
+    #[test]
+    fn case_sensitive_match_respects_flag() {
+        assert!(!term_matches(
+            "we have a SMART TABLE here",
+            "Smart Table",
+            true,
+            MatchingStrategy::WordBoundary,
+        ));
+        assert!(term_matches(
+            "We have a Smart Table here",
+            "Smart Table",
+            true,
+            MatchingStrategy::WordBoundary,
+        ));
+    }
+
+    #[test]
+    fn substring_handles_punctuation_terms() {
+        // Substring pathway: "C++" should match anywhere it appears.
+        assert!(term_matches(
+            "I write C++ code",
+            "C++",
+            false,
+            MatchingStrategy::Substring,
+        ));
+    }
+
+    #[test]
+    fn word_boundary_handles_punctuation_terms() {
+        // Word-boundary's char-class check treats `+` as non-word, so
+        // "C++" hits when surrounded by whitespace and misses when
+        // jammed against alphanumerics — proves the boundary check
+        // actually fires (the historical regex-escaping concern).
+        assert!(term_matches(
+            "I write C++ code",
+            "C++",
+            false,
+            MatchingStrategy::WordBoundary,
+        ));
+        assert!(!term_matches(
+            "I write C++code",
+            "C++",
+            false,
+            MatchingStrategy::WordBoundary,
+        ));
+    }
+
+    // ---- pair_matches ----
+
+    #[test]
+    fn wildcard_pair_matches_any_pair() {
+        assert!(pair_matches(&["*".into()], "de->en"));
+        assert!(pair_matches(&["*".into()], "tr->de"));
+        assert!(pair_matches(&["*".into()], "unknown->en"));
+    }
+
+    #[test]
+    fn specific_pair_matches_only_itself() {
+        assert!(pair_matches(&["de->en".into()], "de->en"));
+        assert!(!pair_matches(&["de->en".into()], "en->de"));
+        assert!(!pair_matches(&["de->en".into()], "tr->en"));
+    }
+
+    #[test]
+    fn multiple_pairs_match_any() {
+        let pairs = vec!["de->en".into(), "en->de".into()];
+        assert!(pair_matches(&pairs, "de->en"));
+        assert!(pair_matches(&pairs, "en->de"));
+        assert!(!pair_matches(&pairs, "fr->en"));
+    }
+
+    // ---- Glossary::matching_entries ----
+
+    fn build_glossary() -> Glossary {
+        let mut g = Glossary::empty();
+        g.entries_mut().push(GlossaryEntry {
+            source: "Smart Table".into(),
+            target: "Smart Table".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        g.entries_mut().push(GlossaryEntry {
+            source: "Vorgang".into(),
+            target: "case".into(),
+            languages: vec!["de->en".into()],
+            note: None,
+        });
+        g.entries_mut().push(GlossaryEntry {
+            source: "case".into(),
+            target: "Vorgang".into(),
+            languages: vec!["en->de".into()],
+            note: None,
+        });
+        g
+    }
+
+    #[test]
+    fn matching_entries_filters_by_pair_scope() {
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig::default();
+        // Source is German, target English — "Vorgang" scoped to de->en applies.
+        let hits = g.matching_entries(
+            "Wir öffnen einen neuen Vorgang.",
+            Some("de"),
+            Some("en"),
+            &cfg,
+        );
+        let sources: Vec<&str> = hits.iter().map(|e| e.source.as_str()).collect();
+        assert!(sources.contains(&"Vorgang"));
+        assert!(
+            !sources.contains(&"case"),
+            "case is en->de; should not fire on de->en source"
+        );
+    }
+
+    #[test]
+    fn matching_entries_includes_wildcard_scoped_in_any_pair() {
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig::default();
+        let hits = g.matching_entries(
+            "Buy a Smart Table for the kitchen.",
+            Some("en"),
+            Some("de"),
+            &cfg,
+        );
+        let sources: Vec<&str> = hits.iter().map(|e| e.source.as_str()).collect();
+        assert!(sources.contains(&"Smart Table"));
+    }
+
+    #[test]
+    fn matching_entries_unknown_source_lang_falls_back_to_wildcard_only() {
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig::default();
+        // Source language unknown → only `*`-scoped entries apply.
+        let hits = g.matching_entries(
+            "Smart Table und Vorgang", // Both terms present, but lang unknown.
+            None,
+            Some("en"),
+            &cfg,
+        );
+        let sources: Vec<&str> = hits.iter().map(|e| e.source.as_str()).collect();
+        assert!(sources.contains(&"Smart Table"));
+        assert!(
+            !sources.contains(&"Vorgang"),
+            "Vorgang's scope is de->en; unknown source must not match"
+        );
+    }
+
+    #[test]
+    fn matching_entries_skips_non_matching_terms() {
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig::default();
+        let hits = g.matching_entries(
+            "This text has none of the glossary terms in it.",
+            Some("en"),
+            Some("de"),
+            &cfg,
+        );
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn matching_entries_disabled_returns_empty() {
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let hits = g.matching_entries("Smart Table", Some("en"), Some("de"), &cfg);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn matching_entries_uses_substring_for_cjk_source_under_auto() {
+        // Construct a Japanese-source entry with substring-style matching.
+        let mut g = Glossary::empty();
+        g.entries_mut().push(GlossaryEntry {
+            source: "東京".into(),
+            target: "Tokyo".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        let cfg = crate::config::GlossaryConfig {
+            matching: "auto".into(),
+            ..Default::default()
+        };
+        // No whitespace around 東京 — word_boundary would miss it.
+        let hits = g.matching_entries("私は東京に住んでいます。", Some("ja"), Some("en"), &cfg);
+        assert_eq!(hits.len(), 1);
+    }
+
+    // ---- preview_entries (chip strip) ----
+
+    #[test]
+    fn preview_entries_ignores_pair_scope() {
+        // At preview time, target is unknown — we still want to surface
+        // entries whose source term matches, regardless of pair.
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig::default();
+        let hits = g.preview_entries("Buy a Smart Table for the Vorgang.", Some("de"), &cfg);
+        let sources: Vec<&str> = hits.iter().map(|e| e.source.as_str()).collect();
+        // Both Smart Table (* scope) and Vorgang (de->en scope) appear.
+        assert!(sources.contains(&"Smart Table"));
+        assert!(sources.contains(&"Vorgang"));
     }
 }
