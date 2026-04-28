@@ -1,5 +1,14 @@
-use clipt9n::{clipboard, config, error, llm, secrets, translator};
+use std::process::ExitCode;
 
-fn main() {
-    println!("clipt9n stub — implemented in Task 13");
+use clipt9n::run;
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("clipt9n: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
