@@ -868,7 +868,7 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/clipt9n-nonexistent-config-12345.toml");
         let cfg = Config::load(&path).unwrap();
         assert_eq!(cfg.provider.kind, "anthropic");
-        assert_eq!(cfg.provider.model, "claude-haiku-4-5");
+        assert_eq!(cfg.provider.model, "claude-haiku-4-5-20251001");
         assert_eq!(cfg.languages.slot_1.code, "en");
         assert_eq!(cfg.languages.slot_2.label, "Deutsch");
     }
