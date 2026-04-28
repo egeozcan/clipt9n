@@ -35,6 +35,9 @@ pub enum TranslateError {
 
     #[error("invalid clipboard contents: {0}")]
     InvalidClipboard(String),
+
+    #[error("macOS Accessibility permission not granted; the global hotkey cannot be registered without it. Open System Settings → Privacy & Security → Accessibility and enable clipt9n.")]
+    AccessibilityPermissionDenied,
 }
 
 #[cfg(test)]
