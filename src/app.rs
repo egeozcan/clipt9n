@@ -15,9 +15,9 @@ use tokio::runtime::Runtime;
 
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::config::Config;
-use crate::platform::Platform;
 use crate::error::TranslateError;
 use crate::llm::LlmProvider;
+use crate::platform::Platform;
 use crate::secrets::Secrets;
 use crate::state::State;
 use crate::translator::{Action, Translator};
@@ -34,7 +34,9 @@ enum AppState {
     Showing,
     /// User picked slot 6; the custom prompt window is visible. The
     /// `CustomPromptModel` carries instruction state across frames.
-    EnteringCustom { model: prompt_custom::CustomPromptModel },
+    EnteringCustom {
+        model: prompt_custom::CustomPromptModel,
+    },
     /// Pre-flight size confirmation. Confirm → transition to `Translating`
     /// with the carried `pending_action`; Cancel → `Idle`.
     ConfirmingSize {
@@ -178,7 +180,11 @@ impl ClipApp {
             tracing::warn!(error = %e, "state.toml save failed");
         }
         match intent {
-            Intent::Translate { action, action_label, overlay_label } => {
+            Intent::Translate {
+                action,
+                action_label,
+                overlay_label,
+            } => {
                 self.dispatch_translate(ctx, slot, action, action_label, overlay_label);
             }
             Intent::EnterCustom => {
@@ -723,7 +729,12 @@ mod tests {
     fn slot_1_resolves_to_translate_intent() {
         let cfg = cfg_with_threshold(2000);
         let intent = decide_intent(1, "hi", &cfg).expect("slot 1 is valid");
-        let Intent::Translate { action, action_label, overlay_label } = intent else {
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
             panic!("expected Intent::Translate");
         };
         let Action::Translate { code } = action else {
@@ -738,7 +749,12 @@ mod tests {
     fn slot_2_resolves_to_translate_intent() {
         let cfg = cfg_with_threshold(2000);
         let intent = decide_intent(2, "hi", &cfg).expect("slot 2 is valid");
-        let Intent::Translate { action, action_label, overlay_label } = intent else {
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
             panic!("expected Intent::Translate");
         };
         let Action::Translate { code } = action else {
@@ -753,7 +769,12 @@ mod tests {
     fn slot_3_resolves_to_translate_intent() {
         let cfg = cfg_with_threshold(2000);
         let intent = decide_intent(3, "hi", &cfg).expect("slot 3 is valid");
-        let Intent::Translate { action, action_label, overlay_label } = intent else {
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
             panic!("expected Intent::Translate");
         };
         let Action::Translate { code } = action else {
@@ -768,7 +789,12 @@ mod tests {
     fn slot_4_resolves_to_fix_grammar_intent() {
         let cfg = cfg_with_threshold(2000);
         let intent = decide_intent(4, "hi", &cfg).expect("slot 4 is valid");
-        let Intent::Translate { action, action_label, overlay_label } = intent else {
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
             panic!("expected Intent::Translate");
         };
         assert!(matches!(action, Action::FixGrammar));
@@ -780,7 +806,12 @@ mod tests {
     fn slot_5_resolves_to_rewrite_intent() {
         let cfg = cfg_with_threshold(2000);
         let intent = decide_intent(5, "hi", &cfg).expect("slot 5 is valid");
-        let Intent::Translate { action, action_label, overlay_label } = intent else {
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
             panic!("expected Intent::Translate");
         };
         assert!(matches!(action, Action::Rewrite));
@@ -824,9 +855,14 @@ mod tests {
     #[test]
     fn overlay_label_for_translate() {
         assert_eq!(overlay_label_for(&Action::FixGrammar), "Fixing grammar…");
-        assert_eq!(overlay_label_for(&Action::Rewrite), "Rewriting for clarity…");
         assert_eq!(
-            overlay_label_for(&Action::Custom { instruction: "x".into() }),
+            overlay_label_for(&Action::Rewrite),
+            "Rewriting for clarity…"
+        );
+        assert_eq!(
+            overlay_label_for(&Action::Custom {
+                instruction: "x".into()
+            }),
             "Running custom prompt…"
         );
     }
@@ -839,9 +875,17 @@ mod tests {
             "Translate to Deutsch"
         );
         assert_eq!(action_label_for(&Action::FixGrammar, &cfg), "Fix grammar");
-        assert_eq!(action_label_for(&Action::Rewrite, &cfg), "Rewrite for clarity");
         assert_eq!(
-            action_label_for(&Action::Custom { instruction: "anything".into() }, &cfg),
+            action_label_for(&Action::Rewrite, &cfg),
+            "Rewrite for clarity"
+        );
+        assert_eq!(
+            action_label_for(
+                &Action::Custom {
+                    instruction: "anything".into()
+                },
+                &cfg
+            ),
             "Custom prompt"
         );
     }
@@ -854,7 +898,10 @@ mod tests {
         cfg.ui.confirm_size_threshold = 10;
 
         assert!(!requires_size_confirm("short", &cfg));
-        assert!(requires_size_confirm("this is definitely longer than ten characters", &cfg));
+        assert!(requires_size_confirm(
+            "this is definitely longer than ten characters",
+            &cfg
+        ));
     }
 
     #[test]

@@ -83,11 +83,8 @@ pub fn draw(ctx: &egui::Context, model: &TranslatingModel) -> Option<Translating
                         // progress" — without it, reduced-motion users get
                         // zero feedback that an action is running (WCAG 4.1.3).
                         ui.add_space(8.0);
-                        let resp = ui.label(
-                            RichText::new("Translating…")
-                                .color(theme::INK)
-                                .size(13.5),
-                        );
+                        let resp =
+                            ui.label(RichText::new("Translating…").color(theme::INK).size(13.5));
                         resp.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Label,
@@ -122,8 +119,10 @@ pub fn draw(ctx: &egui::Context, model: &TranslatingModel) -> Option<Translating
                     });
 
                     ui.add_space(14.0);
-                    let sep_rect =
-                        egui::Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 1.0));
+                    let sep_rect = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        Vec2::new(ui.available_width(), 1.0),
+                    );
                     ui.painter().hline(
                         sep_rect.x_range(),
                         sep_rect.center().y,
@@ -162,10 +161,8 @@ fn draw_animated_bar(ui: &mut egui::Ui, model: &TranslatingModel) {
     if ui.is_rect_visible(rect) {
         for (i, op) in opacities.iter().enumerate() {
             let x = rect.left() + (cell_w + gap) * i as f32;
-            let cell_rect = egui::Rect::from_min_size(
-                egui::pos2(x, rect.top()),
-                Vec2::new(cell_w, bar_height),
-            );
+            let cell_rect =
+                egui::Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(cell_w, bar_height));
             let alpha = (op * 255.0).clamp(0.0, 255.0) as u8;
             let color = Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, alpha);
             ui.painter().rect_filled(cell_rect, 2.0, color);
@@ -245,7 +242,11 @@ mod tests {
     fn opacities_have_a_bright_head_at_t0() {
         let v = compute_bar_opacities(Duration::from_millis(0), BAR_CELLS);
         // At tick=0 the head is at index 0; cell 0 should be the brightest.
-        assert!((v[0] - 1.0).abs() < 0.01, "expected head at index 0 to be 1.0, got {}", v[0]);
+        assert!(
+            (v[0] - 1.0).abs() < 0.01,
+            "expected head at index 0 to be 1.0, got {}",
+            v[0]
+        );
         // Cells far from head should be at minimum (0.15).
         assert!((v[8] - 0.15).abs() < 0.01);
     }
@@ -280,7 +281,11 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(bright(&v_15), 15);
-        assert_eq!(bright(&v_16), 0, "head should wrap from cell 15 back to cell 0");
+        assert_eq!(
+            bright(&v_16),
+            0,
+            "head should wrap from cell 15 back to cell 0"
+        );
     }
 
     #[test]

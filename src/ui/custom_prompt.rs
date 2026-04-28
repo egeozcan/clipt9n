@@ -66,10 +66,7 @@ pub fn submit_enabled(instruction: &str) -> bool {
 /// click events; keyboard handling (Cmd+Enter, Esc) lives in `App::update`.
 /// Mutates `model.instruction` to reflect TextEdit contents and may set
 /// `model.focus_textarea_next_frame = false` after first focus call.
-pub fn draw(
-    ctx: &egui::Context,
-    model: &mut CustomPromptModel,
-) -> Option<CustomPromptOutcome> {
+pub fn draw(ctx: &egui::Context, model: &mut CustomPromptModel) -> Option<CustomPromptOutcome> {
     let mut clicked: Option<CustomPromptOutcome> = None;
     theme::window_frame(ctx, "Custom prompt", Some("clipt9n · slot 6"), |ui| {
         let body_padding = egui::Margin::symmetric(18, 14);
@@ -133,18 +130,24 @@ pub fn draw(
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
                         ui.label(
-                            RichText::new(if preview.is_empty() { "\u{00A0}" } else { &preview })
-                                .color(theme::INK_2)
-                                .monospace()
-                                .size(12.0),
+                            RichText::new(if preview.is_empty() {
+                                "\u{00A0}"
+                            } else {
+                                &preview
+                            })
+                            .color(theme::INK_2)
+                            .monospace()
+                            .size(12.0),
                         );
                     });
 
                 ui.add_space(12.0);
 
                 // ----- Footer: hint + Run button -----
-                let sep_rect =
-                    egui::Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 1.0));
+                let sep_rect = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    Vec2::new(ui.available_width(), 1.0),
+                );
                 ui.painter().hline(
                     sep_rect.x_range(),
                     sep_rect.center().y,
@@ -216,9 +219,7 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response
 }
 
@@ -229,7 +230,11 @@ fn run_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
     let padding = Vec2::new(14.0, 7.0);
     let galley_size = ui
         .painter()
-        .layout_no_wrap(label.into(), egui::FontId::proportional(12.5), theme::ACCENT_INK)
+        .layout_no_wrap(
+            label.into(),
+            egui::FontId::proportional(12.5),
+            theme::ACCENT_INK,
+        )
         .size();
     let desired = galley_size + padding * 2.0;
     // Always click-sense: keyboard a11y requires that screen-reader users
@@ -251,13 +256,13 @@ fn run_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
             // (very dark) for the focus stroke so keyboard users see a clear
             // ring; ACCENT-on-ACCENT would be nearly invisible. When disabled
             // (PANEL_3 background), ACCENT stroke is high-contrast.
-            let ring = if enabled { theme::ACCENT_INK } else { theme::ACCENT };
-            ui.painter().rect_stroke(
-                rect,
-                6.0,
-                Stroke::new(2.0, ring),
-                egui::StrokeKind::Outside,
-            );
+            let ring = if enabled {
+                theme::ACCENT_INK
+            } else {
+                theme::ACCENT
+            };
+            ui.painter()
+                .rect_stroke(rect, 6.0, Stroke::new(2.0, ring), egui::StrokeKind::Outside);
         }
         ui.painter().text(
             rect.center(),
