@@ -16,8 +16,9 @@
 //! the env var `CLIPT9N_TEST_OUTPUT` (read after subprocess exit via the
 //! parent's `--print-result` CLI flag).
 //!
-//! This test-only path is gated by `cfg(test_clipboard_passthrough)` in lib.rs
-//! — if absent, the production clipboard path runs.
+//! This test-only path is activated at runtime: when `CLIPT9N_TEST_INPUT` is
+//! set, lib.rs skips arboard and uses the env var value instead; if the env var
+//! is absent, the production clipboard path runs.
 
 use std::io::Write;
 
