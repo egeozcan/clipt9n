@@ -6,6 +6,7 @@ pub mod error;
 pub mod llm;
 pub mod platform;
 pub mod secrets;
+pub mod state;
 pub mod translator;
 
 use std::time::Duration;
