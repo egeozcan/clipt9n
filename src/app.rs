@@ -41,7 +41,6 @@ enum AppState {
         pending_action: Action,
         action_label: String,
         overlay_label: String,
-        source_text: String,
         char_count: usize,
         preview: String,
     },
@@ -213,7 +212,6 @@ impl ClipApp {
                 pending_action: action,
                 action_label,
                 overlay_label,
-                source_text: self.prompt_model.clipboard_text.clone(),
                 char_count,
                 preview,
             };
@@ -404,14 +402,12 @@ impl ClipApp {
         self.app_state = AppState::EnteringCustom { model };
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn update_confirming_size(
         &mut self,
         ctx: &egui::Context,
         pending_action: Action,
         action_label: String,
         overlay_label: String,
-        source_text: String,
         char_count: usize,
         preview: String,
     ) {
@@ -420,6 +416,10 @@ impl ClipApp {
             preview: preview.clone(),
             action_label: action_label.clone(),
         };
+        // Click takes priority over key: when a button is Tab-focused and
+        // the user presses Enter, egui's button click handler fires the
+        // focused button's outcome; only fall back to global Esc/Enter
+        // shortcuts when no button consumed the keystroke.
         let click = size_confirm::draw(ctx, &model);
         let key = ctx.input(|i| {
             if i.key_pressed(Key::Escape) {
@@ -430,7 +430,7 @@ impl ClipApp {
                 None
             }
         });
-        let outcome = key.or(click);
+        let outcome = click.or(key);
         match outcome {
             Some(size_confirm::SizeConfirmOutcome::Confirm) => {
                 // Use the persisted `last_slot` to identify which slot owned
@@ -449,7 +449,6 @@ impl ClipApp {
                     pending_action,
                     action_label,
                     overlay_label,
-                    source_text,
                     char_count,
                     preview,
                 };
@@ -581,7 +580,6 @@ impl eframe::App for ClipApp {
                 pending_action,
                 action_label,
                 overlay_label,
-                source_text,
                 char_count,
                 preview,
             } => {
@@ -590,7 +588,6 @@ impl eframe::App for ClipApp {
                     pending_action,
                     action_label,
                     overlay_label,
-                    source_text,
                     char_count,
                     preview,
                 );
@@ -735,6 +732,36 @@ mod tests {
         assert_eq!(code, "en");
         assert_eq!(action_label, "Translate to English");
         assert_eq!(overlay_label, "Translating to English…");
+    }
+
+    #[test]
+    fn slot_2_resolves_to_translate_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(2, "hi", &cfg).expect("slot 2 is valid");
+        let Intent::Translate { action, action_label, overlay_label } = intent else {
+            panic!("expected Intent::Translate");
+        };
+        let Action::Translate { code } = action else {
+            panic!("expected Action::Translate");
+        };
+        assert_eq!(code, "de");
+        assert_eq!(action_label, "Translate to Deutsch");
+        assert_eq!(overlay_label, "Translating to Deutsch…");
+    }
+
+    #[test]
+    fn slot_3_resolves_to_translate_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(3, "hi", &cfg).expect("slot 3 is valid");
+        let Intent::Translate { action, action_label, overlay_label } = intent else {
+            panic!("expected Intent::Translate");
+        };
+        let Action::Translate { code } = action else {
+            panic!("expected Action::Translate");
+        };
+        assert_eq!(code, "tr");
+        assert_eq!(action_label, "Translate to Türkçe");
+        assert_eq!(overlay_label, "Translating to Türkçe…");
     }
 
     #[test]
