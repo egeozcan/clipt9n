@@ -54,6 +54,12 @@ enum AppState {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomKey {
+    Submit,
+    Cancel,
+}
+
 pub struct ClipApp {
     cfg: Config,
     state_path: PathBuf,
@@ -159,10 +165,6 @@ impl ClipApp {
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = AppState::Showing;
-    }
-
-    fn hide_window(&self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
     fn dispatch(&mut self, ctx: &egui::Context, slot: u8) {
@@ -306,10 +308,83 @@ impl ClipApp {
         }
     }
 
-    fn handle_keys(&mut self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
-        if !matches!(self.app_state, AppState::Showing) {
-            return None;
+    fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
+        self.app_state = AppState::Idle;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+    }
+
+    fn update_showing(&mut self, ctx: &egui::Context) {
+        // Refresh the prompt model in case the clipboard changed since the
+        // hotkey fired (e.g., user copied something else then re-summoned).
+        let click = prompt::draw(ctx, &self.cfg, &self.prompt_model);
+        let key = self.handle_keys_showing(ctx);
+        let outcome = key.or(click);
+        match outcome {
+            Some(prompt::PromptOutcome::Pick(n)) => {
+                // dispatch() may transition to any of the new states; restore
+                // Showing only if dispatch didn't transition.
+                self.app_state = AppState::Showing;
+                self.dispatch(ctx, n);
+            }
+            Some(prompt::PromptOutcome::RepeatLast) => {
+                self.app_state = AppState::Showing;
+                if let Some(n) = self.state.last_slot {
+                    self.dispatch(ctx, n);
+                }
+            }
+            Some(prompt::PromptOutcome::Cancel) => {
+                self.dismiss_to_idle(ctx);
+            }
+            None => {
+                self.app_state = AppState::Showing;
+            }
         }
+    }
+
+    fn update_entering_custom(
+        &mut self,
+        ctx: &egui::Context,
+        mut model: prompt_custom::CustomPromptModel,
+    ) {
+        // Refresh clipboard text in case the user pasted something else
+        // between summoning and entering custom mode. Cheap.
+        if model.clipboard_text != self.prompt_model.clipboard_text {
+            model.clipboard_text = self.prompt_model.clipboard_text.clone();
+        }
+
+        let click = prompt_custom::draw(ctx, &mut model);
+        let key_outcome = self.handle_keys_entering_custom(ctx, &model);
+
+        // Apply preset click before dispatch so the user sees the chip's
+        // text in the textarea even if they then press Esc.
+        if let Some(prompt_custom::CustomPromptOutcome::PresetPicked(i)) = click {
+            model.instruction = prompt_custom::PRESETS[i].into();
+            self.app_state = AppState::EnteringCustom { model };
+            return;
+        }
+
+        let submit = matches!(click, Some(prompt_custom::CustomPromptOutcome::Submit))
+            || key_outcome == Some(CustomKey::Submit);
+        let cancel = key_outcome == Some(CustomKey::Cancel);
+
+        if cancel {
+            self.dismiss_to_idle(ctx);
+            return;
+        }
+        if submit && prompt_custom::submit_enabled(&model.instruction) {
+            let instruction = model.instruction.trim().to_string();
+            let action = Action::Custom { instruction };
+            let action_label = action_label_for(&action, &self.cfg);
+            let overlay_label = overlay_label_for(&action);
+            // Custom-prompt slot index is 6 (used for last-slot persistence).
+            self.start_translation(ctx, 6, action, action_label, overlay_label);
+            return;
+        }
+        // Otherwise stay in EnteringCustom with the (possibly mutated) model.
+        self.app_state = AppState::EnteringCustom { model };
+    }
+
+    fn handle_keys_showing(&mut self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
         ctx.input(|i| {
             if i.key_pressed(Key::Escape) {
                 return Some(prompt::PromptOutcome::Cancel);
@@ -332,60 +407,69 @@ impl ClipApp {
             None
         })
     }
+
+    fn handle_keys_entering_custom(
+        &self,
+        ctx: &egui::Context,
+        _model: &prompt_custom::CustomPromptModel,
+    ) -> Option<CustomKey> {
+        ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                return Some(CustomKey::Cancel);
+            }
+            // Cmd+Enter (macOS) or Ctrl+Enter (Linux/Windows) submits.
+            if i.key_pressed(Key::Enter) && (i.modifiers.command || i.modifiers.ctrl) {
+                return Some(CustomKey::Submit);
+            }
+            None
+        })
+    }
 }
 
 impl eframe::App for ClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Lightly throttle when idle to not burn CPU. egui repaints on
-        // input + we explicitly request_repaint when async tasks finish, so
-        // a slow background tick is a safety net.
         ctx.request_repaint_after(Duration::from_millis(150));
 
         self.drain_channels(ctx);
 
-        // Drive viewport visibility from app state every frame.
         let want_visible = !matches!(self.app_state, AppState::Idle);
         ctx.send_viewport_cmd(ViewportCommand::Visible(want_visible));
 
-        if matches!(self.app_state, AppState::Showing) {
-            // Auto-dismiss on focus loss (Spotlight-style). We require the
-            // viewport to have gained focus at least once before checking,
-            // so we don't immediately self-dismiss in the gap between
-            // `Visible(true)` and the OS finishing the focus handoff.
-            let focused = ctx.input(|i| i.focused);
-            if focused {
-                self.has_been_focused = true;
-            } else if self.has_been_focused {
-                self.app_state = AppState::Idle;
-                self.hide_window(ctx);
-                return;
-            }
-
-            // Draw first (so click hits register), then process keyboard.
-            let click = prompt::draw(ctx, &self.cfg, &self.prompt_model);
-            let key = self.handle_keys(ctx);
-            let outcome = key.or(click);
-            match outcome {
-                Some(prompt::PromptOutcome::Pick(n)) => self.dispatch(ctx, n),
-                Some(prompt::PromptOutcome::RepeatLast) => {
-                    if let Some(n) = self.state.last_slot {
-                        self.dispatch(ctx, n);
-                    }
-                }
-                Some(prompt::PromptOutcome::Cancel) => {
-                    self.app_state = AppState::Idle;
-                    self.hide_window(ctx);
-                }
-                None => {}
-            }
-        } else {
-            // Paint a clean PANEL-filled CentralPanel so any moment the OS
-            // briefly reveals the window (focus tab, exposé, expander
-            // animations) it shows clean chrome rather than GPU back-buffer
-            // garbage.
+        if !want_visible {
+            // Idle: paint clean chrome.
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(theme::PANEL))
                 .show(ctx, |_| {});
+            return;
+        }
+
+        // Auto-dismiss on focus loss (Spotlight-style).
+        let focused = ctx.input(|i| i.focused);
+        if focused {
+            self.has_been_focused = true;
+        } else if self.has_been_focused {
+            self.dismiss_to_idle(ctx);
+            return;
+        }
+
+        // Render the active state and process keyboard.
+        match std::mem::replace(&mut self.app_state, AppState::Idle) {
+            AppState::Idle => unreachable!("handled above"),
+            AppState::Showing => self.update_showing(ctx),
+            AppState::EnteringCustom { model } => self.update_entering_custom(ctx, model),
+            AppState::ConfirmingSize { .. } => {
+                // Wired in Task 9. Until then, treat as no-op cancellation.
+                self.dismiss_to_idle(ctx);
+            }
+            AppState::Translating { gen, action_label, overlay_label, started_at } => {
+                // Restore — Task 10 wires the overlay rendering.
+                self.app_state = AppState::Translating {
+                    gen,
+                    action_label,
+                    overlay_label,
+                    started_at,
+                };
+            }
         }
     }
 }
