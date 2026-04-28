@@ -34,6 +34,7 @@ egui = "0.31"
 global-hotkey = "0.7"
 notify-rust = "4"
 crossbeam-channel = "0.5"
+anyhow = "1"
 
 [dev-dependencies]
 wiremock = "0.6"

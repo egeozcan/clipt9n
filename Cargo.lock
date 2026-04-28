@@ -713,6 +713,7 @@ dependencies = [
 name = "clipt9n"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "arboard",
  "async-trait",
  "clap",
