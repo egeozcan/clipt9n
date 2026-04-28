@@ -181,12 +181,9 @@ impl ClipApp {
         }
         match intent {
             Intent::Translate { action, action_label, overlay_label } => {
-                self.start_translation(ctx, slot, action, action_label, overlay_label);
+                self.dispatch_translate(ctx, slot, action, action_label, overlay_label);
             }
             Intent::EnterCustom => {
-                // Wired in Task 8 — for now the state simply changes so the
-                // user gets visible feedback (window stays open with prompt;
-                // Task 8 swaps in the custom prompt UI).
                 self.app_state = AppState::EnteringCustom {
                     model: prompt_custom::CustomPromptModel {
                         clipboard_text: self.prompt_model.clipboard_text.clone(),
@@ -197,6 +194,33 @@ impl ClipApp {
                 tracing::info!(slot, "entering custom prompt mode");
             }
         }
+    }
+
+    /// Single fork point for "we know what to translate; should we ask the
+    /// user to confirm first?". Either transitions to ConfirmingSize or
+    /// calls start_translation directly.
+    fn dispatch_translate(
+        &mut self,
+        ctx: &egui::Context,
+        slot: u8,
+        action: Action,
+        action_label: String,
+        overlay_label: String,
+    ) {
+        if requires_size_confirm(&self.prompt_model.clipboard_text, &self.cfg) {
+            let preview = size_confirm::format_preview(&self.prompt_model.clipboard_text);
+            let char_count = self.prompt_model.clipboard_text.chars().count();
+            self.app_state = AppState::ConfirmingSize {
+                pending_action: action,
+                action_label,
+                overlay_label,
+                source_text: self.prompt_model.clipboard_text.clone(),
+                char_count,
+                preview,
+            };
+            return;
+        }
+        self.start_translation(ctx, slot, action, action_label, overlay_label);
     }
 
     fn start_translation(
@@ -377,12 +401,64 @@ impl ClipApp {
             let action = Action::Custom { instruction };
             let action_label = action_label_for(&action, &self.cfg);
             let overlay_label = overlay_label_for(&action);
-            // Custom-prompt slot index is 6 (used for last-slot persistence).
-            self.start_translation(ctx, 6, action, action_label, overlay_label);
+            self.dispatch_translate(ctx, 6, action, action_label, overlay_label);
             return;
         }
         // Otherwise stay in EnteringCustom with the (possibly mutated) model.
         self.app_state = AppState::EnteringCustom { model };
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_confirming_size(
+        &mut self,
+        ctx: &egui::Context,
+        pending_action: Action,
+        action_label: String,
+        overlay_label: String,
+        source_text: String,
+        char_count: usize,
+        preview: String,
+    ) {
+        let model = size_confirm::SizeConfirmModel {
+            char_count,
+            preview: preview.clone(),
+            action_label: action_label.clone(),
+        };
+        let click = size_confirm::draw(ctx, &model);
+        let key = ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                Some(size_confirm::SizeConfirmOutcome::Cancel)
+            } else if i.key_pressed(Key::Enter) {
+                Some(size_confirm::SizeConfirmOutcome::Confirm)
+            } else {
+                None
+            }
+        });
+        let outcome = key.or(click);
+        match outcome {
+            Some(size_confirm::SizeConfirmOutcome::Confirm) => {
+                // Use the persisted `last_slot` to identify which slot owned
+                // this dispatch. Custom prompts use slot 6.
+                let slot = match &pending_action {
+                    Action::Custom { .. } => 6,
+                    _ => self.state.last_slot.unwrap_or(0),
+                };
+                self.start_translation(ctx, slot, pending_action, action_label, overlay_label);
+            }
+            Some(size_confirm::SizeConfirmOutcome::Cancel) => {
+                self.dismiss_to_idle(ctx);
+            }
+            None => {
+                self.app_state = AppState::ConfirmingSize {
+                    pending_action,
+                    action_label,
+                    overlay_label,
+                    source_text,
+                    char_count,
+                    preview,
+                };
+            }
+        }
     }
 
     fn handle_keys_showing(&mut self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
@@ -458,9 +534,23 @@ impl eframe::App for ClipApp {
             AppState::Idle => unreachable!("handled above"),
             AppState::Showing => self.update_showing(ctx),
             AppState::EnteringCustom { model } => self.update_entering_custom(ctx, model),
-            AppState::ConfirmingSize { .. } => {
-                // Wired in Task 9. Until then, treat as no-op cancellation.
-                self.dismiss_to_idle(ctx);
+            AppState::ConfirmingSize {
+                pending_action,
+                action_label,
+                overlay_label,
+                source_text,
+                char_count,
+                preview,
+            } => {
+                self.update_confirming_size(
+                    ctx,
+                    pending_action,
+                    action_label,
+                    overlay_label,
+                    source_text,
+                    char_count,
+                    preview,
+                );
             }
             AppState::Translating { gen, action_label, overlay_label, started_at } => {
                 // Restore — Task 10 wires the overlay rendering.
@@ -685,5 +775,16 @@ mod tests {
             action_label_for(&Action::Custom { instruction: "anything".into() }, &cfg),
             "Custom prompt"
         );
+    }
+
+    #[test]
+    fn dispatch_translate_paths_diverge_on_threshold() {
+        // We can't construct a ClipApp here, but we can directly verify
+        // the requires_size_confirm boundary used by dispatch_translate.
+        let mut cfg = Config::default();
+        cfg.ui.confirm_size_threshold = 10;
+
+        assert!(!requires_size_confirm("short", &cfg));
+        assert!(requires_size_confirm("this is definitely longer than ten characters", &cfg));
     }
 }
