@@ -124,3 +124,58 @@ async fn anthropic_returns_rate_limited_on_429() {
     let err = p.complete("system", "user").await.unwrap_err();
     assert!(matches!(err, TranslateError::RateLimited));
 }
+
+use clipt9n::llm::openai::OpenAiCompatibleProvider;
+
+const OPENAI_SUCCESS_BODY: &str = r#"{
+    "choices": [{"message": {"role": "assistant", "content": "Hallo, Welt."}}]
+}"#;
+
+fn openai_provider(server: &MockServer) -> OpenAiCompatibleProvider {
+    OpenAiCompatibleProvider::new(
+        server.uri(),
+        Zeroizing::new("sk-test".into()),
+        "gpt-5",
+        Duration::from_secs(10),
+    )
+    .unwrap()
+    .with_backoffs(fast_backoffs())
+}
+
+#[tokio::test]
+async fn openai_succeeds_on_first_attempt() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer sk-test"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(OPENAI_SUCCESS_BODY))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let p = openai_provider(&server);
+    let out = p.complete("system", "user").await.unwrap();
+    assert_eq!(out, "Hallo, Welt.");
+}
+
+#[tokio::test]
+async fn openai_retries_on_502_then_succeeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(502))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(OPENAI_SUCCESS_BODY))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let p = openai_provider(&server);
+    let out = p.complete("system", "user").await.unwrap();
+    assert_eq!(out, "Hallo, Welt.");
+}
