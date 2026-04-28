@@ -314,8 +314,9 @@ impl ClipApp {
     }
 
     fn update_showing(&mut self, ctx: &egui::Context) {
-        // Refresh the prompt model in case the clipboard changed since the
-        // hotkey fired (e.g., user copied something else then re-summoned).
+        // prompt_model was snapshotted at show_window(); we re-draw it each
+        // frame against the same snapshot so the user sees a stable view
+        // until they dismiss or pick a slot.
         let click = prompt::draw(ctx, &self.cfg, &self.prompt_model);
         let key = self.handle_keys_showing(ctx);
         let outcome = key.or(click);
