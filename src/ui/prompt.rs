@@ -289,78 +289,102 @@ fn draw_slot_row(
     trailing: &str,
     is_last: bool,
 ) -> bool {
-    let bg = if is_last {
+    // Allocate the row as a single focusable widget so Tab navigates between
+    // rows. Drawing happens with painter + a child Ui scoped to the inner
+    // rect for the layout-based label/trailing/badge content.
+    let row_height = 36.0;
+    let desired = Vec2::new(ui.available_width(), row_height);
+    let response = ui.allocate_response(desired, Sense::click());
+    let rect = response.rect;
+
+    let focused = response.has_focus();
+    let hovered = response.hovered();
+
+    let bg = if focused {
+        Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x18)
+    } else if hovered {
+        theme::PANEL_3
+    } else if is_last {
         Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x10)
     } else {
         Color32::TRANSPARENT
     };
-    let border = if is_last {
+    let border = if focused {
+        Stroke::new(2.0, theme::ACCENT)
+    } else if is_last {
         Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x2e))
     } else {
-        Stroke::new(1.0, Color32::TRANSPARENT)
+        Stroke::NONE
     };
 
-    let mut clicked = false;
-    let response = egui::Frame::new()
-        .fill(bg)
-        .stroke(border)
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(10, 9))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Number badge
-                let (badge_rect, _) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::hover());
-                ui.painter().rect_filled(badge_rect, 4.0, theme::PANEL_3);
-                ui.painter().rect_stroke(
-                    badge_rect,
-                    4.0,
-                    Stroke::new(1.0, theme::LINE),
-                    egui::StrokeKind::Inside,
-                );
-                ui.painter().text(
-                    badge_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("{}", slot.n),
-                    egui::FontId::monospace(11.5),
-                    theme::INK_2,
-                );
-                ui.add_space(8.0);
-                ui.label(RichText::new(label).color(theme::INK).size(13.5));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if is_last {
-                        let badge = egui::Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x29))
-                            .corner_radius(255)
-                            .inner_margin(egui::Margin::symmetric(7, 2));
-                        badge.show(ui, |ui| {
-                            ui.label(
-                                RichText::new("LAST USED")
-                                    .color(theme::ACCENT)
-                                    .size(10.0)
-                                    .strong(),
-                            );
-                        });
-                        ui.add_space(6.0);
-                    }
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect_filled(rect, 6.0, bg);
+        if border.width > 0.0 {
+            ui.painter()
+                .rect_stroke(rect, 6.0, border, egui::StrokeKind::Inside);
+        }
+
+        // Inner content: horizontal layout with badge, label, trailing.
+        let inner_rect = rect.shrink2(Vec2::new(10.0, 7.0));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let cui = &mut child;
+
+        // Number badge
+        let (badge_rect, _) = cui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::hover());
+        cui.painter().rect_filled(badge_rect, 4.0, theme::PANEL_3);
+        cui.painter().rect_stroke(
+            badge_rect,
+            4.0,
+            Stroke::new(1.0, theme::LINE),
+            egui::StrokeKind::Inside,
+        );
+        cui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{}", slot.n),
+            egui::FontId::monospace(11.5),
+            theme::INK_2,
+        );
+        cui.add_space(8.0);
+        cui.label(RichText::new(label).color(theme::INK).size(13.5));
+        cui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if is_last {
+                let badge = egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x29))
+                    .corner_radius(255)
+                    .inner_margin(egui::Margin::symmetric(7, 2));
+                badge.show(ui, |ui| {
                     ui.label(
-                        RichText::new(trailing)
-                            .color(theme::INK_3)
-                            .monospace()
-                            .size(11.0),
+                        RichText::new("LAST USED")
+                            .color(theme::ACCENT)
+                            .size(10.0)
+                            .strong(),
                     );
                 });
-            });
-        })
-        .response
-        .interact(Sense::click());
-
-    if response.clicked() {
-        clicked = true;
+                ui.add_space(6.0);
+            }
+            ui.label(
+                RichText::new(trailing)
+                    .color(theme::INK_3)
+                    .monospace()
+                    .size(11.0),
+            );
+        });
     }
-    if response.hovered() {
+
+    // AccessKit / VoiceOver hook.
+    let label_for_a11y = label.to_string();
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label_for_a11y));
+
+    if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    clicked
+    response.clicked()
 }
 
 /// Truncate clipboard text to ~110 chars with an ellipsis (matches

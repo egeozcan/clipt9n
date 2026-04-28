@@ -49,6 +49,11 @@ pub struct ClipApp {
 
     app_state: AppState,
     prompt_model: prompt::PromptModel,
+
+    /// Set to true once the viewport has gained focus after a `show_window`.
+    /// Used to detect focus-loss dismiss without firing in the brief window
+    /// between sending `Visible(true)+Focus` and the OS actually focusing us.
+    has_been_focused: bool,
 }
 
 #[derive(Debug)]
@@ -97,6 +102,7 @@ impl ClipApp {
             result_tx,
             result_rx,
             app_state: AppState::Idle,
+            has_been_focused: false,
         }
     }
 
@@ -114,6 +120,7 @@ impl ClipApp {
     fn show_window(&mut self, ctx: &egui::Context) {
         self.prompt_model.clipboard_text = self.snapshot_clipboard();
         self.prompt_model.last_slot = self.state.last_slot;
+        self.has_been_focused = false;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = AppState::Showing;
@@ -273,7 +280,26 @@ impl eframe::App for ClipApp {
 
         self.drain_channels(ctx);
 
-        if matches!(self.app_state, AppState::Showing) {
+        // Drive viewport visibility from app state every frame.
+        // ViewportBuilder::with_visible(false) is unreliable on macOS at
+        // launch, so we re-assert hidden state here defensively.
+        let want_visible = matches!(self.app_state, AppState::Showing);
+        ctx.send_viewport_cmd(ViewportCommand::Visible(want_visible));
+
+        if want_visible {
+            // Auto-dismiss on focus loss (Spotlight-style). We require the
+            // viewport to have gained focus at least once before checking,
+            // so we don't immediately self-dismiss in the gap between
+            // `Visible(true)` and the OS finishing the focus handoff.
+            let focused = ctx.input(|i| i.focused);
+            if focused {
+                self.has_been_focused = true;
+            } else if self.has_been_focused {
+                self.app_state = AppState::Idle;
+                self.hide_window(ctx);
+                return;
+            }
+
             // Draw first (so click hits register), then process keyboard.
             let click = prompt::draw(ctx, &self.cfg, &self.prompt_model);
             let key = self.handle_keys(ctx);
@@ -291,6 +317,14 @@ impl eframe::App for ClipApp {
                 }
                 None => {}
             }
+        } else {
+            // Paint a clean PANEL-filled CentralPanel so any moment the OS
+            // briefly reveals the window (focus tab, exposé, expander
+            // animations) it shows clean chrome rather than GPU back-buffer
+            // garbage.
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(theme::PANEL))
+                .show(ctx, |_| {});
         }
     }
 }
