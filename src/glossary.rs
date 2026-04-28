@@ -252,6 +252,33 @@ pub fn pair_matches(entry_pairs: &[String], current_pair: &str) -> bool {
     entry_pairs.iter().any(|p| p == "*" || p == current_pair)
 }
 
+/// Render the spec §5.4 glossary block from matched entries. Empty input
+/// → empty string (no header, no trailing whitespace; matches the
+/// "renders cleanly" invariant in the spec).
+pub fn format_block(entries: &[&GlossaryEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(entries.len() * 64);
+    out.push_str("GLOSSARY — these terms MUST be translated exactly as specified:");
+    for e in entries {
+        out.push('\n');
+        out.push_str("- \"");
+        out.push_str(&e.source);
+        out.push_str("\" → \"");
+        out.push_str(&e.target);
+        out.push('"');
+        if let Some(note) = &e.note {
+            if !note.is_empty() {
+                out.push_str(" (");
+                out.push_str(note);
+                out.push(')');
+            }
+        }
+    }
+    out
+}
+
 impl Glossary {
     /// Mutable access to entries (test-only and for in-place SIGHUP swaps).
     /// Production callers should not modify entries directly — load a new
@@ -802,5 +829,73 @@ source = "no-target-here"
         // Both Smart Table (* scope) and Vorgang (de->en scope) appear.
         assert!(sources.contains(&"Smart Table"));
         assert!(sources.contains(&"Vorgang"));
+    }
+
+    // ---- format_block ----
+
+    #[test]
+    fn format_block_empty_returns_empty_string() {
+        let out = format_block(&[]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn format_block_renders_canonical_spec_example() {
+        let entries = [
+            GlossaryEntry {
+                source: "Smart Table".into(),
+                target: "Smart Table".into(),
+                languages: vec!["*".into()],
+                note: None,
+            },
+            GlossaryEntry {
+                source: "Vorgang".into(),
+                target: "case".into(),
+                languages: vec!["de->en".into()],
+                note: None,
+            },
+            GlossaryEntry {
+                source: "GIP".into(),
+                target: "GIP".into(),
+                languages: vec!["*".into()],
+                note: Some("Always preserve as-is".into()),
+            },
+        ];
+        let refs: Vec<&GlossaryEntry> = entries.iter().collect();
+        let out = format_block(&refs);
+        let expected = "GLOSSARY — these terms MUST be translated exactly as specified:\n\
+- \"Smart Table\" → \"Smart Table\"\n\
+- \"Vorgang\" → \"case\"\n\
+- \"GIP\" → \"GIP\" (Always preserve as-is)";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn format_block_no_trailing_whitespace() {
+        let entries = [GlossaryEntry {
+            source: "FOO".into(),
+            target: "BAR".into(),
+            languages: vec!["*".into()],
+            note: None,
+        }];
+        let refs: Vec<&GlossaryEntry> = entries.iter().collect();
+        let out = format_block(&refs);
+        assert!(!out.ends_with(' '));
+        assert!(!out.ends_with('\n'));
+    }
+
+    #[test]
+    fn format_block_handles_quotes_in_terms() {
+        // No escaping: terms are passed through verbatim. Quote characters
+        // in source/target are unusual and the LLM tolerates them.
+        let entries = [GlossaryEntry {
+            source: "say \"hi\"".into(),
+            target: "say \"hello\"".into(),
+            languages: vec!["*".into()],
+            note: None,
+        }];
+        let refs: Vec<&GlossaryEntry> = entries.iter().collect();
+        let out = format_block(&refs);
+        assert!(out.contains("\"say \"hi\"\" → \"say \"hello\"\""));
     }
 }
