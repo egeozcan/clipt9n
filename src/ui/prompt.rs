@@ -475,5 +475,6 @@ mod tests {
         cfg.ui.confirm_size_threshold = 100;
         assert!(should_warn_large_paste("x".repeat(101).as_str(), &cfg));
         assert!(!should_warn_large_paste("x".repeat(99).as_str(), &cfg));
+        assert!(!should_warn_large_paste("x".repeat(100).as_str(), &cfg)); // exactly at threshold: no warn
     }
 }
