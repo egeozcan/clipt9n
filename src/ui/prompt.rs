@@ -216,13 +216,23 @@ fn draw_populated(
             ui.add_space(14.0);
 
             // ----- Slot rows -----
-            for slot in SLOTS {
-                let (label, trailing) = slot_strings(slot, cfg);
-                let is_last = model.last_slot == Some(slot.n);
-                if draw_slot_row(ui, slot, label, trailing, is_last) {
-                    *clicked = Some(PromptOutcome::Pick(slot.n));
-                }
-            }
+            // Wrapped in a ScrollArea so that on monitors too small to fit
+            // the full window, Tab still works: focused rows auto-scroll
+            // into view. Reserve room for the footer below the area.
+            let footer_reserve = 60.0;
+            let area_max_height = ui.available_height() - footer_reserve;
+            egui::ScrollArea::vertical()
+                .max_height(area_max_height.max(120.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for slot in SLOTS {
+                        let (label, trailing) = slot_strings(slot, cfg);
+                        let is_last = model.last_slot == Some(slot.n);
+                        if draw_slot_row(ui, slot, label, trailing, is_last) {
+                            *clicked = Some(PromptOutcome::Pick(slot.n));
+                        }
+                    }
+                });
 
             // ----- Glossary chip area (M2 always empty; M4 fills it) -----
             // Empty placeholder reserved so the layout doesn't shift when M4
@@ -299,6 +309,9 @@ fn draw_slot_row(
 
     let focused = response.has_focus();
     let hovered = response.hovered();
+    if focused {
+        response.scroll_to_me(None);
+    }
 
     let bg = if focused {
         Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x18)
