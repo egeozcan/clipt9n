@@ -10,20 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::TranslateError;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub provider: ProviderConfig,
     pub languages: LanguagesConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            languages: LanguagesConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
