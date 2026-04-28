@@ -341,9 +341,14 @@ impl ClipApp {
         // prompt_model was snapshotted at show_window(); we re-draw it each
         // frame against the same snapshot so the user sees a stable view
         // until they dismiss or pick a slot.
+        //
+        // Click takes priority over key: when a slot row is Tab-focused and
+        // the user presses Enter, egui fires the focused row's `clicked()`,
+        // which becomes Some(Pick(n)). The global Enter → RepeatLast
+        // shortcut should only fire when no widget consumed the keystroke.
         let click = prompt::draw(ctx, &self.cfg, &self.prompt_model);
         let key = self.handle_keys_showing(ctx);
-        let outcome = key.or(click);
+        let outcome = click.or(key);
         match outcome {
             Some(prompt::PromptOutcome::Pick(n)) => {
                 // dispatch() may transition to any of the new states; restore
