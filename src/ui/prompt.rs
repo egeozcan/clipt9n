@@ -223,11 +223,25 @@ fn draw_populated(
                                         .monospace(),
                                 );
                                 ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(if line.is_empty() { "\u{00A0}" } else { line })
+                                // Label::truncate() forces each preview line to
+                                // exactly one visual line, ellipsizing if too
+                                // wide. Without this, a long single-line
+                                // clipboard wraps to multiple visual lines and
+                                // blows up the preview-block height enough to
+                                // squeeze the slot list (slot 1 then gets
+                                // scrolled off-screen on initial focus).
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(if line.is_empty() {
+                                            "\u{00A0}"
+                                        } else {
+                                            line
+                                        })
                                         .color(theme::INK_2)
                                         .monospace()
                                         .size(12.5),
+                                    )
+                                    .truncate(),
                                 );
                             });
                         }
