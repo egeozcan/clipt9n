@@ -29,7 +29,7 @@ use crate::translator::{Action, Translator};
     version,
     about = "Clipboard translator (M1: CLI walking skeleton)"
 )]
-#[command(group(ArgGroup::new("action").required(true).args(["translate_to", "fix_grammar", "rewrite", "custom"])))]
+#[command(group(ArgGroup::new("action").required(false).args(["translate_to", "fix_grammar", "rewrite", "custom"])))]
 pub struct Cli {
     /// Translate to the given ISO language code (must match a slot in config).
     #[arg(long = "translate-to", value_name = "CODE")]
@@ -53,20 +53,19 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn to_action(&self) -> Action {
+    /// Return the explicit CLI action, or `None` if no action flag was given
+    /// (which means: launch the GUI).
+    pub fn action_or_none(&self) -> Option<Action> {
         if let Some(code) = &self.translate_to {
-            Action::Translate { code: code.clone() }
+            Some(Action::Translate { code: code.clone() })
         } else if self.fix_grammar {
-            Action::FixGrammar
+            Some(Action::FixGrammar)
         } else if self.rewrite {
-            Action::Rewrite
-        } else if let Some(instruction) = &self.custom {
-            Action::Custom {
-                instruction: instruction.clone(),
-            }
+            Some(Action::Rewrite)
         } else {
-            // clap's ArgGroup with `required = true` prevents reaching here.
-            unreachable!("clap should have rejected missing action")
+            self.custom.as_ref().map(|instruction| Action::Custom {
+                instruction: instruction.clone(),
+            })
         }
     }
 }
@@ -130,7 +129,9 @@ pub async fn run() -> Result<(), TranslateError> {
     if let Ok(input) = std::env::var("CLIPT9N_TEST_INPUT") {
         let print_result = std::env::var("CLIPT9N_TEST_PRINT_RESULT").is_ok();
         let translator = Translator::new(&cfg, provider.as_ref());
-        let action = cli.to_action();
+        let action = cli.action_or_none().ok_or_else(|| {
+            TranslateError::Config("no CLI action; GUI mode is not yet wired in run()".into())
+        })?;
         let result = translator.execute(&action, &input).await?;
         if print_result {
             println!("{result}");
@@ -145,7 +146,9 @@ pub async fn run() -> Result<(), TranslateError> {
     }
 
     let translator = Translator::new(&cfg, provider.as_ref());
-    let action = cli.to_action();
+    let action = cli.action_or_none().ok_or_else(|| {
+        TranslateError::Config("no CLI action; GUI mode is not yet wired in run()".into())
+    })?;
     let result = translator.execute(&action, &source_text).await?;
 
     clipboard.write_text(&result)?;
@@ -187,41 +190,51 @@ mod cli_tests {
     fn translate_to_parses() {
         let cli = Cli::try_parse_from(["clipt9n", "--translate-to=de"]).unwrap();
         assert_eq!(cli.translate_to.as_deref(), Some("de"));
-        assert!(matches!(cli.to_action(), Action::Translate { code } if code == "de"));
+        assert!(matches!(cli.action_or_none(), Some(Action::Translate { code }) if code == "de"));
     }
 
     #[test]
     fn fix_grammar_parses() {
         let cli = Cli::try_parse_from(["clipt9n", "--fix-grammar"]).unwrap();
         assert!(cli.fix_grammar);
-        assert!(matches!(cli.to_action(), Action::FixGrammar));
+        assert!(matches!(cli.action_or_none(), Some(Action::FixGrammar)));
     }
 
     #[test]
     fn rewrite_parses() {
         let cli = Cli::try_parse_from(["clipt9n", "--rewrite"]).unwrap();
-        assert!(matches!(cli.to_action(), Action::Rewrite));
+        assert!(matches!(cli.action_or_none(), Some(Action::Rewrite)));
     }
 
     #[test]
     fn custom_parses() {
         let cli = Cli::try_parse_from(["clipt9n", "--custom=translate to formal Spanish"]).unwrap();
         assert!(matches!(
-            cli.to_action(),
-            Action::Custom { instruction } if instruction == "translate to formal Spanish"
+            cli.action_or_none(),
+            Some(Action::Custom { instruction }) if instruction == "translate to formal Spanish"
         ));
-    }
-
-    #[test]
-    fn no_action_is_rejected() {
-        let res = Cli::try_parse_from(["clipt9n"]);
-        assert!(res.is_err(), "clap should reject missing action");
     }
 
     #[test]
     fn multiple_actions_are_rejected() {
         let res = Cli::try_parse_from(["clipt9n", "--fix-grammar", "--rewrite"]);
         assert!(res.is_err(), "clap should reject multiple actions");
+    }
+
+    #[test]
+    fn no_action_is_now_accepted_for_gui_mode() {
+        let cli = Cli::try_parse_from(["clipt9n"]).unwrap();
+        assert!(cli.translate_to.is_none());
+        assert!(!cli.fix_grammar);
+        assert!(!cli.rewrite);
+        assert!(cli.custom.is_none());
+        assert!(cli.action_or_none().is_none());
+    }
+
+    #[test]
+    fn translate_to_still_resolves_action() {
+        let cli = Cli::try_parse_from(["clipt9n", "--translate-to=de"]).unwrap();
+        assert!(matches!(cli.action_or_none(), Some(Action::Translate { code }) if code == "de"));
     }
 
     #[test]
