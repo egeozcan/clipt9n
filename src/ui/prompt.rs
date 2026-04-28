@@ -24,14 +24,19 @@ pub struct PromptModel {
 
 /// Picked action from the prompt window. The caller maps the slot to a
 /// concrete `translator::Action`.
+///
+/// Enter on the focused row dispatches via egui's built-in click handling
+/// (`Sense::click` widgets fire on Enter/Space when focused). The caller
+/// is responsible for setting initial focus on the desired slot via the
+/// `focus_target` parameter to `draw` — there is no separate "repeat last"
+/// outcome because the focused row IS the repeat target on summon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptOutcome {
-    /// User clicked a slot button or pressed 1–6.
+    /// User clicked a slot button, pressed 1–6, or pressed Enter on a
+    /// focused slot row.
     Pick(u8),
     /// User pressed Esc.
     Cancel,
-    /// User pressed Enter while `last_slot` was set.
-    RepeatLast,
 }
 
 /// Static slot definitions (matches `data.jsx` SLOTS).
@@ -99,13 +104,24 @@ pub fn slot_strings(slot: SlotDef, cfg: &Config) -> (&str, &str) {
 /// user clicked a slot button this frame; `None` otherwise. Keyboard
 /// handling lives in `App::update` and is not the responsibility of this
 /// function.
-pub fn draw(ctx: &egui::Context, cfg: &Config, model: &PromptModel) -> Option<PromptOutcome> {
+///
+/// `focus_target` requests `request_focus()` on the slot whose number
+/// matches, on this frame only. Callers typically pass `Some(last_slot)`
+/// (or `Some(1)` if no last slot) on the first frame after summon, then
+/// `None` on subsequent frames so egui's normal Tab-driven focus tracking
+/// takes over.
+pub fn draw(
+    ctx: &egui::Context,
+    cfg: &Config,
+    model: &PromptModel,
+    focus_target: Option<u8>,
+) -> Option<PromptOutcome> {
     let mut clicked: Option<PromptOutcome> = None;
     theme::window_frame(ctx, "Translate clipboard", Some("clipt9n · prompt"), |ui| {
         if model.clipboard_text.is_empty() {
             draw_empty(ui);
         } else {
-            draw_populated(ui, cfg, model, &mut clicked);
+            draw_populated(ui, cfg, model, &mut clicked, focus_target);
         }
     });
     clicked
@@ -128,6 +144,7 @@ fn draw_empty(ui: &mut egui::Ui) {
         );
         ui.add_space(16.0);
         ui.horizontal(|ui| {
+            ui.style_mut().spacing.item_spacing.x = 4.0;
             ui.add_space(ui.available_width() / 2.0 - 40.0);
             theme::kbd(ui, "Esc");
             ui.label(
@@ -146,6 +163,7 @@ fn draw_populated(
     cfg: &Config,
     model: &PromptModel,
     clicked: &mut Option<PromptOutcome>,
+    focus_target: Option<u8>,
 ) {
     let body_padding = egui::Margin::symmetric(18, 14);
     egui::Frame::new()
@@ -230,7 +248,8 @@ fn draw_populated(
                     for slot in SLOTS {
                         let (label, trailing) = slot_strings(slot, cfg);
                         let is_last = model.last_slot == Some(slot.n);
-                        if draw_slot_row(ui, slot, label, trailing, is_last) {
+                        let should_focus = focus_target == Some(slot.n);
+                        if draw_slot_row(ui, slot, label, trailing, is_last, should_focus) {
                             *clicked = Some(PromptOutcome::Pick(slot.n));
                         }
                     }
@@ -252,6 +271,10 @@ fn draw_populated(
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
+                // window_frame's body sets item_spacing.x=0 so vertically
+                // stacked frames hug; here we want a small gap between
+                // each kbd cap and its adjacent label so they don't touch.
+                ui.style_mut().spacing.item_spacing.x = 4.0;
                 theme::kbd(ui, "1");
                 ui.label(RichText::new("–").color(theme::INK_3).size(11.0));
                 theme::kbd(ui, "6");
@@ -262,13 +285,8 @@ fn draw_populated(
                         .size(11.0),
                 );
                 theme::kbd(ui, "↵");
-                let enter_label = if model.last_slot.is_some() {
-                    "repeat last ·"
-                } else {
-                    "— ·"
-                };
                 ui.label(
-                    RichText::new(enter_label)
+                    RichText::new("confirm ·")
                         .color(theme::INK_3)
                         .monospace()
                         .size(11.0),
@@ -301,6 +319,7 @@ fn draw_slot_row(
     label: &str,
     trailing: &str,
     is_last: bool,
+    should_focus: bool,
 ) -> bool {
     // Allocate the row as a single focusable widget so Tab navigates between
     // rows. Drawing happens with painter + a child Ui scoped to the inner
@@ -308,6 +327,12 @@ fn draw_slot_row(
     let row_height = 36.0;
     let desired = Vec2::new(ui.available_width(), row_height);
     let response = ui.allocate_response(desired, Sense::click());
+    if should_focus {
+        // Initial focus on the slot caller wants pre-selected (typically
+        // last_slot, or slot 1 on first run). Subsequent frames pass
+        // should_focus=false so the user's Tab navigation is not stomped.
+        response.request_focus();
+    }
     let rect = response.rect;
 
     let focused = response.has_focus();

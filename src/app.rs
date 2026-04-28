@@ -81,6 +81,12 @@ pub struct ClipApp {
     /// Set to true once the viewport has gained focus after a `show_window`.
     has_been_focused: bool,
 
+    /// Set to true by `show_window`; the next `update_showing` frame
+    /// consumes it to call `request_focus` on the last-selected slot row
+    /// (or slot 1 if no last slot). After consume, egui's normal Tab
+    /// navigation takes over.
+    initial_focus_pending: bool,
+
     /// Monotonically-increasing dispatch counter. Each translation captures
     /// this value at dispatch time; outcomes whose gen ≠ current are dropped
     /// (used for cancellation).
@@ -142,6 +148,7 @@ impl ClipApp {
             result_rx,
             app_state: AppState::Idle,
             has_been_focused: false,
+            initial_focus_pending: false,
             dispatch_gen: 0,
             reduced_motion,
         }
@@ -162,6 +169,7 @@ impl ClipApp {
         self.prompt_model.clipboard_text = self.snapshot_clipboard();
         self.prompt_model.last_slot = self.state.last_slot;
         self.has_been_focused = false;
+        self.initial_focus_pending = true;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = AppState::Showing;
@@ -365,11 +373,18 @@ impl ClipApp {
         // frame against the same snapshot so the user sees a stable view
         // until they dismiss or pick a slot.
         //
-        // Click takes priority over key: when a slot row is Tab-focused and
-        // the user presses Enter, egui fires the focused row's `clicked()`,
-        // which becomes Some(Pick(n)). The global Enter → RepeatLast
-        // shortcut should only fire when no widget consumed the keystroke.
-        let click = prompt::draw(ctx, &self.cfg, &self.prompt_model);
+        // On the first frame after summon, request_focus on the slot the
+        // user last picked (or slot 1 by default). With focus pre-set,
+        // Enter on that row directly fires Pick(n) via egui's built-in
+        // Sense::click handling — no separate "RepeatLast" key shortcut
+        // needed; the focused row IS the repeat target.
+        let focus_target = if self.initial_focus_pending {
+            self.initial_focus_pending = false;
+            Some(self.state.last_slot.unwrap_or(1))
+        } else {
+            None
+        };
+        let click = prompt::draw(ctx, &self.cfg, &self.prompt_model, focus_target);
         let key = self.handle_keys_showing(ctx);
         let outcome = click.or(key);
         match outcome {
@@ -378,12 +393,6 @@ impl ClipApp {
                 // Showing only if dispatch didn't transition.
                 self.app_state = AppState::Showing;
                 self.dispatch(ctx, n);
-            }
-            Some(prompt::PromptOutcome::RepeatLast) => {
-                self.app_state = AppState::Showing;
-                if let Some(n) = self.state.last_slot {
-                    self.dispatch(ctx, n);
-                }
             }
             Some(prompt::PromptOutcome::Cancel) => {
                 self.dismiss_to_idle(ctx);
@@ -533,14 +542,15 @@ impl ClipApp {
         };
     }
 
-    fn handle_keys_showing(&mut self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
+    fn handle_keys_showing(&self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
         ctx.input(|i| {
             if i.key_pressed(Key::Escape) {
                 return Some(prompt::PromptOutcome::Cancel);
             }
-            if i.key_pressed(Key::Enter) && self.state.last_slot.is_some() {
-                return Some(prompt::PromptOutcome::RepeatLast);
-            }
+            // No global Enter handler: a slot row is always focused after
+            // show_window (initial_focus_pending), and egui's Sense::click
+            // handling fires the focused row's clicked() on Enter. The
+            // 1-6 number keys remain as direct shortcuts.
             for (key, n) in [
                 (Key::Num1, 1u8),
                 (Key::Num2, 2),

@@ -132,6 +132,9 @@ pub fn draw(ctx: &egui::Context, model: &TranslatingModel) -> Option<Translating
 
                     // Footer: hint + Cancel button.
                     ui.horizontal(|ui| {
+                        // Override window_frame's item_spacing.x=0 so the
+                        // kbd cap doesn't visually touch "cancel".
+                        ui.style_mut().spacing.item_spacing.x = 4.0;
                         theme::kbd(ui, "Esc");
                         ui.label(
                             RichText::new("cancel")

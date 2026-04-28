@@ -107,6 +107,9 @@ pub fn draw(ctx: &egui::Context, model: &SizeConfirmModel) -> Option<SizeConfirm
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
+                        // Override window_frame's item_spacing.x=0 so kbd
+                        // caps don't visually touch their adjacent labels.
+                        ui.style_mut().spacing.item_spacing.x = 4.0;
                         theme::kbd(ui, "↵");
                         ui.label(
                             RichText::new("send ·")
