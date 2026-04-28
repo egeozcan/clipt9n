@@ -128,6 +128,9 @@ pub struct UiConfig {
     /// "normal" or "compact". Drives prompt window width (520 vs 460).
     pub density: String,
     pub show_preview: bool,
+    /// Above this character count, dispatch shows a confirm modal before
+    /// sending the clipboard to the API. Spec §6 default is 2000.
+    pub confirm_size_threshold: usize,
 }
 
 impl Default for UiConfig {
@@ -135,6 +138,7 @@ impl Default for UiConfig {
         Self {
             density: "normal".into(),
             show_preview: true,
+            confirm_size_threshold: 2000,
         }
     }
 }
@@ -332,6 +336,27 @@ code = "fr"
         let cfg = Config::default();
         assert_eq!(cfg.ui.density, "normal");
         assert!(cfg.ui.show_preview);
+    }
+
+    #[test]
+    fn default_confirm_size_threshold_is_2000() {
+        let cfg = Config::default();
+        assert_eq!(cfg.ui.confirm_size_threshold, 2000);
+    }
+
+    #[test]
+    fn loads_confirm_size_threshold_override() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[ui]
+confirm_size_threshold = 5000
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.ui.confirm_size_threshold, 5000);
     }
 
     #[test]
