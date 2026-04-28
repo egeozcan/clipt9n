@@ -8,6 +8,7 @@ pub mod platform;
 pub mod secrets;
 pub mod state;
 pub mod translator;
+pub mod ui;
 
 use std::time::Duration;
 
