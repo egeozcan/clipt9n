@@ -6,6 +6,10 @@ use egui::{Color32, RichText, Sense, Stroke, Vec2};
 
 use crate::ui::theme;
 
+/// Maximum source-text length rendered in the preview block before
+/// truncation with ellipsis. Matches design's `slice(0, 200)`.
+const PREVIEW_MAX_CHARS: usize = 200;
+
 /// Hardcoded list per design `custom-prompt.jsx`. Order is meaningful
 /// (rendered left-to-right, wrapped). Edit only with design approval.
 pub const PRESETS: &[&str] = &[
@@ -40,13 +44,13 @@ pub enum CustomPromptOutcome {
     PresetPicked(usize),
 }
 
-/// Truncate clipboard text to ≤200 chars with an ellipsis, matching the
-/// design's `slice(0, 200) + "…"` rule.
+/// Truncate clipboard text to `PREVIEW_MAX_CHARS` chars with an ellipsis,
+/// matching the design's `slice(0, 200) + "…"` rule.
 pub fn preview_truncate(text: &str) -> String {
-    if text.chars().count() <= 200 {
+    if text.chars().count() <= PREVIEW_MAX_CHARS {
         text.to_string()
     } else {
-        let mut out: String = text.chars().take(200).collect();
+        let mut out: String = text.chars().take(PREVIEW_MAX_CHARS).collect();
         out.push('…');
         out
     }
@@ -105,17 +109,9 @@ pub fn draw(
                 // ----- Preset chips -----
                 ui.horizontal_wrapped(|ui| {
                     for (i, preset) in PRESETS.iter().enumerate() {
-                        let chip_resp = chip(ui, preset);
-                        if chip_resp.clicked() {
+                        if chip(ui, preset).clicked() {
                             clicked = Some(CustomPromptOutcome::PresetPicked(i));
                         }
-                        chip_resp.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                true,
-                                preset,
-                            )
-                        });
                     }
                 });
 
@@ -137,7 +133,7 @@ pub fn draw(
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
                         ui.label(
-                            RichText::new(if preview.is_empty() { " " } else { &preview })
+                            RichText::new(if preview.is_empty() { "\u{00A0}" } else { &preview })
                                 .color(theme::INK_2)
                                 .monospace()
                                 .size(12.0),
@@ -198,6 +194,8 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
         let bg = if response.hovered() {
             theme::PANEL_3
         } else {
+            // theme::PANEL_3 RGB at ~80% opacity — chips intentionally lighter
+            // than the solid panel below them to give a "raised pill" feel.
             Color32::from_rgba_unmultiplied(0x23, 0x27, 0x2f, 0xcc)
         };
         ui.painter().rect_filled(rect, 999.0, bg);
@@ -218,6 +216,9 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+    });
     response
 }
 
@@ -231,8 +232,11 @@ fn run_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
         .layout_no_wrap(label.into(), egui::FontId::proportional(12.5), theme::ACCENT_INK)
         .size();
     let desired = galley_size + padding * 2.0;
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, response) = ui.allocate_exact_size(desired, sense);
+    // Always click-sense: keyboard a11y requires that screen-reader users
+    // can land on the dimmed button and hear "Run custom prompt, dimmed"
+    // (encoded via widget_info's `enabled` arg). The `&& enabled` guard at
+    // the call site prevents the disabled state from emitting Submit.
+    let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
     if ui.is_rect_visible(rect) {
         let (bg, fg) = if !enabled {
             (theme::PANEL_3, theme::INK_3)
@@ -279,9 +283,9 @@ mod tests {
 
     #[test]
     fn preview_over_limit_truncates_with_ellipsis() {
-        let s = "x".repeat(300);
+        let s = "x".repeat(PREVIEW_MAX_CHARS + 100);
         let p = preview_truncate(&s);
-        assert_eq!(p.chars().count(), 201); // 200 + ellipsis
+        assert_eq!(p.chars().count(), PREVIEW_MAX_CHARS + 1); // truncated + ellipsis
         assert!(p.ends_with('…'));
     }
 
