@@ -15,6 +15,13 @@ pub trait Platform {
     fn ensure_hotkey_permissions(&self) -> Result<(), TranslateError> {
         Ok(())
     }
+
+    /// Whether the user has requested reduced motion at the OS level.
+    /// Default `false`. macOS implements via `defaults read -g NSReduceMotionEnabled`;
+    /// other OSes use the default until a per-platform query is added.
+    fn reduced_motion(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -54,5 +61,18 @@ mod tests {
         struct Stub;
         impl Platform for Stub {}
         assert!(Stub.ensure_hotkey_permissions().is_ok());
+    }
+
+    #[test]
+    fn default_reduced_motion_is_false() {
+        struct Stub;
+        impl Platform for Stub {}
+        assert!(!Stub.reduced_motion());
+    }
+
+    #[test]
+    fn current_platform_reduced_motion_does_not_panic() {
+        // Whatever the OS reports, we just need a clean call.
+        let _ = current().reduced_motion();
     }
 }
