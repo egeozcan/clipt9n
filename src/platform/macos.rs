@@ -38,6 +38,9 @@ impl Platform for MacOsPlatform {
     }
 
     fn reduced_motion(&self) -> bool {
+        // stderr is intentionally discarded: `domain ... does not exist` fires
+        // for users who have never toggled NSReduceMotionEnabled and is the
+        // expected case, not an error worth logging.
         match Command::new("defaults")
             .args(["read", "-g", "NSReduceMotionEnabled"])
             .output()
@@ -93,6 +96,8 @@ mod tests {
         assert!(!parse_reduce_motion_output(""));
     }
 
+    // Shells out to `defaults` on macOS; <50ms on real hardware but may slow
+    // or fail in sandboxed CI environments. Mark `#[ignore]` if that happens.
     #[test]
     fn macos_reduced_motion_does_not_panic() {
         let _ = MacOsPlatform.reduced_motion();

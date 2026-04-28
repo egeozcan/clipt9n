@@ -17,8 +17,9 @@ pub trait Platform {
     }
 
     /// Whether the user has requested reduced motion at the OS level.
-    /// Default `false`. macOS implements via `defaults read -g NSReduceMotionEnabled`;
-    /// other OSes use the default until a per-platform query is added.
+    /// Default `false`. macOS reads `defaults read -g NSReduceMotionEnabled`;
+    /// if the key is absent (most users) or the query fails, returns `false`.
+    /// Other OSes use the default until a per-platform query is added.
     fn reduced_motion(&self) -> bool {
         false
     }
@@ -70,6 +71,8 @@ mod tests {
         assert!(!Stub.reduced_motion());
     }
 
+    // Shells out to `defaults` on macOS; <50ms on real hardware but may slow
+    // or fail in sandboxed CI environments. Mark `#[ignore]` if that happens.
     #[test]
     fn current_platform_reduced_motion_does_not_panic() {
         // Whatever the OS reports, we just need a clean call.
