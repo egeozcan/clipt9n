@@ -105,6 +105,11 @@ pub fn draw(ctx: &egui::Context, model: &mut CustomPromptModel) -> Option<Custom
 
                 // ----- Preset chips -----
                 ui.horizontal_wrapped(|ui| {
+                    // Chips would otherwise butt up against each other since
+                    // window_frame's body sets item_spacing.x=0. Design says
+                    // gap: 5; using 6 to also give the focus ring breathing
+                    // room from neighboring chips.
+                    ui.style_mut().spacing.item_spacing.x = 6.0;
                     for (i, preset) in PRESETS.iter().enumerate() {
                         if chip(ui, preset).clicked() {
                             clicked = Some(CustomPromptOutcome::PresetPicked(i));
@@ -187,7 +192,10 @@ pub fn draw(ctx: &egui::Context, model: &mut CustomPromptModel) -> Option<Custom
     clicked
 }
 
-/// Render a single preset chip. Click selects it as the instruction text.
+/// Render a single preset chip. Click (or Enter/Space when keyboard-focused)
+/// selects it as the instruction text. Tab-focused chips get a distinct
+/// lime focus ring + faint accent background tint so keyboard users can
+/// see exactly where focus has landed.
 fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
     let galley_size = ui
         .painter()
@@ -196,8 +204,15 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
     let padding = Vec2::new(9.0, 3.0);
     let desired = galley_size + padding * 2.0;
     let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
+    let focused = response.has_focus();
+    let hovered = response.hovered();
     if ui.is_rect_visible(rect) {
-        let bg = if response.hovered() {
+        let bg = if focused {
+            // Faint lime tint so focus is unmistakable even before the
+            // outline reaches the user's eye. Mirrors the slot-row focus
+            // bg in `prompt.rs`.
+            Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x18)
+        } else if hovered {
             theme::PANEL_3
         } else {
             // theme::PANEL_3 RGB at ~80% opacity — chips intentionally lighter
@@ -205,10 +220,19 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
             Color32::from_rgba_unmultiplied(0x23, 0x27, 0x2f, 0xcc)
         };
         ui.painter().rect_filled(rect, 999.0, bg);
+        // Inside border: ACCENT @ 2px when focused, LINE @ 1px otherwise.
+        // We keep the stroke INSIDE the rect (rather than adding an outer
+        // ring) because the chips sit close together horizontally; an
+        // outside ring would overlap the next chip.
+        let (border_w, border_c) = if focused {
+            (2.0, theme::ACCENT)
+        } else {
+            (1.0, theme::LINE)
+        };
         ui.painter().rect_stroke(
             rect,
             999.0,
-            Stroke::new(1.0, theme::LINE),
+            Stroke::new(border_w, border_c),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
@@ -219,7 +243,7 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
             theme::INK_2,
         );
     }
-    if response.hovered() {
+    if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
