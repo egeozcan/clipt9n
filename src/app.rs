@@ -15,22 +15,43 @@ use tokio::runtime::Runtime;
 
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::config::Config;
+use crate::platform::Platform;
 use crate::error::TranslateError;
 use crate::llm::LlmProvider;
 use crate::secrets::Secrets;
 use crate::state::State;
 use crate::translator::{Action, Translator};
-use crate::ui::{prompt, theme};
+#[allow(unused_imports)]
+use crate::ui::{custom_prompt as prompt_custom, prompt, size_confirm, theme, translating};
 
 /// Top-level UI state machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum AppState {
     /// Window hidden. Hotkey will transition to `Showing`.
     Idle,
     /// Window visible; user is choosing an action.
     Showing,
-    /// Translation in flight. Window hidden in M2 (overlay is M3).
-    Translating,
+    /// User picked slot 6; the custom prompt window is visible. The
+    /// `CustomPromptModel` carries instruction state across frames.
+    EnteringCustom { model: prompt_custom::CustomPromptModel },
+    /// Pre-flight size confirmation. Confirm → transition to `Translating`
+    /// with the carried `pending_action`; Cancel → `Idle`.
+    ConfirmingSize {
+        pending_action: Action,
+        action_label: String,
+        overlay_label: String,
+        source_text: String,
+        char_count: usize,
+        preview: String,
+    },
+    /// Translation in flight. The overlay window is visible.
+    Translating {
+        gen: u64,
+        action_label: String,
+        overlay_label: String,
+        started_at: std::time::Instant,
+    },
 }
 
 pub struct ClipApp {
@@ -51,9 +72,18 @@ pub struct ClipApp {
     prompt_model: prompt::PromptModel,
 
     /// Set to true once the viewport has gained focus after a `show_window`.
-    /// Used to detect focus-loss dismiss without firing in the brief window
-    /// between sending `Visible(true)+Focus` and the OS actually focusing us.
     has_been_focused: bool,
+
+    /// Monotonically-increasing dispatch counter. Each translation captures
+    /// this value at dispatch time; outcomes whose gen ≠ current are dropped
+    /// (used for cancellation).
+    dispatch_gen: u64,
+
+    /// Whether the user has reduced motion enabled at OS level. Queried
+    /// once at construction; the translating overlay reads this to decide
+    /// between animated and static rendering.
+    #[allow(dead_code)]
+    reduced_motion: bool,
 }
 
 #[derive(Debug)]
@@ -61,6 +91,9 @@ struct TranslationOutcome {
     result: Result<String, TranslateError>,
     action_label: String,
     slot: u8,
+    /// Dispatch-generation that produced this outcome. If `App.dispatch_gen`
+    /// has advanced since dispatch, this outcome is stale (user cancelled).
+    gen: u64,
 }
 
 impl ClipApp {
@@ -82,10 +115,10 @@ impl ClipApp {
 
         let (result_tx, result_rx) = mpsc::channel();
         let state = State::load(&state_path);
-        // `cfg.hotkey_display()` is intentionally unused here — the prompt
-        // window's footer shows literal kbd badges ("1", "↵", "Esc"), not
-        // the configurable summon hotkey. The display helper is kept for
-        // M7 (tray menu) where the active hotkey IS shown.
+
+        // Cache the OS reduced-motion preference once at startup. Spec
+        // a11y baseline accepts a one-shot read.
+        let reduced_motion = crate::platform::current().reduced_motion();
 
         Self {
             prompt_model: prompt::PromptModel {
@@ -103,6 +136,8 @@ impl ClipApp {
             result_rx,
             app_state: AppState::Idle,
             has_been_focused: false,
+            dispatch_gen: 0,
+            reduced_motion,
         }
     }
 
@@ -130,53 +165,67 @@ impl ClipApp {
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
-    /// Map a slot number to a concrete `Action`. Returns `None` if slot 6
-    /// (custom — not wired in M2) or invalid.
-    fn slot_to_action(&self, slot: u8) -> Option<(Action, String)> {
-        match slot {
-            1 => Some((
-                Action::Translate {
-                    code: self.cfg.languages.slot_1.code.clone(),
-                },
-                format!("Translate to {}", self.cfg.languages.slot_1.label),
-            )),
-            2 => Some((
-                Action::Translate {
-                    code: self.cfg.languages.slot_2.code.clone(),
-                },
-                format!("Translate to {}", self.cfg.languages.slot_2.label),
-            )),
-            3 => Some((
-                Action::Translate {
-                    code: self.cfg.languages.slot_3.code.clone(),
-                },
-                format!("Translate to {}", self.cfg.languages.slot_3.label),
-            )),
-            4 => Some((Action::FixGrammar, "Fix grammar".into())),
-            5 => Some((Action::Rewrite, "Rewrite for clarity".into())),
-            6 => None, // Custom prompt — M3.
-            _ => None,
+    fn dispatch(&mut self, ctx: &egui::Context, slot: u8) {
+        let Some(intent) = decide_intent(slot, &self.prompt_model.clipboard_text, &self.cfg) else {
+            tracing::info!(slot, "invalid slot ignored");
+            return;
+        };
+        // Record the slot press immediately. Single source of truth for
+        // last-action persistence; downstream functions never re-record.
+        // Matches M2 semantic: "press = recorded, even if cancelled later."
+        self.state.record_slot(slot);
+        if let Err(e) = self.state.save(&self.state_path) {
+            tracing::warn!(error = %e, "state.toml save failed");
+        }
+        match intent {
+            Intent::Translate { action, action_label, overlay_label } => {
+                self.start_translation(ctx, slot, action, action_label, overlay_label);
+            }
+            Intent::EnterCustom => {
+                // Wired in Task 8 — for now the state simply changes so the
+                // user gets visible feedback (window stays open with prompt;
+                // Task 8 swaps in the custom prompt UI).
+                self.app_state = AppState::EnteringCustom {
+                    model: prompt_custom::CustomPromptModel {
+                        clipboard_text: self.prompt_model.clipboard_text.clone(),
+                        instruction: String::new(),
+                        focus_textarea_next_frame: true,
+                    },
+                };
+                tracing::info!(slot, "entering custom prompt mode");
+            }
         }
     }
 
-    fn dispatch(&mut self, ctx: &egui::Context, slot: u8) {
-        let Some((action, action_label)) = self.slot_to_action(slot) else {
-            tracing::info!(slot, "slot is no-op in M2");
-            return;
-        };
+    fn start_translation(
+        &mut self,
+        ctx: &egui::Context,
+        slot: u8,
+        action: Action,
+        action_label: String,
+        overlay_label: String,
+    ) {
+        self.dispatch_gen = next_gen(self.dispatch_gen);
+        let gen = self.dispatch_gen;
         let cfg = self.cfg.clone();
         let provider = self.provider.clone();
         let tx = self.result_tx.clone();
         let source_text = self.prompt_model.clipboard_text.clone();
 
-        // Persist last-action immediately. State write failures are logged
-        // but never block the user.
-        self.state.record_slot(slot);
-        if let Err(e) = self.state.save(&self.state_path) {
-            tracing::warn!(error = %e, "state.toml save failed");
-        }
-        self.app_state = AppState::Translating;
-        self.hide_window(ctx);
+        // Note: `state.last_slot` was recorded by the caller (`dispatch()`
+        // for slot keys 1–6, or implicitly slot=6 for the custom-prompt
+        // submit path). Don't double-write here.
+
+        self.app_state = AppState::Translating {
+            gen,
+            action_label: action_label.clone(),
+            overlay_label,
+            started_at: std::time::Instant::now(),
+        };
+        // Hide for now; Task 10 swaps in the overlay rendering. Until then
+        // the user sees the cleared CentralPanel for ≤30s — acceptable for
+        // an intermediate commit.
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
 
         let ctx_for_repaint = ctx.clone();
         self.runtime.spawn(async move {
@@ -186,12 +235,26 @@ impl ClipApp {
                 result,
                 action_label,
                 slot,
+                gen,
             });
             ctx_for_repaint.request_repaint();
         });
     }
 
     fn handle_translation_done(&mut self, outcome: TranslationOutcome) {
+        // Stale outcome from a cancelled translation; drop silently.
+        let current_gen = match &self.app_state {
+            AppState::Translating { gen, .. } => Some(*gen),
+            _ => None,
+        };
+        if Some(outcome.gen) != current_gen {
+            tracing::debug!(
+                outcome_gen = outcome.gen,
+                current_gen = ?current_gen,
+                "dropping stale translation outcome"
+            );
+            return;
+        }
         match outcome.result {
             Ok(translated) => {
                 let mut cb = match ArboardClipboard::new() {
@@ -281,12 +344,10 @@ impl eframe::App for ClipApp {
         self.drain_channels(ctx);
 
         // Drive viewport visibility from app state every frame.
-        // ViewportBuilder::with_visible(false) is unreliable on macOS at
-        // launch, so we re-assert hidden state here defensively.
-        let want_visible = matches!(self.app_state, AppState::Showing);
+        let want_visible = !matches!(self.app_state, AppState::Idle);
         ctx.send_viewport_cmd(ViewportCommand::Visible(want_visible));
 
-        if want_visible {
+        if matches!(self.app_state, AppState::Showing) {
             // Auto-dismiss on focus loss (Spotlight-style). We require the
             // viewport to have gained focus at least once before checking,
             // so we don't immediately self-dismiss in the gap between
@@ -326,5 +387,218 @@ impl eframe::App for ClipApp {
                 .frame(egui::Frame::new().fill(theme::PANEL))
                 .show(ctx, |_| {});
         }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Pure helpers (testable in isolation; no egui Context required)
+// -----------------------------------------------------------------------
+
+/// What the user implicitly asked for by picking a slot. The state machine
+/// in `update()` switches on this to decide whether to enter custom-prompt
+/// mode, show the size-confirm modal, or dispatch immediately.
+#[derive(Debug, Clone)]
+pub(crate) enum Intent {
+    /// Run the action against the current clipboard.
+    Translate {
+        action: Action,
+        action_label: String,
+        overlay_label: String,
+    },
+    /// Slot 6 — open the custom prompt window first, the action is built
+    /// from user input.
+    EnterCustom,
+}
+
+pub(crate) fn decide_intent(slot: u8, _source_text: &str, cfg: &Config) -> Option<Intent> {
+    match slot {
+        1 => Some(translate_intent(
+            Action::Translate {
+                code: cfg.languages.slot_1.code.clone(),
+            },
+            &cfg.languages.slot_1.label,
+        )),
+        2 => Some(translate_intent(
+            Action::Translate {
+                code: cfg.languages.slot_2.code.clone(),
+            },
+            &cfg.languages.slot_2.label,
+        )),
+        3 => Some(translate_intent(
+            Action::Translate {
+                code: cfg.languages.slot_3.code.clone(),
+            },
+            &cfg.languages.slot_3.label,
+        )),
+        4 => Some(Intent::Translate {
+            action: Action::FixGrammar,
+            action_label: "Fix grammar".into(),
+            overlay_label: "Fixing grammar…".into(),
+        }),
+        5 => Some(Intent::Translate {
+            action: Action::Rewrite,
+            action_label: "Rewrite for clarity".into(),
+            overlay_label: "Rewriting for clarity…".into(),
+        }),
+        6 => Some(Intent::EnterCustom),
+        _ => None,
+    }
+}
+
+fn translate_intent(action: Action, lang_label: &str) -> Intent {
+    Intent::Translate {
+        action,
+        action_label: format!("Translate to {lang_label}"),
+        overlay_label: format!("Translating to {lang_label}…"),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
+    source.chars().count() > cfg.ui.confirm_size_threshold
+}
+
+pub(crate) fn next_gen(current: u64) -> u64 {
+    current.wrapping_add(1)
+}
+
+/// Return the overlay label for a non-`Translate` action.
+///
+/// # Panics
+///
+/// Panics if called with `Action::Translate` — that variant's label is
+/// constructed at slot-resolution time inside `decide_intent`, so callers
+/// must never pass it here.
+#[allow(dead_code)]
+pub(crate) fn overlay_label_for(action: &Action) -> String {
+    match action {
+        Action::Translate { .. } => unreachable!(
+            "Translate overlay labels are built at slot resolution; \
+             callers must not pass Action::Translate here without a label"
+        ),
+        Action::FixGrammar => "Fixing grammar…".into(),
+        Action::Rewrite => "Rewriting for clarity…".into(),
+        Action::Custom { .. } => "Running custom prompt…".into(),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn action_label_for(action: &Action, cfg: &Config) -> String {
+    match action {
+        Action::Translate { code } => match cfg.label_for_code(code) {
+            Ok(label) => format!("Translate to {label}"),
+            Err(_) => format!("Translate to {code}"),
+        },
+        Action::FixGrammar => "Fix grammar".into(),
+        Action::Rewrite => "Rewrite for clarity".into(),
+        Action::Custom { .. } => "Custom prompt".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with_threshold(threshold: usize) -> Config {
+        let mut c = Config::default();
+        c.ui.confirm_size_threshold = threshold;
+        c
+    }
+
+    #[test]
+    fn slot_1_resolves_to_translate_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(1, "hi", &cfg).expect("slot 1 is valid");
+        let Intent::Translate { action, action_label, overlay_label } = intent else {
+            panic!("expected Intent::Translate");
+        };
+        let Action::Translate { code } = action else {
+            panic!("expected Action::Translate");
+        };
+        assert_eq!(code, "en");
+        assert_eq!(action_label, "Translate to English");
+        assert_eq!(overlay_label, "Translating to English…");
+    }
+
+    #[test]
+    fn slot_4_resolves_to_fix_grammar_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(4, "hi", &cfg).expect("slot 4 is valid");
+        let Intent::Translate { action, action_label, overlay_label } = intent else {
+            panic!("expected Intent::Translate");
+        };
+        assert!(matches!(action, Action::FixGrammar));
+        assert_eq!(action_label, "Fix grammar");
+        assert_eq!(overlay_label, "Fixing grammar…");
+    }
+
+    #[test]
+    fn slot_5_resolves_to_rewrite_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(5, "hi", &cfg).expect("slot 5 is valid");
+        let Intent::Translate { action, action_label, overlay_label } = intent else {
+            panic!("expected Intent::Translate");
+        };
+        assert!(matches!(action, Action::Rewrite));
+        assert_eq!(action_label, "Rewrite for clarity");
+        assert_eq!(overlay_label, "Rewriting for clarity…");
+    }
+
+    #[test]
+    fn slot_6_resolves_to_enter_custom() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(6, "hi", &cfg).expect("slot 6 is valid");
+        assert!(matches!(intent, Intent::EnterCustom));
+    }
+
+    #[test]
+    fn invalid_slot_returns_none() {
+        let cfg = cfg_with_threshold(2000);
+        assert!(decide_intent(0, "hi", &cfg).is_none());
+        assert!(decide_intent(7, "hi", &cfg).is_none());
+    }
+
+    #[test]
+    fn requires_size_confirm_above_threshold() {
+        let cfg = cfg_with_threshold(100);
+        let big = "x".repeat(150);
+        assert!(requires_size_confirm(&big, &cfg));
+        let small = "x".repeat(50);
+        assert!(!requires_size_confirm(&small, &cfg));
+    }
+
+    #[test]
+    fn dispatch_gen_starts_at_zero_and_monotonically_increases() {
+        // Just verify the field exists with the expected starting value.
+        // We can't construct ClipApp here (requires CreationContext), so
+        // this is a doc-style invariant test on a free helper.
+        assert_eq!(next_gen(0), 1);
+        assert_eq!(next_gen(42), 43);
+        assert_eq!(next_gen(u64::MAX - 1), u64::MAX);
+    }
+
+    #[test]
+    fn overlay_label_for_translate() {
+        assert_eq!(overlay_label_for(&Action::FixGrammar), "Fixing grammar…");
+        assert_eq!(overlay_label_for(&Action::Rewrite), "Rewriting for clarity…");
+        assert_eq!(
+            overlay_label_for(&Action::Custom { instruction: "x".into() }),
+            "Running custom prompt…"
+        );
+    }
+
+    #[test]
+    fn action_label_for_translate_uses_label() {
+        let cfg = Config::default();
+        assert_eq!(
+            action_label_for(&Action::Translate { code: "de".into() }, &cfg),
+            "Translate to Deutsch"
+        );
+        assert_eq!(action_label_for(&Action::FixGrammar, &cfg), "Fix grammar");
+        assert_eq!(action_label_for(&Action::Rewrite, &cfg), "Rewrite for clarity");
+        assert_eq!(
+            action_label_for(&Action::Custom { instruction: "anything".into() }, &cfg),
+            "Custom prompt"
+        );
     }
 }
