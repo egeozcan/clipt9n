@@ -88,7 +88,6 @@ pub struct ClipApp {
     /// Whether the user has reduced motion enabled at OS level. Queried
     /// once at construction; the translating overlay reads this to decide
     /// between animated and static rendering.
-    #[allow(dead_code)]
     reduced_motion: bool,
 }
 
@@ -248,10 +247,7 @@ impl ClipApp {
             overlay_label,
             started_at: std::time::Instant::now(),
         };
-        // Hide for now; Task 10 swaps in the overlay rendering. Until then
-        // the user sees the cleared CentralPanel for ≤30s — acceptable for
-        // an intermediate commit.
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        ctx.request_repaint();
 
         let ctx_for_repaint = ctx.clone();
         self.runtime.spawn(async move {
@@ -461,6 +457,49 @@ impl ClipApp {
         }
     }
 
+    fn update_translating(
+        &mut self,
+        ctx: &egui::Context,
+        gen: u64,
+        action_label: String,
+        overlay_label: String,
+        started_at: std::time::Instant,
+    ) {
+        // Tighter repaint cadence so the bar animates smoothly.
+        if !self.reduced_motion {
+            ctx.request_repaint_after(Duration::from_millis(translating::TICK_MS));
+        }
+
+        let model = translating::TranslatingModel {
+            overlay_label: overlay_label.clone(),
+            provider_model: self.cfg.provider.model.clone(),
+            elapsed: started_at.elapsed(),
+            reduced_motion: self.reduced_motion,
+        };
+        let click = translating::draw(ctx, &model);
+        let cancelled_by_key = ctx.input(|i| i.key_pressed(Key::Escape));
+
+        if click == Some(translating::TranslatingOutcome::Cancel) || cancelled_by_key {
+            // Bump gen so the in-flight outcome is dropped on arrival.
+            self.dispatch_gen = next_gen(self.dispatch_gen);
+            tracing::info!(
+                cancelled_gen = gen,
+                new_gen = self.dispatch_gen,
+                "user cancelled translation"
+            );
+            self.dismiss_to_idle(ctx);
+            return;
+        }
+
+        // No event — restore the state.
+        self.app_state = AppState::Translating {
+            gen,
+            action_label,
+            overlay_label,
+            started_at,
+        };
+    }
+
     fn handle_keys_showing(&mut self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
         ctx.input(|i| {
             if i.key_pressed(Key::Escape) {
@@ -552,14 +591,13 @@ impl eframe::App for ClipApp {
                     preview,
                 );
             }
-            AppState::Translating { gen, action_label, overlay_label, started_at } => {
-                // Restore — Task 10 wires the overlay rendering.
-                self.app_state = AppState::Translating {
-                    gen,
-                    action_label,
-                    overlay_label,
-                    started_at,
-                };
+            AppState::Translating {
+                gen,
+                action_label,
+                overlay_label,
+                started_at,
+            } => {
+                self.update_translating(ctx, gen, action_label, overlay_label, started_at);
             }
         }
     }
@@ -786,5 +824,18 @@ mod tests {
 
         assert!(!requires_size_confirm("short", &cfg));
         assert!(requires_size_confirm("this is definitely longer than ten characters", &cfg));
+    }
+
+    #[test]
+    fn cancellation_increments_gen_so_outcome_is_stale() {
+        // Simulates: dispatch at gen=N, user cancels (bump to N+1), outcome
+        // arrives tagged gen=N — must be considered stale.
+        let mut current = 5_u64;
+        let dispatched_gen = current;
+        current = next_gen(current);
+        // Outcome from the dispatched generation:
+        let outcome_gen = dispatched_gen;
+        // Stale check (mirrors handle_translation_done):
+        assert_ne!(current, outcome_gen);
     }
 }
