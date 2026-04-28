@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod config;
 pub mod error;
 pub mod llm;
+pub mod notify;
 pub mod platform;
 pub mod secrets;
 pub mod state;
