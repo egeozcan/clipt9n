@@ -240,55 +240,56 @@ fn draw_populated(
 
             ui.add_space(12.0);
             // ----- Footer -----
-            egui::Frame::new()
-                .stroke(Stroke {
-                    width: 1.0,
-                    color: theme::LINE_SOFT,
-                })
-                .show(ui, |ui| {
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        theme::kbd(ui, "1");
-                        ui.label(RichText::new("–").color(theme::INK_3).size(11.0));
-                        theme::kbd(ui, "6");
-                        ui.label(
-                            RichText::new("pick ·")
-                                .color(theme::INK_3)
-                                .monospace()
-                                .size(11.0),
-                        );
-                        theme::kbd(ui, "↵");
-                        let enter_label = if model.last_slot.is_some() {
-                            "repeat last ·"
-                        } else {
-                            "— ·"
-                        };
-                        ui.label(
-                            RichText::new(enter_label)
-                                .color(theme::INK_3)
-                                .monospace()
-                                .size(11.0),
-                        );
-                        theme::kbd(ui, "Esc");
-                        ui.label(
-                            RichText::new("cancel")
-                                .color(theme::INK_3)
-                                .monospace()
-                                .size(11.0),
-                        );
+            // Top-only border (matches design's `borderTop: "1px solid var(--line-soft)"`).
+            let sep_rect =
+                egui::Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 1.0));
+            ui.painter().hline(
+                sep_rect.x_range(),
+                sep_rect.center().y,
+                Stroke::new(1.0, theme::LINE_SOFT),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                theme::kbd(ui, "1");
+                ui.label(RichText::new("–").color(theme::INK_3).size(11.0));
+                theme::kbd(ui, "6");
+                ui.label(
+                    RichText::new("pick ·")
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(11.0),
+                );
+                theme::kbd(ui, "↵");
+                let enter_label = if model.last_slot.is_some() {
+                    "repeat last ·"
+                } else {
+                    "— ·"
+                };
+                ui.label(
+                    RichText::new(enter_label)
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(11.0),
+                );
+                theme::kbd(ui, "Esc");
+                ui.label(
+                    RichText::new("cancel")
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(11.0),
+                );
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if model.clipboard_text.chars().count() > 2000 {
-                                ui.label(
-                                    RichText::new("⚠ large paste")
-                                        .color(theme::WARN)
-                                        .monospace()
-                                        .size(11.0),
-                                );
-                            }
-                        });
-                    });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if model.clipboard_text.chars().count() > 2000 {
+                        ui.label(
+                            RichText::new("⚠ large paste")
+                                .color(theme::WARN)
+                                .monospace()
+                                .size(11.0),
+                        );
+                    }
                 });
+            });
         });
 }
 

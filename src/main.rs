@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
         520.0
     };
     let viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([inner_w, 540.0])
+        .with_inner_size([inner_w, 470.0])
         .with_decorations(false)
         .with_resizable(false)
         .with_transparent(false)
