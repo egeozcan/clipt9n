@@ -41,6 +41,9 @@ pub enum TranslateError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("glossary error: {0}")]
+    Glossary(String),
 }
 
 #[cfg(test)]
@@ -71,6 +74,10 @@ mod tests {
         assert_eq!(
             TranslateError::UnsupportedLanguage("fr".into()).to_string(),
             "unsupported language code 'fr'; add a slot to [languages] in config.toml"
+        );
+        assert_eq!(
+            TranslateError::Glossary("malformed entry at line 5".into()).to_string(),
+            "glossary error: malformed entry at line 5"
         );
     }
 }

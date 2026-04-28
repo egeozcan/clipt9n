@@ -4,6 +4,7 @@ pub mod app;
 pub mod clipboard;
 pub mod config;
 pub mod error;
+pub mod glossary;
 pub mod llm;
 pub mod notify;
 pub mod platform;

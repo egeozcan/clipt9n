@@ -26,6 +26,7 @@ minijinja = "2"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+whatlang = "0.16"
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 directories = "5"
 async-trait = "0.1"
