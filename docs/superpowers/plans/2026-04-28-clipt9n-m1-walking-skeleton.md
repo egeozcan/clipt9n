@@ -1504,7 +1504,10 @@ impl AnthropicProvider {
     }
 
     /// Tests inject custom backoffs to keep the test suite fast.
-    #[cfg(test)]
+    /// `#[doc(hidden)]` rather than `#[cfg(test)]` because integration tests
+    /// compile the library without the `test` cfg, so a `cfg(test)` method
+    /// would be invisible to `tests/retry_policy.rs`.
+    #[doc(hidden)]
     pub fn with_backoffs(mut self, backoffs: Vec<Duration>) -> Self {
         self.backoffs = backoffs;
         self
@@ -1877,7 +1880,10 @@ impl OpenAiCompatibleProvider {
         })
     }
 
-    #[cfg(test)]
+    /// Tests inject custom backoffs to keep the test suite fast.
+    /// `#[doc(hidden)]` (not `#[cfg(test)]`) so integration tests in `tests/`
+    /// can call this — those compile without `cfg(test)`.
+    #[doc(hidden)]
     pub fn with_backoffs(mut self, backoffs: Vec<Duration>) -> Self {
         self.backoffs = backoffs;
         self
