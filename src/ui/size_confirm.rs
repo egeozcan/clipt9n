@@ -147,10 +147,13 @@ fn confirm_button(ui: &mut egui::Ui) -> egui::Response {
         };
         ui.painter().rect_filled(rect, 6.0, bg);
         if response.has_focus() {
+            // Focus stroke uses ACCENT_INK (very dark) on the ACCENT
+            // background — high contrast for keyboard users. ACCENT-on-ACCENT
+            // would be nearly invisible.
             ui.painter().rect_stroke(
                 rect,
                 6.0,
-                Stroke::new(2.0, theme::ACCENT),
+                Stroke::new(2.0, theme::ACCENT_INK),
                 egui::StrokeKind::Outside,
             );
         }
@@ -191,6 +194,17 @@ fn cancel_button(ui: &mut egui::Ui) -> egui::Response {
             Stroke::new(1.0, theme::LINE),
             egui::StrokeKind::Inside,
         );
+        if response.has_focus() {
+            // ACCENT stroke on the dark PANEL_2/3 background is high-contrast
+            // and keyboard-visible. Without this, Tab landing on Cancel gives
+            // no visual feedback.
+            ui.painter().rect_stroke(
+                rect,
+                6.0,
+                Stroke::new(2.0, theme::ACCENT),
+                egui::StrokeKind::Outside,
+            );
+        }
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,

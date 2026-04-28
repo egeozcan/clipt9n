@@ -247,10 +247,15 @@ fn run_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
         };
         ui.painter().rect_filled(rect, 6.0, bg);
         if response.has_focus() {
+            // When the button is enabled (ACCENT background), use ACCENT_INK
+            // (very dark) for the focus stroke so keyboard users see a clear
+            // ring; ACCENT-on-ACCENT would be nearly invisible. When disabled
+            // (PANEL_3 background), ACCENT stroke is high-contrast.
+            let ring = if enabled { theme::ACCENT_INK } else { theme::ACCENT };
             ui.painter().rect_stroke(
                 rect,
                 6.0,
-                Stroke::new(2.0, theme::ACCENT),
+                Stroke::new(2.0, ring),
                 egui::StrokeKind::Outside,
             );
         }
