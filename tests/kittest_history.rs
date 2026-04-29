@@ -166,3 +166,155 @@ fn enter_inside_modal_emits_clear_all_via_keyboard_path() {
         "modal should auto-dismiss after keyboard activation"
     );
 }
+
+#[test]
+fn typing_into_search_field_propagates_to_model_query() {
+    use std::sync::{Arc, Mutex};
+
+    // Verifies the TextEdit binding contract: typing into the focused search
+    // field propagates the typed characters into model.query. This is the
+    // draw-layer prerequisite for the App layer's defense in
+    // handle_keys_history (app.rs:989-1001), which inspects egui::Event::Text
+    // events to suppress the global 's'/'d' shortcuts when the user is
+    // actively typing into search.
+    //
+    // ADAPTATION (kittest 0.31.1): The Role enum lives at `egui::accesskit::Role`
+    // (re-exported from accesskit via egui; egui_kittest does NOT re-export it).
+    // We focus the TextInput by accesskit role, then push a Text event into
+    // the input queue and assert model.query reflects the typed string.
+
+    let model = Arc::new(Mutex::new(HistoryModel {
+        entries: entries(2),
+        ..Default::default()
+    }));
+
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        let _ = draw(ctx, &mut m);
+    });
+
+    harness.run();
+
+    // Focus the TextEdit via its accesskit role.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.run();
+
+    // Type "smart" into the focused field by pushing a Text event.
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("smart".into()));
+    harness.run();
+
+    // The TextEdit's binding to `model.query` should have captured the text.
+    {
+        let m = model.lock().unwrap();
+        assert_eq!(
+            m.query, "smart",
+            "TextEdit binding should propagate typed text into model.query"
+        );
+        assert_eq!(m.entries.len(), 2, "entries should be unmodified");
+    }
+}
+
+#[test]
+fn typing_a_query_filters_the_list_and_clamps_selected() {
+    use std::sync::{Arc, Mutex};
+
+    let mut initial_entries = entries(5);
+    // Make one of them stand out so a filter actually narrows.
+    initial_entries[2] = fixture(3, "rewrite", "rewriting source", "the rewritten output");
+    initial_entries[4] = fixture(5, "rewrite", "another rewrite case", "..");
+
+    let model = Arc::new(Mutex::new(HistoryModel {
+        entries: initial_entries,
+        selected: 4, // out of range after filter
+        ..Default::default()
+    }));
+
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        let _ = draw(ctx, &mut m);
+    });
+
+    harness.run();
+
+    // Focus the TextEdit and type "rewr" into it. The viewer's draw applies
+    // the filter and clamps model.selected if it would exceed the new list length.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.run();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("rewr".into()));
+    harness.run();
+
+    // After filter, only 2 entries match. The viewer's draw clamps
+    // model.selected to 0 if it would otherwise exceed the filtered
+    // list length (lines 197-199 in history.rs).
+    {
+        let m = model.lock().unwrap();
+        assert_eq!(m.query, "rewr", "TextEdit should have captured typed text");
+        assert_eq!(
+            m.selected, 0,
+            "viewer should clamp out-of-range selected to 0 (not max), got {}",
+            m.selected
+        );
+    }
+}
+
+#[test]
+fn active_row_marker_renders_when_selected_changes() {
+    use std::sync::{Arc, Mutex};
+
+    // The viewer's draw does not react to arrow keys (the App layer's
+    // handle_keys_history does). This test pins the rendering contract:
+    // when the App mutates `selected`, the active-row marker (▸) appears
+    // somewhere in the tree, and the viewer renders without panic at
+    // both interior (1) and boundary (2) indices.
+
+    let model = Arc::new(Mutex::new(HistoryModel {
+        entries: entries(3),
+        selected: 0,
+        ..Default::default()
+    }));
+
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        let _ = draw(ctx, &mut m);
+    });
+
+    harness.run();
+
+    // Mutate selected to the boundary index (last row) — mirrors what
+    // the App layer would do on ArrowDown × 2.
+    {
+        let mut m = model.lock().unwrap();
+        m.selected = 2;
+    }
+    harness.run();
+
+    // Verify the active-row arrow marker ("▸") is visible when selected=2.
+    let has_marker = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("▸")
+    })).is_ok();
+    assert!(has_marker, "the active-row arrow marker should be visible");
+
+    // When selected=1 (interior index), verify rendering works without panic.
+    {
+        let mut m = model.lock().unwrap();
+        m.selected = 1;
+    }
+    harness.run();
+    {
+        let m = model.lock().unwrap();
+        assert_eq!(m.selected, 1);
+    }
+}
