@@ -73,6 +73,12 @@ enum AppState {
     SetupWizard {
         model: crate::ui::setup::SetupWizardModel,
     },
+    /// Hide-icon confirmation modal is open. The model carries the
+    /// active hotkey display so the modal can show users their actual
+    /// keyboard shortcut, not a hardcoded one.
+    ConfirmingTrayHide {
+        model: crate::ui::tray_modal::TrayHideModel,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -635,7 +641,9 @@ impl ClipApp {
             crate::tray::ID_HISTORY => self.summon_history(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
-            // Re-run wizard, Hide, Quit — wired in Tasks 7, 9.
+            crate::tray::ID_HIDE => self.dispatch_hide_tray_request(ctx),
+            crate::tray::ID_QUIT => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            // Re-run setup wizard — wired in Task 9.
             other => {
                 tracing::debug!(id = %other, "tray menu event (handler not yet wired)");
             }
@@ -672,6 +680,47 @@ impl ClipApp {
         };
         if let Err(e) = tx.send(()) {
             tracing::warn!(error = %e, "tray: reload glossary send failed");
+        }
+    }
+
+    fn dispatch_hide_tray_request(&mut self, ctx: &egui::Context) {
+        // Get the active hotkey display string. Falls back to a
+        // generic placeholder if the helper isn't available.
+        let hotkey_display = self.cfg.hotkey_display();
+        let model = crate::ui::tray_modal::TrayHideModel { hotkey_display };
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            crate::ui::tray_modal::TRAY_HIDE_MODAL_SIZE,
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        self.app_state = AppState::ConfirmingTrayHide { model };
+    }
+
+    fn update_confirming_tray_hide(
+        &mut self,
+        ctx: &egui::Context,
+        model: crate::ui::tray_modal::TrayHideModel,
+    ) {
+        let outcome = crate::ui::tray_modal::draw(ctx, &model);
+        match outcome {
+            Some(crate::ui::tray_modal::TrayHideOutcome::Cancel) => {
+                self.dismiss_to_idle(ctx);
+            }
+            Some(crate::ui::tray_modal::TrayHideOutcome::Confirm) => {
+                // Persist state, drop the tray, dismiss to idle.
+                self.state.tray.visible = false;
+                if let Err(e) = self.state.save(&self.state_path) {
+                    tracing::warn!(error = %e, "failed to persist tray.visible=false");
+                }
+                self.tray = None; // Drop = remove from menu bar
+                tracing::info!(
+                    "tray hidden via user confirmation; relaunch with --show-tray to restore"
+                );
+                self.dismiss_to_idle(ctx);
+            }
+            None => {
+                // Modal still open — re-store the state for next frame.
+                self.app_state = AppState::ConfirmingTrayHide { model };
+            }
         }
     }
 
@@ -1544,6 +1593,9 @@ impl eframe::App for ClipApp {
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
+            AppState::ConfirmingTrayHide { model } => {
+                self.update_confirming_tray_hide(ctx, model);
+            }
         }
 
         self.refresh_tray_status();

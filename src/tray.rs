@@ -107,6 +107,20 @@ impl TrayHandle {
         })
     }
 
+    /// Like `build`, but wraps construction in `catch_unwind`. On
+    /// panic, returns `Err(Internal("tray construction panicked"))`.
+    /// Use this from main.rs so a tray-side panic doesn't kill the
+    /// app — covers spec §8 "Tray crashed" row.
+    pub fn build_with_panic_isolation(initial_status: TrayStatus) -> Result<Self, TranslateError> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        match catch_unwind(AssertUnwindSafe(|| Self::build(initial_status))) {
+            Ok(result) => result,
+            Err(_) => Err(TranslateError::Internal(
+                "tray construction panicked; running without tray".into(),
+            )),
+        }
+    }
+
     fn build_menu() -> Result<Menu, TranslateError> {
         let menu = Menu::new();
         menu.append(&MenuItem::with_id(

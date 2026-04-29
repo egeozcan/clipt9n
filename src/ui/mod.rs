@@ -5,6 +5,7 @@ pub mod setup;
 pub mod size_confirm;
 pub mod theme;
 pub mod translating;
+pub mod tray_modal;
 
 use egui::Vec2;
 
