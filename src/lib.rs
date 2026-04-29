@@ -148,6 +148,20 @@ pub async fn run() -> Result<(), TranslateError> {
         }
     };
 
+    // History (M5): open if enabled. CLI mode never inserts; we open so
+    // a corrupt DB is surfaced at first user contact rather than
+    // silently failing on the first GUI translation.
+    if cfg.history.enabled {
+        let history_path = config_dir.join("history.db");
+        let keyfile_path = crate::history::crypto::default_keyfile_path(&config_dir);
+        if let Err(e) = crate::history::crypto::load_and_derive(&keyfile_path)
+            .and_then(|key| crate::history::store::History::open(&history_path, key))
+            .map(|_| ())
+        {
+            tracing::warn!(error = %e, "CLI history open failed (non-fatal)");
+        }
+    }
+
     // Test-only path: when CLIPT9N_TEST_INPUT is set, skip the real clipboard
     // and use it as source text. When CLIPT9N_TEST_PRINT_RESULT is set, print
     // the translated result to stdout instead of writing to the clipboard.

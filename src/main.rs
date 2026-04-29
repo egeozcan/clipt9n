@@ -61,6 +61,40 @@ fn main() -> anyhow::Result<()> {
     // the App (and its tokio runtime) exists.
     let (glossary_reload_tx, glossary_reload_rx) = crossbeam_channel::unbounded::<()>();
 
+    // Encrypted history (M5). Graceful: open failure → log warn + run
+    // with history disabled. Spec §8 corruption + missing-key rows.
+    let history_path = config_dir.join("history.db");
+    let keyfile_path = clipt9n::history::crypto::default_keyfile_path(&config_dir);
+    let (history, history_disabled_initial): (
+        Option<std::sync::Arc<clipt9n::history::store::History>>,
+        bool,
+    ) = if cfg.history.enabled {
+        match clipt9n::history::crypto::load_and_derive(&keyfile_path) {
+            Ok(key) => match clipt9n::history::store::History::open(&history_path, key) {
+                Ok(h) => (Some(std::sync::Arc::new(h)), false),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %history_path.display(),
+                        "history open failed; running with history disabled"
+                    );
+                    (None, true)
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %keyfile_path.display(),
+                    "history keyfile load failed; running with history disabled"
+                );
+                (None, true)
+            }
+        }
+    } else {
+        tracing::info!("history disabled by config; skipping open");
+        (None, false)
+    };
+
     // Platform precondition (Accessibility on macOS, no-op elsewhere).
     let plat = platform::current();
     if let Err(e) = plat.ensure_hotkey_permissions() {
@@ -149,9 +183,13 @@ fn main() -> anyhow::Result<()> {
                 glossary,
                 glossary_path,
                 glossary_reload_rx,
+                history,
+                history_disabled_initial,
                 secrets,
                 state_path,
                 hotkey_rx,
+                0,    // Task 11 will replace with real prompt hotkey id
+                None, // Task 11 will replace with real history hotkey id
             );
             app.install_glossary_reload(glossary_reload_tx);
             Ok(Box::new(app))

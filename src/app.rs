@@ -96,6 +96,39 @@ pub struct ClipApp {
     /// each time a reload is requested (Task 10 wires the sender).
     glossary_reload_rx: CrossbeamReceiver<()>,
 
+    /// Encrypted history store. `None` means history was disabled at
+    /// config time (`[history] enabled = false`) OR open failed at
+    /// startup. The `Arc<History>` lets worker tasks clone the handle
+    /// cheaply; `Option` is the "no store" shortcut. `#[allow(dead_code)]`
+    /// is temporary — Task 8 reads this in `schedule_history_insert`,
+    /// Task 10 reads it in `summon_history` / `update_showing_history`.
+    #[allow(dead_code)]
+    history: Option<std::sync::Arc<crate::history::store::History>>,
+
+    /// Set to true if history-side errors should short-circuit. Read
+    /// by the insert path (atomic check, no lock) and the viewer path
+    /// (which surfaces the corruption toast). The flag persists for
+    /// the life of the app — the user must restart after fixing the DB
+    /// to re-enable history.
+    #[allow(dead_code)]
+    history_disabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// Set to true the first time the corruption toast has been shown
+    /// to the user. Mirrors M4's "warned once per session" pattern.
+    #[allow(dead_code)]
+    history_warned: std::sync::atomic::AtomicBool,
+
+    /// `global-hotkey` ID for the prompt hotkey. Always set (the prompt
+    /// hotkey is always registered). `#[allow(dead_code)]` is temporary
+    /// — Task 10 reads this in `drain_channels` to route hotkey events.
+    #[allow(dead_code)]
+    prompt_hotkey_id: u32,
+    /// `global-hotkey` ID for the history hotkey. `None` if the user
+    /// disabled it via `[hotkey.history] enabled = false`. `#[allow(dead_code)]`
+    /// is temporary — Task 10 reads this in `drain_channels`.
+    #[allow(dead_code)]
+    history_hotkey_id: Option<u32>,
+
     app_state: AppState,
     prompt_model: prompt::PromptModel,
 
@@ -139,9 +172,13 @@ impl ClipApp {
         glossary: std::sync::Arc<std::sync::RwLock<crate::glossary::Glossary>>,
         glossary_path: PathBuf,
         glossary_reload_rx: CrossbeamReceiver<()>,
+        history: Option<std::sync::Arc<crate::history::store::History>>,
+        history_disabled_initial: bool,
         _secrets: Box<dyn Secrets>,
         state_path: PathBuf,
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
+        prompt_hotkey_id: u32,
+        history_hotkey_id: Option<u32>,
     ) -> Self {
         cc.egui_ctx.set_visuals(theme::visuals());
 
@@ -177,6 +214,13 @@ impl ClipApp {
             result_tx,
             result_rx,
             glossary_reload_rx,
+            history,
+            history_disabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                history_disabled_initial,
+            )),
+            history_warned: std::sync::atomic::AtomicBool::new(false),
+            prompt_hotkey_id,
+            history_hotkey_id,
             app_state: AppState::Idle,
             has_been_focused: false,
             initial_focus_pending: false,
