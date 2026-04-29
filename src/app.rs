@@ -537,10 +537,12 @@ impl ClipApp {
             }
             Err(crate::error::TranslateError::Provider { status: 401, .. }) => {
                 tracing::warn!("translation 401 — API key invalid; opening setup wizard");
-                // Surface to the tray status pill (ephemeral — next
-                // frame's compute_tray_status will return NoApiKey
-                // once we're in the wizard, but the user sees the
-                // amber pill briefly which is the right signal).
+                // Best-effort flip the tray pill to KeychainStaleKey.
+                // `refresh_tray_status()` runs later in the same update()
+                // frame; once we transition to SetupWizard below it sees
+                // `SetupWizard` and overwrites back to NoApiKey, so this
+                // flip is effectively a same-frame breadcrumb for the OS
+                // tray's event log rather than a user-visible state.
                 if let Some(tray) = self.tray.as_mut() {
                     if let Err(e) = tray.set_status(crate::tray::TrayStatus::Warn(
                         crate::tray::WarnReason::KeychainStaleKey,
@@ -783,12 +785,16 @@ impl ClipApp {
     /// Warn(AccessibilityPermissionRevoked) > Warn(HotkeyInUse) >
     /// Warn(GlossaryMalformed) > Ready.
     ///
-    /// Note: Warn(KeychainStaleKey) is not yet returned here; Task 9 will
-    /// add the corresponding state (likely a `keychain_stale_key: bool`
-    /// field or similar) and an arm before the accessibility check. Task 9's
-    /// direct `tray.set_status(KeychainStaleKey)` call from the 401 path is
-    /// ephemeral (overwritten on the next frame by NoApiKey once the
-    /// wizard state is entered).
+    /// Note: Warn(KeychainStaleKey) is intentionally NOT returned here.
+    /// The 401-stale-key surface lives in `handle_translation_done`'s
+    /// 401 arm, which directly calls `tray.set_status(KeychainStaleKey)`
+    /// then transitions to `AppState::SetupWizard`. The transition fires
+    /// `refresh_tray_status` later in the same frame, which sees
+    /// `SetupWizard` and overwrites the pill back to `NoApiKey` — so the
+    /// user effectively goes straight from `Ready` to `NoApiKey` with the
+    /// amber `KeychainStaleKey` flip overwritten before render. The wizard
+    /// auto-opening IS the user-visible signal; the pill flip is a
+    /// best-effort breadcrumb for the OS tray's event log.
     pub(crate) fn compute_tray_status(&self) -> crate::tray::TrayStatus {
         // Highest priority: missing API key (the wizard would be open
         // anyway, but tray status mirrors the underlying state).
