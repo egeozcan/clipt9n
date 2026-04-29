@@ -92,14 +92,17 @@ pub struct ClipApp {
     state_path: PathBuf,
     state: State,
 
-    /// Live LLM provider. Wrapped in `Option` so
-    /// `persist_setup_completion` can swap it after a successful
-    /// Save-and-start (M7 Task 10 — the Q6 brainstorming decision).
-    /// The `None` state is brief and only occurs in the unlikely race
-    /// where the wizard saves but build_provider fails post-save (the
-    /// wizard's Verify gate already proved the key works, so this is
-    /// near-impossible — but defensive). Translation dispatch sites
-    /// `.as_ref().expect(...)` with an informative panic message.
+    /// Live LLM provider, swappable so the wizard's Save-and-start can
+    /// replace it without a restart (M7 Task 10 — Q6 brainstorming).
+    ///
+    /// `None` only if `build_provider` failed after a Save-and-start
+    /// (near-impossible: the wizard's Verify gate already proved the
+    /// key works at the network level, so only a config-shape error
+    /// can cause this). When None, the wizard stays in
+    /// `WizardPhase::Error` and translation dispatch is unreachable
+    /// via normal UI flow — both the hotkey path and the tray
+    /// `ID_TRANSLATE` path gate on `AppState::Idle`. Translation
+    /// dispatch sites `.as_ref().expect(...)` rely on this invariant.
     provider: Option<std::sync::Arc<dyn LlmProvider>>,
 
     /// Compiled templates (built-in + user overrides). Immutable for the
@@ -435,7 +438,11 @@ impl ClipApp {
         let provider = self
             .provider
             .as_ref()
-            .expect("provider must be initialized; transient None state should never be observed by translation dispatch")
+            .expect(
+                "provider must be Some; None is unreachable from start_translation \
+                 (hotkey + tray ID_TRANSLATE both gate on AppState::Idle, which \
+                 implies the wizard completed successfully and provider was rebuilt)",
+            )
             .clone();
         let tx = self.result_tx.clone();
         let source_text = self.prompt_model.clipboard_text.clone();
@@ -668,7 +675,16 @@ impl ClipApp {
             return;
         }
         match id.as_str() {
-            crate::tray::ID_TRANSLATE => self.show_window(ctx),
+            crate::tray::ID_TRANSLATE => {
+                // Same gate as the hotkey path: only show the prompt from
+                // Idle. Otherwise, the user is mid-wizard / mid-history /
+                // mid-translate; bring focus to whatever's open.
+                if matches!(self.app_state, AppState::Idle) {
+                    self.show_window(ctx);
+                } else {
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+            }
             crate::tray::ID_HISTORY => self.summon_history(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),

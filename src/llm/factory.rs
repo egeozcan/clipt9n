@@ -1,17 +1,20 @@
 //! Provider construction factory. Single source of truth for building
 //! the configured `LlmProvider` from a `Config` + a freshly-resolved
-//! API key. Used by:
-//!   - `main.rs` at startup,
-//!   - `lib.rs::run` for the CLI mode.
+//! API key.
 //!
-//! Future consumers (planned for M7 Task 10): the live provider rebuild
-//! inside `app.rs::persist_setup_completion` will route through here so
-//! the wizard's Save-and-start can replace the running provider without
-//! a restart. The wizard's `spawn_sample_translation_check` may also
-//! migrate, but that path uses the per-provider default base URL (not
-//! `cfg.provider.base_url`), so it would require either a config-clone
-//! at the call site or an `Option<&str>` base-URL override parameter
-//! here — design TBD when Task 10 lands.
+//! Used by:
+//!   - `main.rs` at startup,
+//!   - `lib.rs::run` for the CLI mode,
+//!   - `app.rs::persist_setup_completion` for the live provider
+//!     rebuild after the wizard's Save-and-start (M7 Task 10).
+//!
+//! NOT (yet) used by `app.rs::spawn_sample_translation_check` because
+//! that path uses the per-provider default base URL (from
+//! `setup::default_base_url`), not `cfg.provider.base_url`. Migrating
+//! that call site would require either a config-clone or an
+//! `Option<&str>` base-URL override parameter on this fn — left as a
+//! follow-up since the wizard's Verify check is structurally distinct
+//! from the runtime construction.
 
 use std::sync::Arc;
 use std::time::Duration;
