@@ -159,33 +159,45 @@ fn setup_wizard_show_hide_key_button_has_accessible_label() {
     });
     harness.run();
 
-    // "show" button must be queryable by label.
-    let show_ok = std::panic::catch_unwind(AssertUnwindSafe(|| harness.get_by_label("show")));
+    // The button's AccessKit label is the descriptive hover text (set via
+    // widget_info), not the short visible token. Screen readers announce
+    // the button's purpose rather than just "show" / "hide".
+    let show_ok = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        harness.get_by_label("Show key (reveal as plain text)")
+    }));
     assert!(
         show_ok.is_ok(),
-        "show button should be findable by AccessKit label"
+        "show-mode button should expose the descriptive AccessKit label"
     );
 
-    // Flip to show_key=true → button text becomes "hide".
+    // Flip to show_key=true → AccessKit label becomes the hide-mode wording.
     {
         let mut m = model.lock().unwrap();
         m.show_key = true;
     }
     harness.run();
 
-    let hide_ok = std::panic::catch_unwind(AssertUnwindSafe(|| harness.get_by_label("hide")));
+    let hide_ok = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        harness.get_by_label("Hide key (mask as password)")
+    }));
     assert!(
         hide_ok.is_ok(),
-        "hide button should be findable by AccessKit label"
+        "hide-mode button should expose the descriptive AccessKit label"
     );
 }
 
 // ── Step 3: History search field is discoverable ─────────────────────────────
 
-/// After the M7.B hint_text update, the history search TextEdit carries
-/// "Search history" as its hint. The field should be findable by its role.
+/// After M7.B's widget_info backfill, the history search TextEdit exposes
+/// "Search history" as its explicit AccessKit label (set via widget_info).
+/// Without that call the TextEdit would only expose its hint_text or be
+/// unlabeled in the AccessKit tree — this test gates on the new behavior.
+/// The Role::TextInput-only check was removed: egui's TextEdit always
+/// emits that role regardless of M7.B, so it's not a useful gate.
+/// The typing-binding test was removed: kittest_history.rs already covers
+/// that contract; duplicating it here adds no signal.
 #[test]
-fn history_search_field_is_queryable_by_role() {
+fn history_search_field_exposes_explicit_accesskit_label() {
     use clipt9n::ui::history::{draw, HistoryModel};
 
     let model = Arc::new(Mutex::new(HistoryModel::default()));
@@ -196,44 +208,11 @@ fn history_search_field_is_queryable_by_role() {
     });
     harness.run();
 
-    // The TextEdit should be findable by its AccessKit role.
-    let found = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        harness.get_by_role(egui::accesskit::Role::TextInput)
-    }));
+    let probe =
+        std::panic::catch_unwind(AssertUnwindSafe(|| harness.get_by_label("Search history")));
     assert!(
-        found.is_ok(),
-        "history search TextInput should be present in AccessKit tree"
-    );
-}
-
-/// The history search field hint text updated to "Search history" in M7.B.
-/// Typing into it still propagates to model.query (regression against Step 3 change).
-#[test]
-fn history_search_field_typing_still_propagates_after_hint_update() {
-    use clipt9n::ui::history::{draw, HistoryModel};
-
-    let model = Arc::new(Mutex::new(HistoryModel::default()));
-    let model_clone = Arc::clone(&model);
-    let mut harness = Harness::new(move |ctx| {
-        let mut m = model_clone.lock().unwrap();
-        let _ = draw(ctx, &mut m);
-    });
-    harness.run();
-
-    harness
-        .get_by_role(egui::accesskit::Role::TextInput)
-        .focus();
-    harness.run();
-    harness
-        .input_mut()
-        .events
-        .push(egui::Event::Text("hello".into()));
-    harness.run();
-
-    let m = model.lock().unwrap();
-    assert_eq!(
-        m.query, "hello",
-        "typing into search field should still update model.query after hint_text update"
+        probe.is_ok(),
+        "history search field should expose the AccessKit label 'Search history'"
     );
 }
 
@@ -313,4 +292,29 @@ fn size_confirm_buttons_have_accessible_labels() {
             "size-confirm '{label}' button should be findable by AccessKit label"
         );
     }
+}
+
+/// The tray-confirm modal disables egui::Window's default `fade_in` (the
+/// Area-level alpha animation) so reduced-motion users don't see a fade
+/// when the hide-icon dialog opens. This test asserts the modal still
+/// paints correctly and exposes its title — i.e., the fade_in(false)
+/// addition didn't break rendering.
+#[test]
+fn tray_modal_renders_without_animation_for_reduced_motion() {
+    use clipt9n::ui::tray_modal::{draw, TrayHideModel};
+
+    let model = TrayHideModel {
+        hotkey_display: "⌘⇧T".into(),
+    };
+    let mut harness = Harness::new(move |ctx| {
+        let _ = draw(ctx, &model);
+    });
+    harness.run();
+
+    let probe =
+        std::panic::catch_unwind(AssertUnwindSafe(|| harness.get_by_label("Hide tray icon?")));
+    assert!(
+        probe.is_ok(),
+        "tray modal title should render with fade_in disabled"
+    );
 }

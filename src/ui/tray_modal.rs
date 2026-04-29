@@ -36,6 +36,12 @@ pub fn draw(ctx: &egui::Context, model: &TrayHideModel) -> Option<TrayHideOutcom
         .resizable(false)
         .collapsible(false)
         .title_bar(false)
+        // Reduced-motion: egui::Window's default `fade_in: true` (via Area)
+        // would alpha-fade the modal in over ctx.style().animation_time.
+        // The fade adds nothing here (the dimmed backdrop signals modal
+        // appearance instantly) and creates an inconsistency vs. the other
+        // modals which have no animation. Always-suppress.
+        .fade_in(false)
         .frame(
             egui::Frame::new()
                 .fill(theme::PANEL)

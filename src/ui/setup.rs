@@ -315,13 +315,16 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
             } else {
                 "Show key (reveal as plain text)"
             };
-            // AccessKit: provide a descriptive label so screen readers announce
-            // the button's purpose rather than just "show" / "hide".
+            // AccessKit: use the descriptive hover_text as the widget label so
+            // screen readers announce the button's purpose ("Show key (reveal as
+            // plain text)" / "Hide key (mask as password)") rather than the
+            // short visible toggle token. The visible button text stays "show"/
+            // "hide" for sighted users; the AccessKit label and the tooltip
+            // both surface the descriptive form.
             // `on_hover_text` takes self, so we check clicked() before calling it.
             let toggle_resp = ui.button(RichText::new(toggle_label).monospace().size(11.0));
-            let toggle_label_owned = toggle_label.to_string();
             toggle_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &toggle_label_owned)
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hover_text)
             });
             let key_toggled = toggle_resp.clicked();
             toggle_resp.on_hover_text(hover_text);

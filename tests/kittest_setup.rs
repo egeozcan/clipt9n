@@ -145,40 +145,14 @@ fn show_hide_toggle_flips_show_key_flag() {
         assert!(!m.show_key, "default is hidden");
     }
 
-    // The show/hide toggle is rendered as a Button widget.
-    // Try .click() first; if it doesn't work, we fall back to raw pixel events.
-    let button_clicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        harness.get_by_label("show").click();
-    }));
-
-    if button_clicked.is_err() {
-        // Fallback: raw pixel events on the "show" button's bounds
-        let label_node = harness.get(by().label("show").include_labels());
-        let bounds = label_node
-            .raw_bounds()
-            .expect("'show' button must have raw_bounds after layout");
-        let center = egui::Pos2::new(
-            ((bounds.x0 + bounds.x1) / 2.0) as f32,
-            ((bounds.y0 + bounds.y1) / 2.0) as f32,
-        );
-        let modifiers = egui::Modifiers::default();
-        {
-            let input = harness.input_mut();
-            input.events.push(egui::Event::PointerMoved(center));
-            input.events.push(egui::Event::PointerButton {
-                pos: center,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers,
-            });
-            input.events.push(egui::Event::PointerButton {
-                pos: center,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers,
-            });
-        }
-    }
+    // M7.B: the show/hide toggle's AccessKit label is the descriptive
+    // hover_text, not the short "show"/"hide" toggle token. The Button
+    // is now directly clickable via .click() — no raw-pixel fallback
+    // needed since the Button itself (not an inner Label node) is the
+    // primary AccessKit target.
+    harness
+        .get_by_label("Show key (reveal as plain text)")
+        .click();
 
     harness.run();
     {
@@ -186,13 +160,15 @@ fn show_hide_toggle_flips_show_key_flag() {
         assert!(m.show_key, "show button must reveal the key");
     }
 
-    // Now toggle back to hidden.
+    // Now toggle back to hidden — the AccessKit label flips with show_key.
     let button_clicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        harness.get_by_label("hide").click();
+        harness.get_by_label("Hide key (mask as password)").click();
     }));
 
     if button_clicked.is_err() {
-        // Fallback: raw pixel events on the "hide" button's bounds
+        // Defensive fallback: raw pixel events on the inner "hide"
+        // visible-text label. egui keeps that as a child Label node
+        // even after the parent Button's widget_info override.
         let label_node = harness.get(by().label("hide").include_labels());
         let bounds = label_node
             .raw_bounds()
