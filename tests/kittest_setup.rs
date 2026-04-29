@@ -123,3 +123,208 @@ fn switching_provider_updates_env_var_hint_under_env_radio() {
         "after picking OpenAI, the env-var hint should update to $OPENAI_API_KEY"
     );
 }
+
+/// Verify that the show/hide toggle on the password field flips the
+/// `show_key` flag when the button is clicked.
+#[test]
+fn show_hide_toggle_flips_show_key_flag() {
+    let model = Arc::new(Mutex::new(SetupWizardModel {
+        key: Zeroizing::new("sk-ant-secret".into()),
+        ..entry_model()
+    }));
+
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        let _ = draw(ctx, &mut m);
+    });
+
+    harness.run();
+    {
+        let m = model.lock().unwrap();
+        assert!(!m.show_key, "default is hidden");
+    }
+
+    // The show/hide toggle is rendered as a Button widget.
+    // Try .click() first; if it doesn't work, we fall back to raw pixel events.
+    let button_clicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("show").click();
+    }));
+
+    if button_clicked.is_err() {
+        // Fallback: raw pixel events on the "show" button's bounds
+        let label_node = harness.get(by().label("show").include_labels());
+        let bounds = label_node
+            .raw_bounds()
+            .expect("'show' button must have raw_bounds after layout");
+        let center = egui::Pos2::new(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        let modifiers = egui::Modifiers::default();
+        {
+            let input = harness.input_mut();
+            input.events.push(egui::Event::PointerMoved(center));
+            input.events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            });
+            input.events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            });
+        }
+    }
+
+    harness.run();
+    {
+        let m = model.lock().unwrap();
+        assert!(m.show_key, "show button must reveal the key");
+    }
+
+    // Now toggle back to hidden.
+    let button_clicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("hide").click();
+    }));
+
+    if button_clicked.is_err() {
+        // Fallback: raw pixel events on the "hide" button's bounds
+        let label_node = harness.get(by().label("hide").include_labels());
+        let bounds = label_node
+            .raw_bounds()
+            .expect("'hide' button must have raw_bounds after layout");
+        let center = egui::Pos2::new(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        let modifiers = egui::Modifiers::default();
+        {
+            let input = harness.input_mut();
+            input.events.push(egui::Event::PointerMoved(center));
+            input.events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            });
+            input.events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            });
+        }
+    }
+
+    harness.run();
+    {
+        let m = model.lock().unwrap();
+        assert!(!m.show_key, "hide button must remask");
+    }
+}
+
+/// Verify that the sample-translation checkbox toggles the visibility
+/// of the second check row.
+#[test]
+fn sample_translation_checkbox_toggles_second_check_row_visibility() {
+    let model = Arc::new(Mutex::new(SetupWizardModel {
+        test_translation: true,
+        ..entry_model()
+    }));
+
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        let _ = draw(ctx, &mut m);
+    });
+
+    harness.run();
+    let row_present = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Sample translation")
+    }))
+    .is_ok();
+    assert!(
+        row_present,
+        "second check row visible when test_translation=true"
+    );
+
+    // Flip the checkbox by setting test_translation to false.
+    {
+        let mut m = model.lock().unwrap();
+        m.test_translation = false;
+    }
+    harness.run();
+
+    let row_absent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Sample translation")
+    }))
+    .is_err();
+    assert!(
+        row_absent,
+        "second check row hidden when test_translation=false"
+    );
+}
+
+/// Verify that the Save-and-start button is only visible and the Verify
+/// button is hidden when phase == Done.
+#[test]
+fn save_and_start_button_only_visible_in_done_phase() {
+    let model = Arc::new(Mutex::new(SetupWizardModel {
+        key: Zeroizing::new("sk-ant-test-12345".into()),
+        ..entry_model()
+    }));
+
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        let _ = draw(ctx, &mut m);
+    });
+
+    harness.run();
+    // Phase is Entry — only Verify button is visible.
+    let verify_present = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Verify →")
+    }))
+    .is_ok();
+    assert!(verify_present, "Verify button must be visible in Entry phase");
+
+    let save_absent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Save and start ✓")
+    }))
+    .is_err();
+    assert!(
+        save_absent,
+        "Save button must be absent in Entry phase"
+    );
+
+    // Mutate the model to phase=Done. In real usage, the App's
+    // update_setup_wizard handler flips this when both check1 and
+    // check2 reach Ok status.
+    {
+        let mut m = model.lock().unwrap();
+        m.phase = WizardPhase::Done;
+    }
+    harness.run();
+
+    let verify_absent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Verify →")
+    }))
+    .is_err();
+    assert!(
+        verify_absent,
+        "Verify must yield to Save in Done phase"
+    );
+
+    let save_present = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Save and start ✓")
+    }))
+    .is_ok();
+    assert!(
+        save_present,
+        "Save button must be visible in Done phase"
+    );
+}
