@@ -8,7 +8,7 @@ use clipt9n::llm::anthropic::AnthropicProvider;
 use clipt9n::llm::openai::OpenAiCompatibleProvider;
 use clipt9n::llm::LlmProvider;
 use clipt9n::platform::{self, Platform};
-use clipt9n::secrets::{EnvSecrets, Secrets};
+use clipt9n::secrets::Secrets;
 use clipt9n::Cli;
 use directories::ProjectDirs;
 use eframe::NativeOptions;
@@ -105,7 +105,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Secrets resolution (M1 behavior: env-var only).
-    let secrets: Box<dyn Secrets> = Box::new(EnvSecrets::new(cfg.provider.api_key.env_var.clone()));
+    let secrets: Box<dyn Secrets> = clipt9n::secrets::resolve(&cfg.provider.api_key);
     let api_key = secrets.get_api_key()?;
     let timeout = std::time::Duration::from_secs(cfg.provider.timeout_seconds);
 

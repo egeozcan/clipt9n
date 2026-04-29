@@ -47,6 +47,9 @@ pub enum TranslateError {
 
     #[error("history error: {0}")]
     History(String),
+
+    #[error("setup wizard error: {0}")]
+    SetupWizard(String),
 }
 
 #[cfg(test)]
@@ -85,6 +88,10 @@ mod tests {
         assert_eq!(
             TranslateError::History("encrypted db unreadable".into()).to_string(),
             "history error: encrypted db unreadable"
+        );
+        assert_eq!(
+            TranslateError::SetupWizard("keychain unavailable".into()).to_string(),
+            "setup wizard error: keychain unavailable"
         );
     }
 }

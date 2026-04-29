@@ -1,16 +1,31 @@
-//! API key resolution. M1 implements env-var lookup only. M6 adds keychain
-//! (preferred) → env-var → setup-wizard fallback chain via the same `Secrets`
-//! trait surface.
+//! API key resolution. M1 implemented env-var lookup only; M6 adds the
+//! keychain (preferred) → env-var → setup-wizard fallback chain. The
+//! trait is the seam: `EnvSecrets` reads from process env vars only;
+//! `KeychainSecrets` reads from / writes to the OS keychain via the
+//! `keyring` crate (cross-platform: macOS Keychain Services, Windows
+//! Credential Manager, Linux Secret Service).
 
 use zeroize::Zeroizing;
 
+use crate::config::ApiKeyConfig;
 use crate::error::TranslateError;
 
 pub trait Secrets: Send + Sync {
-    /// Resolve the API key. Returned in a `Zeroizing<String>` so it's wiped
-    /// from memory on drop (defense-in-depth; not a substitute for keychain
-    /// storage, which lands in M6).
+    /// Resolve the API key. Returned in `Zeroizing<String>` so the
+    /// memory is wiped on drop (defense-in-depth; not a substitute for
+    /// keychain storage).
     fn get_api_key(&self) -> Result<Zeroizing<String>, TranslateError>;
+
+    /// Persist the API key. For `EnvSecrets` this returns an error
+    /// (env vars are read-only from our perspective). For
+    /// `KeychainSecrets`, writes to the OS keychain.
+    fn set_api_key(&self, key: Zeroizing<String>) -> Result<(), TranslateError>;
+
+    /// Whether the underlying keychain is reachable on this platform.
+    /// `EnvSecrets` always returns false. `KeychainSecrets` probes by
+    /// attempting `Entry::get_password()`; treats `Err(NoEntry)` as
+    /// "available, no entry yet" and any other `Err` as "unavailable".
+    fn keychain_available(&self) -> bool;
 }
 
 /// Reads an API key from a configured environment variable.
@@ -34,17 +49,109 @@ impl Secrets for EnvSecrets {
                 env_var: self.env_var.clone(),
             })
     }
+
+    fn set_api_key(&self, _key: Zeroizing<String>) -> Result<(), TranslateError> {
+        // Env-var-backed Secrets are read-only from our perspective —
+        // the user sets the var in their shell. The wizard's "Save and
+        // start" path with storage=Env writes a hint to README rather
+        // than calling this method. If something does call it, surface
+        // a clear error so it's debuggable.
+        Err(TranslateError::SetupWizard(
+            "env-secrets are read-only; cannot persist key — \
+             user must set the env var manually"
+                .into(),
+        ))
+    }
+
+    fn keychain_available(&self) -> bool {
+        false
+    }
+}
+
+/// Reads / writes the API key from the OS keychain via the `keyring`
+/// crate. Cross-platform: macOS Keychain Services, Windows Credential
+/// Manager, Linux Secret Service. Service + account are configured in
+/// `[provider.api_key]` (`service` + `account` fields).
+pub struct KeychainSecrets {
+    service: String,
+    account: String,
+}
+
+impl KeychainSecrets {
+    pub fn new(service: impl Into<String>, account: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+            account: account.into(),
+        }
+    }
+
+    fn entry(&self) -> Result<keyring::Entry, TranslateError> {
+        keyring::Entry::new(&self.service, &self.account).map_err(|e| {
+            TranslateError::SetupWizard(format!(
+                "keychain entry construction failed for service={} account={}: {e}",
+                self.service, self.account
+            ))
+        })
+    }
+}
+
+impl Secrets for KeychainSecrets {
+    fn get_api_key(&self) -> Result<Zeroizing<String>, TranslateError> {
+        let entry = self.entry()?;
+        match entry.get_password() {
+            Ok(s) => Ok(Zeroizing::new(s)),
+            Err(keyring::Error::NoEntry) => Err(TranslateError::MissingApiKey {
+                env_var: format!("(keychain service={} account={})", self.service, self.account),
+            }),
+            Err(e) => Err(TranslateError::SetupWizard(format!(
+                "keychain read failed: {e}"
+            ))),
+        }
+    }
+
+    fn set_api_key(&self, key: Zeroizing<String>) -> Result<(), TranslateError> {
+        let entry = self.entry()?;
+        entry
+            .set_password(&key)
+            .map_err(|e| TranslateError::SetupWizard(format!("keychain write failed: {e}")))
+    }
+
+    fn keychain_available(&self) -> bool {
+        // Probe with a known-disposable account. Reading a non-
+        // existent entry returns `Err(NoEntry)` on a healthy keychain;
+        // any other error means the platform's keychain is actually
+        // unreachable (e.g., Linux without Secret Service).
+        let probe = match keyring::Entry::new(&self.service, "_clipt9n_probe") {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+        match probe.get_password() {
+            Ok(_) => true,
+            Err(keyring::Error::NoEntry) => true,
+            Err(_) => false,
+        }
+    }
+}
+
+/// Construct the `Secrets` impl matching `cfg.provider.api_key.source`.
+/// "keychain" → KeychainSecrets; "env" or anything else → EnvSecrets.
+/// "prompt" is treated as "env" until M7's tray-menu rewires it; the
+/// wizard handles first-launch separately via main.rs detection.
+pub fn resolve(cfg: &ApiKeyConfig) -> Box<dyn Secrets> {
+    match cfg.source.as_str() {
+        "keychain" => Box::new(KeychainSecrets::new(&cfg.service, &cfg.account)),
+        _ => Box::new(EnvSecrets::new(cfg.env_var.clone())),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // These tests touch process-global env state. They each use a unique
-    // variable name to avoid interfering with each other when run in parallel.
+    // Process-global env state — each test uses a unique var name.
 
     #[test]
-    fn returns_value_when_env_var_set() {
+    fn env_returns_value_when_set() {
         let var = "CLIPT9N_TEST_KEY_PRESENT";
         std::env::set_var(var, "sk-test-12345");
         let s = EnvSecrets::new(var);
@@ -54,15 +161,32 @@ mod tests {
     }
 
     #[test]
-    fn returns_error_when_env_var_missing() {
+    fn env_returns_error_when_missing() {
         let var = "CLIPT9N_TEST_KEY_ABSENT";
         std::env::remove_var(var);
         let s = EnvSecrets::new(var);
-        let err = s.get_api_key().unwrap_err();
-        match err {
+        match s.get_api_key().unwrap_err() {
             TranslateError::MissingApiKey { env_var } => assert_eq!(env_var, var),
             other => panic!("expected MissingApiKey, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn env_set_api_key_returns_setup_wizard_error() {
+        let s = EnvSecrets::new("CLIPT9N_TEST_KEY_SET_ATTEMPT");
+        let err = s
+            .set_api_key(Zeroizing::new("ignored".to_string()))
+            .unwrap_err();
+        match err {
+            TranslateError::SetupWizard(msg) => assert!(msg.contains("read-only")),
+            other => panic!("expected SetupWizard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_keychain_available_is_false() {
+        let s = EnvSecrets::new("CLIPT9N_TEST_KEY_AVAIL");
+        assert!(!s.keychain_available());
     }
 
     #[test]
@@ -71,8 +195,56 @@ mod tests {
         std::env::set_var(var, "secret");
         let s = EnvSecrets::new(var);
         let _key: Zeroizing<String> = s.get_api_key().unwrap();
-        // Type-level assertion: if `_key` weren't `Zeroizing<String>`, the let
-        // binding above would fail to compile.
         std::env::remove_var(var);
+    }
+
+    #[test]
+    fn resolve_picks_env_for_default_source() {
+        let cfg = ApiKeyConfig::default(); // source = "env"
+        let s = resolve(&cfg);
+        // Type-level check: get_api_key() is callable; we can't downcast
+        // a `Box<dyn Secrets>` without `Any`, so verify behaviorally —
+        // an env-backed Secrets always returns false from
+        // keychain_available().
+        assert!(!s.keychain_available());
+    }
+
+    #[test]
+    fn resolve_picks_keychain_for_keychain_source() {
+        let cfg = ApiKeyConfig {
+            source: "keychain".into(),
+            service: "clipt9n-test".into(),
+            account: "test-account".into(),
+            env_var: "irrelevant".into(),
+        };
+        let s = resolve(&cfg);
+        // KeychainSecrets::keychain_available probes the actual OS
+        // keychain. On a dev macOS this is true; in CI it may be
+        // false depending on the runner's Keychain availability.
+        // We don't assert the value — just that the call doesn't
+        // panic. The behavioral test is in Task 11's manual smoke.
+        let _ = s.keychain_available();
+    }
+
+    // KeychainSecrets read-write integration — opt-in via
+    // CLIPT9N_KEYCHAIN_INTEGRATION=1 env so unit-test runs in CI
+    // don't pollute the developer's keychain. Run manually with:
+    //   CLIPT9N_KEYCHAIN_INTEGRATION=1 cargo test --lib secrets::keychain
+    #[test]
+    fn keychain_round_trip_when_opted_in() {
+        if std::env::var("CLIPT9N_KEYCHAIN_INTEGRATION").is_err() {
+            return; // skip
+        }
+        let account = format!("test-account-{}", std::process::id());
+        let s = KeychainSecrets::new("clipt9n-test", account.as_str());
+        let key = Zeroizing::new("sk-test-roundtrip-9876".to_string());
+        s.set_api_key(key.clone()).unwrap();
+        let read = s.get_api_key().unwrap();
+        assert_eq!(&*read, "sk-test-roundtrip-9876");
+        // Cleanup: delete the test entry. (No public delete on the
+        // trait — direct Entry call here is acceptable as a test
+        // teardown.)
+        let entry = keyring::Entry::new("clipt9n-test", account.as_str()).unwrap();
+        let _ = entry.delete_credential();
     }
 }

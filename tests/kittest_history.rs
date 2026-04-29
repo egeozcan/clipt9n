@@ -95,11 +95,9 @@ fn modal_clear_button_emits_clear_all_outcome() {
     let model_clone = Arc::clone(&model);
     let mut harness = Harness::new(move |ctx| {
         let mut m = model_clone.lock().unwrap();
-        if let Some(o) = draw(ctx, &mut m) {
-            // Stash the outcome on the model via a side-channel.
-            if let HistoryOutcome::ClearAll = o {
-                m.query = "__clear_all__".into();
-            }
+        // Stash the outcome on the model via a side-channel.
+        if let Some(HistoryOutcome::ClearAll) = draw(ctx, &mut m) {
+            m.query = "__clear_all__".into();
         }
     });
 
