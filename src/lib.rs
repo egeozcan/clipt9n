@@ -132,9 +132,14 @@ pub async fn run() -> Result<(), TranslateError> {
     // and use it as source text. When CLIPT9N_TEST_PRINT_RESULT is set, print
     // the translated result to stdout instead of writing to the clipboard.
     // This makes `tests/cli_smoke.rs` runnable in CI without a desktop session.
+    // M4 Task 7 scaffolding: built-in templates + empty glossary.
+    // Task 8 replaces these with real loaders and threads them through `App`.
+    let templates = crate::llm::templates::Templates::built_in();
+    let glossary = crate::glossary::Glossary::empty();
+
     if let Ok(input) = std::env::var("CLIPT9N_TEST_INPUT") {
         let print_result = std::env::var("CLIPT9N_TEST_PRINT_RESULT").is_ok();
-        let translator = Translator::new(&cfg, provider.as_ref());
+        let translator = Translator::new(&cfg, provider.as_ref(), &templates, &glossary);
         let action = cli.action_or_none().ok_or_else(|| {
             TranslateError::Config("no CLI action; GUI mode is not yet wired in run()".into())
         })?;
@@ -151,7 +156,7 @@ pub async fn run() -> Result<(), TranslateError> {
         return Err(TranslateError::EmptyOrNonTextClipboard);
     }
 
-    let translator = Translator::new(&cfg, provider.as_ref());
+    let translator = Translator::new(&cfg, provider.as_ref(), &templates, &glossary);
     let action = cli.action_or_none().ok_or_else(|| {
         TranslateError::Config("no CLI action; GUI mode is not yet wired in run()".into())
     })?;

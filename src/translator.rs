@@ -13,6 +13,7 @@
 
 use crate::config::Config;
 use crate::error::TranslateError;
+use crate::glossary::Glossary;
 use crate::llm::templates::{render, TemplateContext, TemplateKind, Templates};
 use crate::llm::LlmProvider;
 
@@ -33,11 +34,23 @@ pub enum Action {
 pub struct Translator<'a> {
     config: &'a Config,
     provider: &'a dyn LlmProvider,
+    templates: &'a Templates,
+    glossary: &'a Glossary,
 }
 
 impl<'a> Translator<'a> {
-    pub fn new(config: &'a Config, provider: &'a dyn LlmProvider) -> Self {
-        Self { config, provider }
+    pub fn new(
+        config: &'a Config,
+        provider: &'a dyn LlmProvider,
+        templates: &'a Templates,
+        glossary: &'a Glossary,
+    ) -> Self {
+        Self {
+            config,
+            provider,
+            templates,
+            glossary,
+        }
     }
 
     /// Run the requested action against `clipboard_text` and return the
@@ -47,42 +60,63 @@ impl<'a> Translator<'a> {
         action: &Action,
         clipboard_text: &str,
     ) -> Result<String, TranslateError> {
-        let (kind, target_label, instruction) = self.resolve_template_inputs(action)?;
-        // Glossary is M4. M1 always passes empty.
+        let (kind, target_label, instruction, target_iso2) =
+            self.resolve_template_inputs(action)?;
+
+        // Resolve glossary block. Detection is best-effort.
+        let detected_iso3 = crate::glossary::detect_source_lang(clipboard_text);
+        let source_iso2 = detected_iso3
+            .as_deref()
+            .and_then(crate::glossary::iso3_to_iso2);
+        let matched = self.glossary.matching_entries(
+            clipboard_text,
+            source_iso2,
+            target_iso2.as_deref(),
+            &self.config.glossary,
+        );
+        let glossary_block = crate::glossary::format_block(&matched);
+
         let ctx = match kind {
-            TemplateKind::Translate => {
-                TemplateContext::for_translate(target_label.as_deref().unwrap_or(""), "")
-            }
-            TemplateKind::FixGrammar => TemplateContext::for_fix_grammar(""),
-            TemplateKind::Rewrite => TemplateContext::for_rewrite(""),
+            TemplateKind::Translate => TemplateContext::for_translate(
+                target_label.as_deref().unwrap_or(""),
+                &glossary_block,
+            ),
+            TemplateKind::FixGrammar => TemplateContext::for_fix_grammar(&glossary_block),
+            TemplateKind::Rewrite => TemplateContext::for_rewrite(&glossary_block),
             TemplateKind::Custom => {
-                TemplateContext::for_custom(instruction.as_deref().unwrap_or(""), "")
+                TemplateContext::for_custom(instruction.as_deref().unwrap_or(""), &glossary_block)
             }
         };
-        let templates = Templates::built_in();
-        let system = render(&templates, kind, &ctx)?;
+        let system = render(self.templates, kind, &ctx)?;
         let model_output = self.provider.complete(&system, clipboard_text).await?;
         Ok(post_process(&model_output, clipboard_text))
     }
 
+    #[allow(clippy::type_complexity)]
     fn resolve_template_inputs(
         &self,
         action: &Action,
-    ) -> Result<(TemplateKind, Option<String>, Option<String>), TranslateError> {
+    ) -> Result<(TemplateKind, Option<String>, Option<String>, Option<String>), TranslateError>
+    {
         Ok(match action {
             Action::Translate { code } => {
                 let label = self.config.label_for_code(code)?.to_string();
-                (TemplateKind::Translate, Some(label), None)
+                (
+                    TemplateKind::Translate,
+                    Some(label),
+                    None,
+                    Some(code.clone()),
+                )
             }
-            Action::FixGrammar => (TemplateKind::FixGrammar, None, None),
-            Action::Rewrite => (TemplateKind::Rewrite, None, None),
+            Action::FixGrammar => (TemplateKind::FixGrammar, None, None, None),
+            Action::Rewrite => (TemplateKind::Rewrite, None, None, None),
             Action::Custom { instruction } => {
                 if instruction.trim().is_empty() {
                     return Err(TranslateError::InvalidClipboard(
                         "custom instruction is empty".into(),
                     ));
                 }
-                (TemplateKind::Custom, None, Some(instruction.clone()))
+                (TemplateKind::Custom, None, Some(instruction.clone()), None)
             }
         })
     }
@@ -253,7 +287,18 @@ mod tests {
         );
     }
 
-    // -------- Translator tests --------------------------------------------
+    // ----------- Translator tests (M4 signature) -----------
+
+    use crate::glossary::{Glossary, GlossaryEntry};
+    use crate::llm::templates::Templates;
+
+    fn templates() -> Templates {
+        Templates::built_in()
+    }
+
+    fn empty_glossary() -> Glossary {
+        Glossary::empty()
+    }
 
     /// Mock provider that captures the system prompt and returns a fixed reply.
     struct CapturingProvider {
@@ -289,7 +334,9 @@ mod tests {
     async fn translate_action_passes_target_label_to_template() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("Hallo, Welt.");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let result = t
             .execute(&Action::Translate { code: "de".into() }, "Hello, world.")
             .await
@@ -304,7 +351,9 @@ mod tests {
     async fn fix_grammar_action_uses_fix_grammar_template() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("He doesn't know.");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let result = t
             .execute(&Action::FixGrammar, "He dont know.")
             .await
@@ -319,7 +368,9 @@ mod tests {
     async fn rewrite_action_uses_rewrite_template() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("Concise version.");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let _ = t
             .execute(&Action::Rewrite, "verbose original")
             .await
@@ -332,7 +383,9 @@ mod tests {
     async fn custom_action_includes_user_instruction() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("formal output");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let _ = t
             .execute(
                 &Action::Custom {
@@ -350,7 +403,9 @@ mod tests {
     async fn translate_action_with_unknown_code_returns_unsupported_language() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let err = t
             .execute(&Action::Translate { code: "fr".into() }, "Hello")
             .await
@@ -362,7 +417,9 @@ mod tests {
     async fn custom_action_with_empty_instruction_errors() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let err = t
             .execute(
                 &Action::Custom {
@@ -379,11 +436,73 @@ mod tests {
     async fn provider_output_is_post_processed_before_returning() {
         let cfg = Config::default();
         let provider = CapturingProvider::new("\"Hallo, Welt.\"");
-        let t = Translator::new(&cfg, &provider);
+        let templates = templates();
+        let glossary = empty_glossary();
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
         let result = t
             .execute(&Action::Translate { code: "de".into() }, "Hello, world.")
             .await
             .unwrap();
         assert_eq!(result, "Hallo, Welt."); // wrapping quotes stripped
+    }
+
+    #[tokio::test]
+    async fn glossary_block_is_injected_when_entries_match() {
+        // Spec §5.4: matching entries inject into `{{ glossary_block }}`.
+        let cfg = Config::default();
+        let provider = CapturingProvider::new("Hallo, Welt.");
+        let templates = templates();
+        let mut glossary = Glossary::empty();
+        glossary.entries_mut().push(GlossaryEntry {
+            source: "Smart Table".into(),
+            target: "Smart Table".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
+        // Source contains the term.
+        let _ = t
+            .execute(
+                &Action::Translate { code: "de".into() },
+                "We sell a Smart Table for the kitchen.",
+            )
+            .await
+            .unwrap();
+        let (system, _) = provider.captured();
+        assert!(
+            system.contains("GLOSSARY"),
+            "system prompt should contain glossary block; got: {system}"
+        );
+        assert!(system.contains("Smart Table"));
+    }
+
+    #[tokio::test]
+    async fn glossary_block_omitted_when_no_entries_match() {
+        // No matching entries → block is empty → no `GLOSSARY` header.
+        let cfg = Config::default();
+        let provider = CapturingProvider::new("Hallo, Welt.");
+        let templates = templates();
+        let mut glossary = Glossary::empty();
+        glossary.entries_mut().push(GlossaryEntry {
+            source: "Vorgang".into(),
+            target: "case".into(),
+            languages: vec!["de->en".into()],
+            note: None,
+        });
+        let t = Translator::new(&cfg, &provider, &templates, &glossary);
+        // Source has no glossary terms; pair is en->de which doesn't
+        // match Vorgang's de->en scope anyway.
+        let _ = t
+            .execute(
+                &Action::Translate { code: "de".into() },
+                "There is nothing relevant in this text.",
+            )
+            .await
+            .unwrap();
+        let (system, _) = provider.captured();
+        assert!(
+            !system.contains("GLOSSARY"),
+            "expected no glossary block; got: {system}"
+        );
     }
 }

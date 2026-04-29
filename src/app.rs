@@ -176,7 +176,7 @@ impl ClipApp {
     }
 
     fn dispatch(&mut self, ctx: &egui::Context, slot: u8) {
-        let Some(intent) = decide_intent(slot, &self.prompt_model.clipboard_text, &self.cfg) else {
+        let Some(intent) = decide_intent(slot, &self.cfg) else {
             tracing::info!(slot, "invalid slot ignored");
             return;
         };
@@ -269,7 +269,11 @@ impl ClipApp {
         // so the overlay never gets stuck.
         let label_for_panic = action_label.clone();
         let worker = self.runtime.spawn(async move {
-            let translator = Translator::new(&cfg, provider.as_ref());
+            // M4 Task 7 scaffolding: built-in templates + empty glossary.
+            // Task 8 will thread real Templates + Glossary through `App`.
+            let templates = crate::llm::templates::Templates::built_in();
+            let glossary = crate::glossary::Glossary::empty();
+            let translator = Translator::new(&cfg, provider.as_ref(), &templates, &glossary);
             let result = translator.execute(&action, &source_text).await;
             TranslationOutcome {
                 result,
@@ -668,7 +672,7 @@ pub(crate) enum Intent {
     EnterCustom,
 }
 
-pub(crate) fn decide_intent(slot: u8, _source_text: &str, cfg: &Config) -> Option<Intent> {
+pub(crate) fn decide_intent(slot: u8, cfg: &Config) -> Option<Intent> {
     match slot {
         1 => Some(translate_intent(
             Action::Translate {
@@ -766,7 +770,7 @@ mod tests {
     #[test]
     fn slot_1_resolves_to_translate_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(1, "hi", &cfg).expect("slot 1 is valid");
+        let intent = decide_intent(1, &cfg).expect("slot 1 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -786,7 +790,7 @@ mod tests {
     #[test]
     fn slot_2_resolves_to_translate_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(2, "hi", &cfg).expect("slot 2 is valid");
+        let intent = decide_intent(2, &cfg).expect("slot 2 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -806,7 +810,7 @@ mod tests {
     #[test]
     fn slot_3_resolves_to_translate_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(3, "hi", &cfg).expect("slot 3 is valid");
+        let intent = decide_intent(3, &cfg).expect("slot 3 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -826,7 +830,7 @@ mod tests {
     #[test]
     fn slot_4_resolves_to_fix_grammar_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(4, "hi", &cfg).expect("slot 4 is valid");
+        let intent = decide_intent(4, &cfg).expect("slot 4 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -843,7 +847,7 @@ mod tests {
     #[test]
     fn slot_5_resolves_to_rewrite_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(5, "hi", &cfg).expect("slot 5 is valid");
+        let intent = decide_intent(5, &cfg).expect("slot 5 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -860,15 +864,15 @@ mod tests {
     #[test]
     fn slot_6_resolves_to_enter_custom() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(6, "hi", &cfg).expect("slot 6 is valid");
+        let intent = decide_intent(6, &cfg).expect("slot 6 is valid");
         assert!(matches!(intent, Intent::EnterCustom));
     }
 
     #[test]
     fn invalid_slot_returns_none() {
         let cfg = cfg_with_threshold(2000);
-        assert!(decide_intent(0, "hi", &cfg).is_none());
-        assert!(decide_intent(7, "hi", &cfg).is_none());
+        assert!(decide_intent(0, &cfg).is_none());
+        assert!(decide_intent(7, &cfg).is_none());
     }
 
     #[test]
