@@ -2,8 +2,8 @@
 
 A keyboard-driven clipboard translator. Press a hotkey, pick an action, get the result back on your clipboard.
 
-> **Status: M3 — all 6 actions + custom prompt + translating overlay.**
-> CLI mode still works (M1 behavior). GUI mode summons the prompt window on Cmd+Shift+T; all six slots work end-to-end with an in-flight overlay and large-clipboard confirmation. macOS tested. Linux/Windows binaries from CI but untested. See `docs/superpowers/specs/2026-04-28-clipt9n-implementation-design.md` for the full milestone roadmap.
+> **Status: M7 — tray icon + accessibility polish + spec §8 surface coverage.**
+> CLI mode still works (M1 behavior). GUI mode summons the prompt window on Cmd+Shift+T; all six slots work end-to-end with an in-flight overlay and large-clipboard confirmation. M5 ships encrypted history; M6 ships the first-launch setup wizard backed by the OS keychain; M7 ships the menu-bar tray icon, the status pill (Ready / no-API-key / warning), the hide-icon confirm modal, the live provider rebuild on Save-and-start, and a focus-ring + AccessKit-label + reduced-motion accessibility pass. macOS tested. Linux/Windows binaries from CI but untested. See `docs/superpowers/specs/2026-04-28-clipt9n-implementation-design.md` for the full milestone roadmap.
 
 ## Install (M1)
 
@@ -434,6 +434,113 @@ shipping a public binary. Steps:
 8. **Cross-platform discipline (one more check)**
    - The grep from Step 11.4 still returns empty (M6 added no new
      `cfg(target_os)` outside `platform/`).
+
+## M7 — tray icon + accessibility polish
+
+### Tray menu
+
+Default-on. The icon lives in the macOS menu bar / Linux StatusNotifierItem
+/ Windows shell tray. The menu has seven items:
+
+- **Translate clipboard** — equivalent to pressing the prompt hotkey
+- **Open history** — equivalent to the history hotkey (M5)
+- **Open glossary** — opens `glossary.toml` in the system default editor (via `Platform::open_path`, M6)
+- **Reload glossary** — re-reads the file without restart (re-uses M4's SIGHUP channel)
+- **Re-run setup wizard** — re-enters the M6 wizard (use after key rotation, or when stale-key 401s auto-open it)
+- **Hide icon** — confirms via modal showing the live hotkey, then persists `state.tray.visible = false`
+- **Quit clipt9n** — clean shutdown
+
+The icon's bottom-right corner has a colored dot — the *status pill*:
+
+| Color | Meaning | Tooltip |
+|-------|---------|---------|
+| Green | ready | clipt9n — ready |
+| Red | no API key | clipt9n — no API key; click to run setup wizard |
+| Amber | warning | clipt9n — \<reason\> (hover for the specific reason) |
+
+Amber pill triggers, mapped to spec §8:
+- *hotkey already in use* — another app claimed Cmd+Shift+T; tray menu remains the entry point
+- *glossary malformed* — file parsed as Err at startup; running without it
+- *accessibility permission revoked* (macOS) — global hotkey can't register; click for help
+- *API key invalid* — translation 401'd; setup wizard auto-opens
+
+### Recovering from "Hide icon"
+
+Two paths, both documented in the hide-confirm modal:
+
+1. **Re-run with `--show-tray`** — `clipt9n --show-tray` forces the tray on for this launch and persists `[tray] visible = true` for subsequent launches.
+2. **Edit state.toml** — find the file at:
+   - macOS: `~/Library/Application Support/clipboard-translator/state.toml`
+   - Linux: `~/.config/clipboard-translator/state.toml`
+   - Windows: `%APPDATA%\clipboard-translator\state.toml`
+   
+   Set `[tray] visible = true` and relaunch.
+
+### Live provider rebuild
+
+When the wizard's "Save and start" succeeds, the running provider is
+rebuilt in place — no restart required. The next translation uses the
+just-saved key. (Pre-M7 behavior required a restart.)
+
+### Tray-construction failure is non-fatal
+
+If the OS tray API fails (rare — minimal Linux DEs without
+StatusNotifierItem support, sandboxed environments, etc.) the
+constructor returns `Err`, the app logs warn, and continues without
+a tray. The hotkey path still works. The same fallback applies if the
+tray thread panics — `TrayHandle::build_with_panic_isolation` wraps
+the macOS / Windows / Linux `tray-icon` build in
+`std::panic::catch_unwind` so a tray-side panic doesn't crash the
+prompt window.
+
+### Accessibility (M7.B)
+
+- **Focus rings** — every interactive widget renders the design's accent
+  focus stroke when focused.
+- **AccessKit labels** — every clickable surface has an explicit
+  accessible name. Setup wizard provider cards now expose `Role::Button`
+  via `WidgetInfo::labeled` (was `Frame + Sense::click`); show/hide key
+  button announces "Show key (reveal as plain text)" / "Hide key (mask as
+  password)" instead of the short toggle token; history search field
+  carries an explicit "Search history" label; tray hide-confirm modal
+  disables egui's default `fade_in` for reduced-motion compliance.
+- **Reduced motion** — the translating-overlay spinner respects the
+  cached macOS `NSReduceMotionEnabled` flag (M3). Other surfaces
+  (size-confirm modal, tray-confirm modal) have no animations.
+- **Tab / Shift+Tab** — egui's default tab order matches the visual
+  top-to-bottom-left-to-right flow per design. kittest assertions cover
+  AccessKit role + label exposure for each interactive surface; manual
+  VoiceOver smoke is M8 scope.
+
+### Manual smoke matrix (M7) — deferred to M8 execution
+
+These flows must be exercised on real hardware before declaring v1.0.
+M5 + M6 matrices are also deferred (each plan §11.X documents them).
+
+| OS | Surface | Expected | Tested? |
+|----|---------|----------|---------|
+| macOS | Tray icon appears in menu bar at startup | Visible | ☐ |
+| macOS | Click tray → menu drops down | Menu visible | ☐ |
+| macOS | Translate clipboard menu item | Prompt window appears | ☐ |
+| macOS | Open history menu item | History window appears | ☐ |
+| macOS | Open glossary menu item | Default editor opens glossary.toml | ☐ |
+| macOS | Reload glossary menu item | Glossary re-reads without restart | ☐ |
+| macOS | Re-run setup wizard menu item | Wizard window appears | ☐ |
+| macOS | Hide icon → confirm | Tray disappears; relaunch w/o flag still hidden | ☐ |
+| macOS | Hide icon → cancel | Tray remains; no state.toml change | ☐ |
+| macOS | Relaunch with --show-tray | Tray reappears; subsequent launches show it | ☐ |
+| macOS | Stale API key 401 | Wizard auto-opens; tray pill flips amber → red | ☐ |
+| macOS | Accessibility permission revoked | Tray pill amber; tooltip says "permission needed" | ☐ |
+| macOS | Glossary malformed | Tray pill amber; app still translates | ☐ |
+| macOS | Hotkey already in use | Tray pill amber; tray menu remains the entry point | ☐ |
+| macOS | Wizard Save-and-start | Next translation uses new key with no restart | ☐ |
+| macOS | VoiceOver pass on prompt / history / wizard / tray-confirm | Roles + labels announced; focus order matches visual flow | ☐ |
+| Linux | Tray icon in supported DE (GNOME/KDE) | Visible via StatusNotifierItem | ☐ |
+| Linux | Tray icon in headless DE (no SNI) | Logs warn; hotkey still works | ☐ |
+| Linux | Open glossary launches via xdg-open | Default editor opens | ☐ |
+| Windows | Tray icon in shell tray | Visible | ☐ |
+| Windows | Right-click tray → menu | All 7 items present | ☐ |
+| Windows | Open glossary via cmd /C start | Default editor opens | ☐ |
 
 ## Development
 
