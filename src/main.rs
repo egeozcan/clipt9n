@@ -228,8 +228,8 @@ fn main() -> anyhow::Result<()> {
             }
             Err(clipt9n::error::TranslateError::MissingApiKey { .. }) => {
                 tracing::warn!(
-                    "no API key and keychain unavailable; falling back to env-only \
-                     start — user will see translation failures until env is set"
+                    "no API key and keychain unavailable; opening wizard in \
+                     env-only mode — user must set env var before next launch"
                 );
                 Some(clipt9n::ui::setup::SetupWizardModel {
                     provider: cfg.provider.kind.clone(),

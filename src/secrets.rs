@@ -163,8 +163,12 @@ pub fn migrate_keyfile_to_keychain(
             "keychain entry construction failed for service={service} account={account}: {e}"
         ))
     })?;
-    // If a keychain entry already exists, do nothing.
-    if entry.get_password().is_ok() {
+    // If a keychain entry already exists, do nothing. Use get_secret
+    // (binary API) to match the set_secret write below — get_password
+    // would fail UTF-8 decoding on the random binary key and falsely
+    // claim no entry exists, causing the migration to run on every
+    // launch.
+    if entry.get_secret().is_ok() {
         return Ok(false);
     }
     let bytes = std::fs::read(keyfile_path).map_err(|e| {

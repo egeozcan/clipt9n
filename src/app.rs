@@ -1286,7 +1286,16 @@ impl ClipApp {
         // wizard already showed them the variable name.
         match model.storage {
             crate::ui::setup::Storage::Keychain => {
-                self.secrets.set_api_key(model.key.clone())?;
+                // Build a fresh KeychainSecrets from the just-updated
+                // cfg so the key lands in the correct slot when the
+                // user switches providers in the wizard. self.secrets
+                // was constructed at startup from the OLD account and
+                // would write to the stale slot.
+                let fresh = crate::secrets::KeychainSecrets::new(
+                    &self.cfg.provider.api_key.service,
+                    &self.cfg.provider.api_key.account,
+                );
+                fresh.set_api_key(model.key.clone())?;
             }
             crate::ui::setup::Storage::Env => {
                 tracing::warn!(

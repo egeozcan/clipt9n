@@ -265,10 +265,12 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
             }
         });
         ui.add_space(8.0);
+        // M7 will wire this to a provider-specific URL via
+        // ViewportCommand::OpenUrl. For M6, render as plain
+        // informational text without the interactive arrow.
         ui.label(
-            RichText::new("Get your API key →")
-                .color(theme::ACCENT)
-                .monospace()
+            RichText::new("Get your API key from the provider dashboard")
+                .color(theme::INK_3)
                 .size(11.0),
         );
         ui.add_space(14.0);
