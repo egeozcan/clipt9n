@@ -254,6 +254,14 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                     })
                     .response
                     .interact(egui::Sense::click());
+                // AccessKit: expose the card as Role::Button with the provider
+                // name as its label so screen readers and kittest can find each
+                // card by name. The Frame+interact pattern does not auto-derive
+                // a button role, so we provide the WidgetInfo explicitly.
+                let card_label = label.to_string();
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &card_label)
+                });
                 if resp.clicked() {
                     model.provider = (*id).to_string();
                     if matches!(model.phase, WizardPhase::Error) {
@@ -302,10 +310,22 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
             }
             ui.add_space(4.0);
             let toggle_label = if model.show_key { "hide" } else { "show" };
-            if ui
-                .button(RichText::new(toggle_label).monospace().size(11.0))
-                .clicked()
-            {
+            let hover_text = if model.show_key {
+                "Hide key (mask as password)"
+            } else {
+                "Show key (reveal as plain text)"
+            };
+            // AccessKit: provide a descriptive label so screen readers announce
+            // the button's purpose rather than just "show" / "hide".
+            // `on_hover_text` takes self, so we check clicked() before calling it.
+            let toggle_resp = ui.button(RichText::new(toggle_label).monospace().size(11.0));
+            let toggle_label_owned = toggle_label.to_string();
+            toggle_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &toggle_label_owned)
+            });
+            let key_toggled = toggle_resp.clicked();
+            toggle_resp.on_hover_text(hover_text);
+            if key_toggled {
                 model.show_key = !model.show_key;
             }
         });

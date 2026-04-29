@@ -186,9 +186,19 @@ pub fn draw(ctx: &egui::Context, model: &mut HistoryModel) -> Option<HistoryOutc
             ui.label(RichText::new("⌕").color(theme::INK_3).monospace());
             ui.add_space(8.0);
             let edit = TextEdit::singleline(&mut model.query)
-                .hint_text("type to filter…")
+                .hint_text("Search history")
                 .desired_width(ui.available_width() - 100.0);
-            ui.add(edit);
+            let edit_resp = ui.add(edit);
+            // AccessKit label: explicit identity for screen readers (hint_text
+            // already sets the AccessKit value, but a named label makes the
+            // input discoverable by its role in the a11y tree).
+            edit_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::TextEdit,
+                    true,
+                    "Search history",
+                )
+            });
         });
         ui.separator();
 
