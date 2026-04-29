@@ -152,13 +152,14 @@ pub struct ClipApp {
     history_warned: std::sync::atomic::AtomicBool,
 
     /// API-key resolver. `KeychainSecrets` (preferred) or
-    /// `EnvSecrets` (fallback). Currently dead-allocated — Task 9 of
-    /// M7 revives this field as the source of `keychain_available()`
-    /// for the tray menu's "Re-run setup wizard" entry. Keep the
-    /// `#[allow(dead_code)]` until then; persistence in
-    /// `persist_setup_completion` goes through a freshly-constructed
-    /// `KeychainSecrets` (M6 stale-account fix), not through this.
-    #[allow(dead_code)]
+    /// `EnvSecrets` (fallback). Read by:
+    ///   - `dispatch_rerun_wizard` (tray menu's "Re-run setup wizard"
+    ///     item) to seed the wizard model's storage radio default.
+    ///   - The 401 toast handler (auto-rerun on stale key).
+    ///
+    /// Persistence in `persist_setup_completion` goes through a
+    /// freshly-constructed `KeychainSecrets` (the M6 stale-account
+    /// fix), not through this field — don't regress that.
     secrets: Box<dyn Secrets>,
 
     /// Tray icon handle. `None` means the tray was disabled by
@@ -494,7 +495,7 @@ impl ClipApp {
         });
     }
 
-    fn handle_translation_done(&mut self, outcome: TranslationOutcome) {
+    fn handle_translation_done(&mut self, outcome: TranslationOutcome, ctx: &egui::Context) {
         // Stale outcome from a cancelled translation; drop silently.
         let current_gen = match &self.app_state {
             AppState::Translating { gen, .. } => Some(*gen),
@@ -533,6 +534,24 @@ impl ClipApp {
                     action = %outcome.action_label,
                     "translation complete"
                 );
+            }
+            Err(crate::error::TranslateError::Provider { status: 401, .. }) => {
+                tracing::warn!("translation 401 — API key invalid; opening setup wizard");
+                // Surface to the tray status pill (ephemeral — next
+                // frame's compute_tray_status will return NoApiKey
+                // once we're in the wizard, but the user sees the
+                // amber pill briefly which is the right signal).
+                if let Some(tray) = self.tray.as_mut() {
+                    if let Err(e) = tray.set_status(crate::tray::TrayStatus::Warn(
+                        crate::tray::WarnReason::KeychainStaleKey,
+                    )) {
+                        tracing::warn!(error = %e, "tray status flip on 401 failed");
+                    }
+                }
+                self.dispatch_rerun_wizard(ctx);
+                // Return early — dispatch_rerun_wizard sets app_state to
+                // SetupWizard; we must not overwrite it with Idle below.
+                return;
             }
             Err(e) => {
                 tracing::error!(error = %e, "translation failed");
@@ -576,7 +595,7 @@ impl ClipApp {
         }
         // Translation results
         while let Ok(outcome) = self.result_rx.try_recv() {
-            self.handle_translation_done(outcome);
+            self.handle_translation_done(outcome, ctx);
         }
         // Glossary reload requests (SIGHUP, tray menu in M7)
         let mut reload_requested = false;
@@ -641,9 +660,9 @@ impl ClipApp {
             crate::tray::ID_HISTORY => self.summon_history(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
+            crate::tray::ID_RERUN_WIZARD => self.dispatch_rerun_wizard(ctx),
             crate::tray::ID_HIDE => self.dispatch_hide_tray_request(ctx),
             crate::tray::ID_QUIT => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            // Re-run setup wizard — wired in Task 9.
             other => {
                 tracing::debug!(id = %other, "tray menu event (handler not yet wired)");
             }
@@ -693,6 +712,31 @@ impl ClipApp {
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         self.app_state = AppState::ConfirmingTrayHide { model };
+    }
+
+    fn dispatch_rerun_wizard(&mut self, ctx: &egui::Context) {
+        // Already in the wizard? Ignore — double dispatch.
+        if matches!(self.app_state, AppState::SetupWizard { .. }) {
+            return;
+        }
+        let keychain_available = self.secrets.keychain_available();
+        let storage = if keychain_available {
+            crate::ui::setup::Storage::Keychain
+        } else {
+            crate::ui::setup::Storage::Env
+        };
+        let model = crate::ui::setup::SetupWizardModel {
+            provider: self.cfg.provider.kind.clone(),
+            keychain_available,
+            storage,
+            test_translation: keychain_available, // env-only mode skips the live test
+            ..Default::default()
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        self.app_state = AppState::SetupWizard { model };
     }
 
     fn update_confirming_tray_hide(
