@@ -418,7 +418,14 @@ fn draw_slot_row(
             theme::INK_2,
         );
         cui.add_space(8.0);
-        cui.label(RichText::new(label).color(theme::INK).size(13.5));
+        // `selectable(false)` is load-bearing: egui's default `Label` has
+        // selectable text, whose text-selection sense intercepts clicks on
+        // the text area and prevents the parent row's `Sense::click()` from
+        // firing. Without this, clicking the literal "Fix grammar" text
+        // wouldn't pick the slot — only the empty area to its right would.
+        cui.add(
+            egui::Label::new(RichText::new(label).color(theme::INK).size(13.5)).selectable(false),
+        );
         cui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if is_last {
                 let badge = egui::Frame::new()
@@ -426,20 +433,26 @@ fn draw_slot_row(
                     .corner_radius(255)
                     .inner_margin(egui::Margin::symmetric(7, 2));
                 badge.show(ui, |ui| {
-                    ui.label(
-                        RichText::new("LAST USED")
-                            .color(theme::ACCENT)
-                            .size(10.0)
-                            .strong(),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("LAST USED")
+                                .color(theme::ACCENT)
+                                .size(10.0)
+                                .strong(),
+                        )
+                        .selectable(false),
                     );
                 });
                 ui.add_space(6.0);
             }
-            ui.label(
-                RichText::new(trailing)
-                    .color(theme::INK_3)
-                    .monospace()
-                    .size(11.0),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(trailing)
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(11.0),
+                )
+                .selectable(false),
             );
         });
     }
