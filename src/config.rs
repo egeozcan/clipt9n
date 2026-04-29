@@ -1,8 +1,9 @@
-//! `config.toml` loader. Reads the spec §6 schema. M1–M3 only consume
+//! `config.toml` loader. Reads the spec §6 schema. M1–M3 only consumed
 //! `[provider]`, `[provider.api_key]`, `[languages]`, `[hotkey]`, `[ui]`.
-//! M4 adds `[glossary]` and `[templates]`. Other sections (`[history]`,
-//! `[tray]`, `[logging]`) are still loaded into the struct but unused
-//! pending later milestones. Defaults applied when fields are absent.
+//! M4 added `[glossary]` and `[templates]`. M5 adds `[history]` and the
+//! nested `[hotkey.history]` sub-table. `[tray]` and `[logging]` are
+//! still loaded but unused pending later milestones. Defaults applied
+//! when fields are absent.
 
 use std::path::Path;
 
@@ -19,6 +20,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub glossary: GlossaryConfig,
     pub templates: TemplatesConfig,
+    pub history: HistoryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -111,6 +113,9 @@ pub struct HotkeyConfig {
     /// like "T" maps to `Code::KeyT`.
     pub key: String,
     pub enabled: bool,
+    /// Second hotkey for the history viewer (M5). Independent of the
+    /// prompt hotkey above. Set `enabled = false` to skip registration.
+    pub history: HistoryHotkeyConfig,
 }
 
 impl Default for HotkeyConfig {
@@ -119,6 +124,27 @@ impl Default for HotkeyConfig {
             modifier: "cmd".into(),
             shift: true,
             key: "T".into(),
+            enabled: true,
+            history: HistoryHotkeyConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HistoryHotkeyConfig {
+    pub modifier: String,
+    pub shift: bool,
+    pub key: String,
+    pub enabled: bool,
+}
+
+impl Default for HistoryHotkeyConfig {
+    fn default() -> Self {
+        Self {
+            modifier: "cmd".into(),
+            shift: true,
+            key: "H".into(),
             enabled: true,
         }
     }
@@ -193,6 +219,36 @@ impl Default for TemplatesConfig {
             fix_grammar: Some("templates/fix_grammar.j2".into()),
             rewrite: Some("templates/rewrite.j2".into()),
             custom: Some("templates/custom.j2".into()),
+        }
+    }
+}
+
+/// `[history]` block per spec §6 + §7. M5 wires this into the
+/// `History` opener and the per-translation insert path.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    /// When false, history is fully disabled — the SQLite file is
+    /// neither opened at startup nor written to. The viewer hotkey
+    /// still registers but the viewer shows an empty list.
+    pub enabled: bool,
+    /// Maximum entries retained. Older rows are pruned at insert time.
+    pub max_entries: usize,
+    /// When false, source/result columns are NULL (metadata-only row).
+    /// Useful for high-sensitivity environments per spec §9.
+    pub store_text: bool,
+    /// Whether the "Clear all" action requires a confirmation modal.
+    /// Default true; setting false makes Shift+Del immediately destructive.
+    pub confirm_clear: bool,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_entries: 100,
+            store_text: true,
+            confirm_clear: true,
         }
     }
 }
@@ -540,5 +596,82 @@ custom = ""
             cfg.templates.fix_grammar.as_deref(),
             Some("templates/fix_grammar.j2")
         );
+    }
+
+    #[test]
+    fn default_history_section() {
+        let cfg = Config::default();
+        assert!(cfg.history.enabled);
+        assert_eq!(cfg.history.max_entries, 100);
+        assert!(cfg.history.store_text);
+        assert!(cfg.history.confirm_clear);
+    }
+
+    #[test]
+    fn loads_history_overrides() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[history]
+enabled = false
+max_entries = 25
+store_text = false
+confirm_clear = false
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert!(!cfg.history.enabled);
+        assert_eq!(cfg.history.max_entries, 25);
+        assert!(!cfg.history.store_text);
+        assert!(!cfg.history.confirm_clear);
+    }
+
+    #[test]
+    fn default_history_hotkey_is_cmd_shift_h() {
+        let cfg = Config::default();
+        assert_eq!(cfg.hotkey.history.modifier, "cmd");
+        assert!(cfg.hotkey.history.shift);
+        assert_eq!(cfg.hotkey.history.key, "H");
+        assert!(cfg.hotkey.history.enabled);
+    }
+
+    #[test]
+    fn loads_history_hotkey_disabled() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[hotkey.history]
+enabled = false
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert!(!cfg.hotkey.history.enabled);
+        // Defaults preserved for the rest:
+        assert_eq!(cfg.hotkey.history.key, "H");
+    }
+
+    #[test]
+    fn loads_history_hotkey_custom_key() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[hotkey.history]
+modifier = "ctrl"
+shift = false
+key = "L"
+enabled = true
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.hotkey.history.modifier, "ctrl");
+        assert!(!cfg.hotkey.history.shift);
+        assert_eq!(cfg.hotkey.history.key, "L");
+        assert!(cfg.hotkey.history.enabled);
     }
 }
