@@ -337,16 +337,7 @@ impl Modifier {
 
     pub fn resolve_native(self) -> NativeModifier {
         match self {
-            Self::Cmd => {
-                #[cfg(target_os = "macos")]
-                {
-                    NativeModifier::Meta
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    NativeModifier::Ctrl
-                }
-            }
+            Self::Cmd => crate::platform::cmd_modifier(),
             Self::Ctrl => NativeModifier::Ctrl,
             Self::Alt => NativeModifier::Alt,
             Self::Super => NativeModifier::Meta,
@@ -528,11 +519,7 @@ enabled = true
     fn resolve_modifier_returns_native_for_cmd() {
         use crate::config::Modifier;
         let resolved = Modifier::Cmd.resolve_native();
-        // On macOS, Cmd resolves to Meta (the global-hotkey "super"); on Linux/Windows, to Ctrl.
-        #[cfg(target_os = "macos")]
-        assert_eq!(resolved, NativeModifier::Meta);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(resolved, NativeModifier::Ctrl);
+        assert_eq!(resolved, crate::platform::cmd_modifier());
     }
 
     #[test]

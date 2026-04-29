@@ -108,21 +108,9 @@ pub fn load_or_create_keyfile(path: &Path) -> Result<Zeroizing<[u8; 32]>, Transl
     Ok(secret)
 }
 
-/// Dispatch for setting keyfile permissions. The `cfg(unix)` / `cfg(not(unix))`
-/// switch here is the AUDITED EXCEPTION to "no cfg outside platform/" —
-/// the actual chmod lives in `platform/unix.rs`; this is purely dispatch.
-#[cfg(unix)]
 fn set_keyfile_permissions(path: &Path) -> Result<(), TranslateError> {
     crate::platform::set_owner_only_permissions(path)
         .map_err(|e| TranslateError::History(format!("chmod 0o600 on {}: {e}", path.display())))
-}
-
-/// On non-Unix platforms the keyfile inherits the user's profile ACL.
-/// Documented in README that this is less secure than M6's keychain mode.
-/// No action here.
-#[cfg(not(unix))]
-fn set_keyfile_permissions(_path: &Path) -> Result<(), TranslateError> {
-    Ok(())
 }
 
 /// Convenience: load (or create) the keyfile and immediately derive
@@ -216,12 +204,10 @@ mod tests {
         // Bytes look random.
         assert_eq!(secret.len(), 32);
         assert_ne!(*secret, [0u8; 32], "secret must not be all zeros");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
+        assert!(
+            crate::platform::owner_only_permissions_are_enforced_for_test(&kf).unwrap(),
+            "keyfile permissions must be owner-only on platforms that support POSIX modes"
+        );
     }
 
     #[test]

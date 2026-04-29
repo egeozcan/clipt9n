@@ -1,7 +1,6 @@
 //! Cross-platform abstraction layer. Per the design doc, all
 //! `#[cfg(target_os = …)]` and `#[cfg(unix)]` blocks in the codebase live
-//! inside this module (M8 grep-lint enforces this with one exception
-//! documented in `config::Modifier::resolve_native`).
+//! inside this module (M8 grep-lint enforces this).
 
 use crate::error::TranslateError;
 
@@ -54,15 +53,61 @@ pub use windows::WindowsPlatform as ActivePlatform;
 #[cfg(unix)]
 mod unix;
 
-#[cfg(unix)]
-pub(crate) use unix::set_owner_only_permissions;
-
 /// Construct the active platform impl for this build.
 pub fn current() -> ActivePlatform {
     // Per-OS impls start as unit structs but may grow fields; using `default()`
     // keeps the call site stable.
     #[allow(clippy::default_constructed_unit_structs)]
     ActivePlatform::default()
+}
+
+/// Resolve logical "cmd" to the OS-native hotkey modifier.
+pub fn cmd_modifier() -> crate::config::NativeModifier {
+    cmd_modifier_impl()
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_modifier_impl() -> crate::config::NativeModifier {
+    crate::config::NativeModifier::Meta
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cmd_modifier_impl() -> crate::config::NativeModifier {
+    crate::config::NativeModifier::Ctrl
+}
+
+#[cfg(unix)]
+pub(crate) fn set_owner_only_permissions(path: &std::path::Path) -> Result<(), std::io::Error> {
+    unix::set_owner_only_permissions(path)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn set_owner_only_permissions(_path: &std::path::Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn owner_only_permissions_are_enforced_for_test(
+    path: &std::path::Path,
+) -> Result<bool, std::io::Error> {
+    owner_only_permissions_are_enforced_for_test_impl(path)
+}
+
+#[cfg(all(test, unix))]
+fn owner_only_permissions_are_enforced_for_test_impl(
+    path: &std::path::Path,
+) -> Result<bool, std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    Ok(mode == 0o600)
+}
+
+#[cfg(all(test, not(unix)))]
+fn owner_only_permissions_are_enforced_for_test_impl(
+    _path: &std::path::Path,
+) -> Result<bool, std::io::Error> {
+    Ok(true)
 }
 
 /// Install a SIGHUP-driven reload listener. On Unix (Linux/macOS) this
@@ -88,6 +133,18 @@ mod tests {
     #[test]
     fn current_platform_constructs() {
         let _ = current();
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn cmd_modifier_resolves_to_macos_meta() {
+        assert_eq!(cmd_modifier(), crate::config::NativeModifier::Meta);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn cmd_modifier_resolves_to_ctrl_off_macos() {
+        assert_eq!(cmd_modifier(), crate::config::NativeModifier::Ctrl);
     }
 
     #[test]

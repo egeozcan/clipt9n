@@ -20,6 +20,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: platform discipline lint
+        run: scripts/lint-platform-discipline.sh
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
