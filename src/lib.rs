@@ -12,6 +12,7 @@ pub mod platform;
 pub mod secrets;
 pub mod state;
 pub mod translator;
+pub mod tray;
 pub mod ui;
 
 use clap::{ArgGroup, Parser};
