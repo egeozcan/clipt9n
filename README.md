@@ -139,6 +139,116 @@ Set the threshold to `0` to confirm any non-empty clipboard (useful for debuggin
 - **No glossary, no history, no setup wizard.** All later milestones.
 - **Built-in templates only.** User-overrideable templates land in M4.
 
+### M4: Glossary + custom templates + SIGHUP reload
+
+#### Glossary file
+
+Place a `glossary.toml` in your config dir (macOS:
+`~/Library/Application Support/clipboard-translator/glossary.toml`). Each
+entry pins a source term to a fixed translation, optionally scoped to
+language pairs:
+
+```toml
+[[entry]]
+source = "Smart Table"
+target = "Smart Table"
+languages = ["*"]            # applies to every language pair
+
+[[entry]]
+source = "Vorgang"
+target = "case"
+languages = ["de->en"]       # only when translating German → English
+
+[[entry]]
+source = "GIP"
+target = "GIP"
+languages = ["*"]
+note = "Always preserve as-is"
+```
+
+When the prompt window opens, matched terms appear in a chip strip above
+the slot list ("GLOSSARY WILL INJECT: ..."). At translation time, the
+pair-scoped subset is rendered into the system prompt as:
+
+```
+GLOSSARY — these terms MUST be translated exactly as specified:
+- "Smart Table" → "Smart Table"
+- "GIP" → "GIP" (Always preserve as-is)
+```
+
+Configure matching strategy via `[glossary]` in `config.toml`:
+
+```toml
+[glossary]
+enabled = true
+file = "glossary.toml"
+case_sensitive = false
+matching = "auto"            # auto | word_boundary | substring
+```
+
+`auto` (default): word_boundary for whitespace-using languages; substring
+for `zho`, `jpn`, `tha`, `lao`, `mya`, `khm`. If your source-language
+detection lands below the confidence threshold, `auto` falls back to
+word_boundary (the safer choice for most target languages).
+
+If `glossary.toml` is malformed, the app logs a warning at startup and
+continues with no glossary. Editing the file and sending `SIGHUP` to the
+running process reloads it without a restart:
+
+```bash
+pkill -HUP clipt9n
+```
+
+(SIGHUP reload is Linux + macOS only. The M7 tray menu's "Reload
+glossary" item will provide a cross-platform alternative.)
+
+#### Custom template overrides
+
+The four built-in prompt templates are overridable via files in your
+config dir's `templates/` folder. To override one, create the file at the
+path listed in `[templates]` (defaults are `templates/<action>.j2`):
+
+```
+~/Library/Application Support/clipboard-translator/
+└── templates/
+    ├── translate.j2     ← overrides the built-in translate template
+    ├── fix_grammar.j2
+    ├── rewrite.j2
+    └── custom.j2
+```
+
+Available variables:
+- `{{ source_language }}` — auto-detected via whatlang; may be `unknown`
+- `{{ target_language }}` — human-readable name (e.g., `"Deutsch"`)
+- `{{ user_instruction }}` — only set in the `custom` template
+- `{{ glossary_block }}` — pre-rendered glossary directives, or empty
+
+Malformed templates abort startup with a `<file>:<line>` error.
+References to undeclared variables likewise abort startup. Templates
+are NOT reloaded on SIGHUP — restart the app after editing.
+
+To force a built-in for a specific action, set its path to `""` in
+`config.toml`:
+
+```toml
+[templates]
+translate = ""               # use built-in regardless of file presence
+custom = "templates/custom.j2"
+```
+
+#### M4 limitations (carried forward)
+
+- whatlang's confidence threshold is hard-coded at 0.5. Misclassification
+  on very short clipboards is best-effort; pair-scoped glossary entries
+  may not fire when the language is low-confidence.
+- The chip strip preview is pair-agnostic — it shows every term that
+  matches the clipboard regardless of whether the pair will scope it
+  out at translation time. This is informational; the translator
+  applies pair scoping correctly.
+- Templates can't be reloaded without a restart (only the glossary is
+  hot-reloadable). M8 may add a tray-menu "Reload templates" action if
+  there's demand.
+
 ## Development
 
 ```bash
