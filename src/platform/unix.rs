@@ -56,7 +56,6 @@ pub(crate) fn install(rt: &Runtime, tx: Sender<()>) {
 /// by `History` after writing the keyfile. On non-Unix platforms the
 /// equivalent caller path no-ops via `cfg(not(unix))` dispatch in
 /// `src/history/crypto.rs`.
-#[allow(dead_code)]
 pub(crate) fn set_owner_only_permissions(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);

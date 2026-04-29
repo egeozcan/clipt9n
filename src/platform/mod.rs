@@ -43,6 +43,9 @@ pub use windows::WindowsPlatform as ActivePlatform;
 #[cfg(unix)]
 mod unix;
 
+#[cfg(unix)]
+pub(crate) use unix::set_owner_only_permissions;
+
 /// Construct the active platform impl for this build.
 pub fn current() -> ActivePlatform {
     // Per-OS impls start as unit structs but may grow fields; using `default()`
