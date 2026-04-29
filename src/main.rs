@@ -42,7 +42,9 @@ fn main() -> anyhow::Result<()> {
     )?);
     // Glossary: graceful load — fall back to empty on error.
     let glossary_path = config_dir.join(&cfg.glossary.file);
-    let glossary_inner = match clipt9n::glossary::Glossary::load(&glossary_path) {
+    let load_result = clipt9n::glossary::Glossary::load(&glossary_path);
+    let glossary_malformed_at_startup = load_result.is_err();
+    let glossary_inner = match load_result {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(error = %e, "glossary load failed; continuing without glossary");
@@ -305,6 +307,9 @@ fn main() -> anyhow::Result<()> {
                 hotkey_in_use,
             );
             app.install_glossary_reload(glossary_reload_tx);
+            if glossary_malformed_at_startup {
+                app.set_glossary_malformed(true);
+            }
 
             // M7: tray construction. Failure is non-fatal.
             if tray_should_show {

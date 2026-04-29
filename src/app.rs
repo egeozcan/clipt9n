@@ -107,6 +107,12 @@ pub struct ClipApp {
     /// this for re-reads.
     glossary_path: PathBuf,
 
+    /// Set to true at startup iff `Glossary::load` returned an error
+    /// (file existed but was malformed). Cleared by `reload_glossary`
+    /// when a SIGHUP-triggered reload succeeds with at least one entry.
+    /// Drives the tray's `Warn(GlossaryMalformed)` status pill.
+    glossary_malformed: std::sync::atomic::AtomicBool,
+
     runtime: Runtime,
     hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
     result_tx: mpsc::Sender<TranslationOutcome>,
@@ -270,6 +276,7 @@ impl ClipApp {
             templates,
             glossary,
             glossary_path,
+            glossary_malformed: std::sync::atomic::AtomicBool::new(false),
             runtime,
             hotkey_rx,
             result_tx,
@@ -582,12 +589,18 @@ impl ClipApp {
         match crate::glossary::Glossary::load(&self.glossary_path) {
             Ok(g) => {
                 let entry_count = g.len();
+                let is_non_empty = !g.is_empty();
                 *self.glossary.write().expect("glossary RwLock poisoned") = g;
                 tracing::info!(
                     path = %self.glossary_path.display(),
                     entries = entry_count,
                     "glossary reloaded"
                 );
+                // Clear the malformed flag if the reload produced a
+                // valid, non-empty glossary.
+                if is_non_empty {
+                    self.set_glossary_malformed(false);
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -662,14 +675,27 @@ impl ClipApp {
         }
     }
 
+    /// Set the malformed flag. Called once at startup from main.rs if
+    /// `Glossary::load` returned `Err` (and main.rs fell back to empty).
+    pub fn set_glossary_malformed(&self, malformed: bool) {
+        self.glossary_malformed
+            .store(malformed, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Compute the appropriate `TrayStatus` for the current app state.
     /// Called every frame from `update()`; the per-frame cost is one
-    /// match plus a glossary-empty check (cheap RwLock read).
+    /// match plus a cheap atomic load.
     ///
-    /// Priority: NoApiKey > Warn(AccessibilityPermissionRevoked) >
-    /// Warn(HotkeyInUse) > Warn(GlossaryMalformed) > Ready.
-    /// Warn(KeychainStaleKey) is set transiently by handle_translation_done
-    /// (Task 9) and persists until the next status transition.
+    /// Priority (highest first): NoApiKey > Warn(KeychainStaleKey) >
+    /// Warn(AccessibilityPermissionRevoked) > Warn(HotkeyInUse) >
+    /// Warn(GlossaryMalformed) > Ready.
+    ///
+    /// Note: Warn(KeychainStaleKey) is not yet returned here; Task 9 will
+    /// add the corresponding state (likely a `keychain_stale_key: bool`
+    /// field or similar) and an arm before the accessibility check. Task 9's
+    /// direct `tray.set_status(KeychainStaleKey)` call from the 401 path is
+    /// ephemeral (overwritten on the next frame by NoApiKey once the
+    /// wizard state is entered).
     pub(crate) fn compute_tray_status(&self) -> crate::tray::TrayStatus {
         // Highest priority: missing API key (the wizard would be open
         // anyway, but tray status mirrors the underlying state).
@@ -692,21 +718,12 @@ impl ClipApp {
 
     /// Whether the M4 startup glossary load fell back to empty due to
     /// a parse error. M4 logs a warn but doesn't surface to the UI;
-    /// M7 bridges that into the tray status.
+    /// M7 bridges that into the tray status. Backed by a cached
+    /// AtomicBool set once at startup (and cleared by a successful
+    /// non-empty SIGHUP reload).
     fn glossary_was_malformed_at_startup(&self) -> bool {
-        // Inspect the live glossary: if it's empty AND the file
-        // exists on disk AND the file is non-empty, we know the
-        // startup load fell back. Reload-via-SIGHUP that succeeds
-        // re-fills the live glossary, so this self-clears.
-        let g = match self.glossary.read() {
-            Ok(g) => g,
-            Err(_) => return false, // poisoned lock — treat as not-malformed
-        };
-        if !g.is_empty() {
-            return false;
-        }
-        drop(g);
-        matches!(std::fs::metadata(&self.glossary_path), Ok(m) if m.len() > 0)
+        self.glossary_malformed
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Push the current status to the tray. No-op if no tray.
