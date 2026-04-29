@@ -57,9 +57,9 @@ fn main() -> anyhow::Result<()> {
     };
     let glossary = std::sync::Arc::new(std::sync::RwLock::new(glossary_inner));
 
-    // Glossary reload channel — wired up to SIGHUP in Task 10.
+    // Glossary reload channel — SIGHUP listener installed below once
+    // the App (and its tokio runtime) exists.
     let (glossary_reload_tx, glossary_reload_rx) = crossbeam_channel::unbounded::<()>();
-    let _ = glossary_reload_tx; // Task 10 wires this to SIGHUP.
 
     // Platform precondition (Accessibility on macOS, no-op elsewhere).
     let plat = platform::current();
@@ -141,7 +141,7 @@ fn main() -> anyhow::Result<()> {
         "clipt9n",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(ClipApp::new(
+            let app = ClipApp::new(
                 cc,
                 cfg,
                 provider,
@@ -152,7 +152,9 @@ fn main() -> anyhow::Result<()> {
                 secrets,
                 state_path,
                 hotkey_rx,
-            )))
+            );
+            app.install_glossary_reload(glossary_reload_tx);
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;

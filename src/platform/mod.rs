@@ -40,6 +40,9 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::WindowsPlatform as ActivePlatform;
 
+#[cfg(unix)]
+mod unix;
+
 /// Construct the active platform impl for this build.
 pub fn current() -> ActivePlatform {
     // Per-OS impls start as unit structs but may grow fields; using `default()`
@@ -47,6 +50,22 @@ pub fn current() -> ActivePlatform {
     #[allow(clippy::default_constructed_unit_structs)]
     ActivePlatform::default()
 }
+
+/// Install a SIGHUP-driven reload listener. On Unix (Linux/macOS) this
+/// spawns a tokio task that forwards every SIGHUP delivery to `tx`. On
+/// Windows this is a no-op (signal model differs; tray-menu "Reload
+/// glossary" is the equivalent affordance there in M7).
+///
+/// Infallible: signal-install errors on Unix are logged inside the
+/// spawned task rather than propagated. Callers can rely on this not
+/// being a startup failure mode.
+#[cfg(unix)]
+pub fn install_sighup_reload(rt: &tokio::runtime::Runtime, tx: crossbeam_channel::Sender<()>) {
+    unix::install(rt, tx);
+}
+
+#[cfg(not(unix))]
+pub fn install_sighup_reload(_rt: &tokio::runtime::Runtime, _tx: crossbeam_channel::Sender<()>) {}
 
 #[cfg(test)]
 mod tests {
@@ -77,5 +96,16 @@ mod tests {
     fn current_platform_reduced_motion_does_not_panic() {
         // Whatever the OS reports, we just need a clean call.
         let _ = current().reduced_motion();
+    }
+
+    #[test]
+    fn install_sighup_reload_does_not_panic_on_current_platform() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let (tx, _rx) = crossbeam_channel::unbounded::<()>();
+        // Infallible — Unix installs a real listener, Windows is no-op.
+        install_sighup_reload(&rt, tx);
     }
 }

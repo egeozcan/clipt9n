@@ -85,7 +85,6 @@ pub struct ClipApp {
 
     /// Path to the glossary file on disk. The SIGHUP handler reuses
     /// this for re-reads.
-    #[allow(dead_code)]
     glossary_path: PathBuf,
 
     runtime: Runtime,
@@ -95,7 +94,6 @@ pub struct ClipApp {
 
     /// SIGHUP / glossary-reload signal receiver. A unit value is sent
     /// each time a reload is requested (Task 10 wires the sender).
-    #[allow(dead_code)]
     glossary_reload_rx: CrossbeamReceiver<()>,
 
     app_state: AppState,
@@ -425,6 +423,46 @@ impl ClipApp {
         while let Ok(outcome) = self.result_rx.try_recv() {
             self.handle_translation_done(outcome);
         }
+        // Glossary reload requests (SIGHUP, tray menu in M7)
+        let mut reload_requested = false;
+        while self.glossary_reload_rx.try_recv().is_ok() {
+            reload_requested = true;
+        }
+        if reload_requested {
+            self.reload_glossary();
+        }
+    }
+
+    fn reload_glossary(&mut self) {
+        // Sync I/O on the egui update thread is acceptable here because
+        // glossary files are small (typically <10KB) and the reload is
+        // user-driven (SIGHUP / future tray menu), not periodic.
+        match crate::glossary::Glossary::load(&self.glossary_path) {
+            Ok(g) => {
+                let entry_count = g.len();
+                *self.glossary.write().expect("glossary RwLock poisoned") = g;
+                tracing::info!(
+                    path = %self.glossary_path.display(),
+                    entries = entry_count,
+                    "glossary reloaded"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %self.glossary_path.display(),
+                    "glossary reload failed; keeping previous entries"
+                );
+            }
+        }
+    }
+
+    /// Install the SIGHUP-driven glossary-reload listener against the
+    /// app's tokio runtime. Thin wrapper around
+    /// `platform::install_sighup_reload` so callers don't need access to
+    /// the runtime.
+    pub fn install_glossary_reload(&self, tx: crossbeam_channel::Sender<()>) {
+        crate::platform::install_sighup_reload(&self.runtime, tx);
     }
 
     fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
