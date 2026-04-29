@@ -6,24 +6,35 @@
 use crossbeam_channel::Sender;
 use tokio::runtime::Runtime;
 
-/// Spawn a tokio task on `rt` that listens for SIGHUP and forwards a
-/// `()` to `tx` each time the signal arrives. Caller drains `tx`'s
-/// receiver in its event loop and triggers whatever reload it owns.
+/// Install a SIGHUP handler against `rt`'s reactor and spawn a task that
+/// forwards each delivery to `tx`. Caller drains `tx`'s receiver in its
+/// event loop and triggers whatever reload it owns.
+///
+/// **Why register synchronously:** `tokio::signal::unix::signal(...)` is
+/// what installs the OS-level `sigaction` handler — until that call
+/// returns, the kernel still uses the default disposition, which for
+/// SIGHUP is "terminate the process." If we delayed the call by putting
+/// it inside the spawned future, an early `kill -HUP` (e.g. immediately
+/// after launch) would race the worker thread and kill us before the
+/// handler took effect. Registering synchronously while holding a
+/// runtime-context guard closes that window: by the time `install`
+/// returns, SIGHUP is intercepted.
 ///
 /// The task runs until the runtime is dropped; if `tx` is dropped, sends
-/// fail silently (logged at debug) and the task exits. Install itself
-/// is infallible — `signal()` errors are logged inside the spawned task
-/// rather than propagated.
+/// fail silently (logged at debug) and the task exits.
 pub(crate) fn install(rt: &Runtime, tx: Sender<()>) {
+    let _enter = rt.enter();
+    let mut sighup =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to install SIGHUP listener");
+                return;
+            }
+        };
+    drop(_enter);
+    tracing::info!("SIGHUP listener installed; pkill -HUP triggers glossary reload");
     rt.spawn(async move {
-        let mut sighup =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to install SIGHUP listener");
-                    return;
-                }
-            };
         loop {
             match sighup.recv().await {
                 Some(()) => {
