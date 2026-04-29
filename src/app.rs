@@ -141,6 +141,12 @@ pub struct ClipApp {
     #[allow(dead_code)]
     secrets: Box<dyn Secrets>,
 
+    /// Tray icon handle. `None` means the tray was disabled by
+    /// `state.tray.visible == false` (without `--show-tray`) OR
+    /// construction failed at startup. Tray-failure is non-fatal — the
+    /// hotkey path still works. Set via `attach_tray` after `new()`.
+    tray: Option<crate::tray::TrayHandle>,
+
     /// Setup-wizard check results channel. The connectivity + sample-
     /// translation tasks send `(SetupCheck, Result<(), String>)` here;
     /// `update_setup_wizard` drains it on every frame.
@@ -259,6 +265,7 @@ impl ClipApp {
             )),
             history_warned: std::sync::atomic::AtomicBool::new(false),
             secrets,
+            tray: None,
             setup_check_tx,
             setup_check_rx,
             prompt_hotkey_id,
@@ -573,12 +580,39 @@ impl ClipApp {
         }
     }
 
+    /// Drain pending tray menu events and dispatch. Called once per
+    /// frame from `update()`. No-op if `self.tray` is None.
+    fn drain_tray_events(&mut self, ctx: &egui::Context) {
+        if self.tray.is_none() {
+            return;
+        }
+        let Some(id) = crate::tray::TrayHandle::try_drain_menu_event() else {
+            return;
+        };
+        match id.as_str() {
+            crate::tray::ID_TRANSLATE => self.show_window(ctx),
+            crate::tray::ID_HISTORY => self.summon_history(ctx),
+            // Open glossary, reload glossary, re-run wizard, hide,
+            // quit — wired in Tasks 6, 7, 9.
+            other => {
+                tracing::debug!(id = %other, "tray menu event (handler not yet wired)");
+            }
+        }
+    }
+
     /// Install the SIGHUP-driven glossary-reload listener against the
     /// app's tokio runtime. Thin wrapper around
     /// `platform::install_sighup_reload` so callers don't need access to
     /// the runtime.
     pub fn install_glossary_reload(&self, tx: crossbeam_channel::Sender<()>) {
         crate::platform::install_sighup_reload(&self.runtime, tx);
+    }
+
+    /// Attach a TrayHandle constructed by main.rs. Called once after
+    /// `new()` from inside the eframe creator closure (the only place
+    /// where TrayIcon construction is allowed on macOS).
+    pub fn attach_tray(&mut self, tray: crate::tray::TrayHandle) {
+        self.tray = Some(tray);
     }
 
     /// Whether the app is currently displaying the setup wizard.
@@ -1332,6 +1366,7 @@ impl eframe::App for ClipApp {
         ctx.request_repaint_after(Duration::from_millis(150));
 
         self.drain_channels(ctx);
+        self.drain_tray_events(ctx);
 
         let want_visible = !matches!(self.app_state, AppState::Idle);
         ctx.send_viewport_cmd(ViewportCommand::Visible(want_visible));

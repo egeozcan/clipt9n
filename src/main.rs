@@ -101,6 +101,9 @@ fn main() -> anyhow::Result<()> {
     // Secrets resolution (M1 behavior: env-var only).
     let secrets: Box<dyn Secrets> = clipt9n::secrets::resolve(&cfg.provider.api_key);
     let api_key_opt = secrets.get_api_key().ok();
+    // Capture for the tray status decision inside the eframe closure,
+    // before api_key_opt is consumed by unwrap_or_else below.
+    let has_api_key = api_key_opt.is_some();
     // If we have no key, construct a provider with a placeholder. The
     // setup wizard's Verify checks build their own client (with the
     // user's freshly-typed key) so the placeholder is unused until
@@ -236,6 +239,20 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // M7: Determine tray visibility before entering the eframe closure.
+    // We need to load state here (before state_path moves into the closure).
+    let tray_state_visible = clipt9n::state::State::load(&state_path).tray.visible;
+    let tray_should_show = tray_state_visible || cli.show_tray;
+    // --show-tray side effect: persist tray.visible=true so subsequent
+    // launches continue showing the tray without the flag.
+    if cli.show_tray && !tray_state_visible {
+        let mut s = clipt9n::state::State::load(&state_path);
+        s.tray.visible = true;
+        if let Err(e) = s.save(&state_path) {
+            tracing::warn!(error = %e, "failed to persist tray.visible=true after --show-tray");
+        }
+    }
+
     // eframe options: hidden, undecorated, always-on-top, centered window.
     let inner_size = clipt9n::ui::prompt_default_inner_size(&cfg.ui);
     let viewport = eframe::egui::ViewportBuilder::default()
@@ -256,7 +273,7 @@ fn main() -> anyhow::Result<()> {
         "clipt9n",
         native_options,
         Box::new(move |cc| {
-            let app = ClipApp::new(
+            let mut app = ClipApp::new(
                 cc,
                 cfg,
                 provider,
@@ -273,6 +290,22 @@ fn main() -> anyhow::Result<()> {
                 history_hotkey_id,
             );
             app.install_glossary_reload(glossary_reload_tx);
+
+            // M7: tray construction. Failure is non-fatal.
+            if tray_should_show {
+                let initial_status = if has_api_key {
+                    clipt9n::tray::TrayStatus::Ready
+                } else {
+                    clipt9n::tray::TrayStatus::NoApiKey
+                };
+                match clipt9n::tray::TrayHandle::build(initial_status) {
+                    Ok(handle) => app.attach_tray(handle),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "tray construction failed; running without tray icon");
+                    }
+                }
+            }
+
             let app = match initial_setup_wizard {
                 Some(model) => {
                     app.with_initial_state(clipt9n::app::InitialState::SetupWizard(model))
