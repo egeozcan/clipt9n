@@ -116,6 +116,12 @@ pub struct ClipApp {
     /// each time a reload is requested (Task 10 wires the sender).
     glossary_reload_rx: CrossbeamReceiver<()>,
 
+    /// Sender clone for the glossary-reload channel. Tray menu's
+    /// "Reload glossary" item sends `()` here; SIGHUP listener also
+    /// sends here. The receiver (`glossary_reload_rx` above) is drained
+    /// once per frame in `update()`.
+    glossary_reload_tx: Option<crossbeam_channel::Sender<()>>,
+
     /// Encrypted history store. `None` means history was disabled at
     /// config time (`[history] enabled = false`) OR open failed at
     /// startup. The `Arc<History>` lets worker tasks clone the handle
@@ -154,6 +160,12 @@ pub struct ClipApp {
     /// `update_setup_wizard` drains it on every frame.
     setup_check_tx: std::sync::mpsc::Sender<crate::ui::setup::SetupCheckResult>,
     setup_check_rx: std::sync::mpsc::Receiver<crate::ui::setup::SetupCheckResult>,
+
+    /// Captured at startup. The runtime tray-status computation
+    /// preserves these warning surfaces unless they're superseded by
+    /// higher-priority states (NoApiKey, KeychainStaleKey).
+    accessibility_revoked: bool,
+    hotkey_in_use: bool,
 
     /// `global-hotkey` ID for the prompt hotkey. Always set (the prompt
     /// hotkey is always registered).
@@ -224,6 +236,8 @@ impl ClipApp {
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
         prompt_hotkey_id: u32,
         history_hotkey_id: Option<u32>,
+        accessibility_revoked: bool,
+        hotkey_in_use: bool,
     ) -> Self {
         cc.egui_ctx.set_visuals(theme::visuals());
 
@@ -261,6 +275,7 @@ impl ClipApp {
             result_tx,
             result_rx,
             glossary_reload_rx,
+            glossary_reload_tx: None,
             history,
             history_disabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 history_disabled_initial,
@@ -270,6 +285,8 @@ impl ClipApp {
             tray: None,
             setup_check_tx,
             setup_check_rx,
+            accessibility_revoked,
+            hotkey_in_use,
             prompt_hotkey_id,
             history_hotkey_id,
             app_state: AppState::Idle,
@@ -603,8 +620,9 @@ impl ClipApp {
         match id.as_str() {
             crate::tray::ID_TRANSLATE => self.show_window(ctx),
             crate::tray::ID_HISTORY => self.summon_history(ctx),
-            // Open glossary, reload glossary, re-run wizard, hide,
-            // quit — wired in Tasks 6, 7, 9.
+            crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
+            crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
+            // Re-run wizard, Hide, Quit — wired in Tasks 7, 9.
             other => {
                 tracing::debug!(id = %other, "tray menu event (handler not yet wired)");
             }
@@ -612,11 +630,12 @@ impl ClipApp {
     }
 
     /// Install the SIGHUP-driven glossary-reload listener against the
-    /// app's tokio runtime. Thin wrapper around
-    /// `platform::install_sighup_reload` so callers don't need access to
-    /// the runtime.
-    pub fn install_glossary_reload(&self, tx: crossbeam_channel::Sender<()>) {
-        crate::platform::install_sighup_reload(&self.runtime, tx);
+    /// app's tokio runtime. Stashes a sender clone so the tray menu's
+    /// "Reload glossary" item can trigger reloads via `dispatch_reload_glossary`.
+    pub fn install_glossary_reload(&mut self, tx: crossbeam_channel::Sender<()>) {
+        let tx_for_sighup = tx.clone();
+        self.glossary_reload_tx = Some(tx);
+        crate::platform::install_sighup_reload(&self.runtime, tx_for_sighup);
     }
 
     /// Attach a TrayHandle constructed by main.rs. Called once after
@@ -624,6 +643,80 @@ impl ClipApp {
     /// where TrayIcon construction is allowed on macOS).
     pub fn attach_tray(&mut self, tray: crate::tray::TrayHandle) {
         self.tray = Some(tray);
+    }
+
+    fn dispatch_open_glossary(&self) {
+        match crate::platform::current().open_path(&self.glossary_path) {
+            Ok(()) => tracing::info!(path = %self.glossary_path.display(), "tray: opened glossary"),
+            Err(e) => tracing::warn!(error = %e, "tray: open glossary failed"),
+        }
+    }
+
+    fn dispatch_reload_glossary(&self) {
+        let Some(tx) = self.glossary_reload_tx.as_ref() else {
+            tracing::warn!("tray: reload glossary requested but no reload channel");
+            return;
+        };
+        if let Err(e) = tx.send(()) {
+            tracing::warn!(error = %e, "tray: reload glossary send failed");
+        }
+    }
+
+    /// Compute the appropriate `TrayStatus` for the current app state.
+    /// Called every frame from `update()`; the per-frame cost is one
+    /// match plus a glossary-empty check (cheap RwLock read).
+    ///
+    /// Priority: NoApiKey > Warn(AccessibilityPermissionRevoked) >
+    /// Warn(HotkeyInUse) > Warn(GlossaryMalformed) > Ready.
+    /// Warn(KeychainStaleKey) is set transiently by handle_translation_done
+    /// (Task 9) and persists until the next status transition.
+    pub(crate) fn compute_tray_status(&self) -> crate::tray::TrayStatus {
+        // Highest priority: missing API key (the wizard would be open
+        // anyway, but tray status mirrors the underlying state).
+        if matches!(self.app_state, AppState::SetupWizard { .. }) {
+            return crate::tray::TrayStatus::NoApiKey;
+        }
+        if self.accessibility_revoked {
+            return crate::tray::TrayStatus::Warn(
+                crate::tray::WarnReason::AccessibilityPermissionRevoked,
+            );
+        }
+        if self.hotkey_in_use {
+            return crate::tray::TrayStatus::Warn(crate::tray::WarnReason::HotkeyInUse);
+        }
+        if self.glossary_was_malformed_at_startup() {
+            return crate::tray::TrayStatus::Warn(crate::tray::WarnReason::GlossaryMalformed);
+        }
+        crate::tray::TrayStatus::Ready
+    }
+
+    /// Whether the M4 startup glossary load fell back to empty due to
+    /// a parse error. M4 logs a warn but doesn't surface to the UI;
+    /// M7 bridges that into the tray status.
+    fn glossary_was_malformed_at_startup(&self) -> bool {
+        // Inspect the live glossary: if it's empty AND the file
+        // exists on disk AND the file is non-empty, we know the
+        // startup load fell back. Reload-via-SIGHUP that succeeds
+        // re-fills the live glossary, so this self-clears.
+        let g = match self.glossary.read() {
+            Ok(g) => g,
+            Err(_) => return false, // poisoned lock — treat as not-malformed
+        };
+        if !g.is_empty() {
+            return false;
+        }
+        drop(g);
+        matches!(std::fs::metadata(&self.glossary_path), Ok(m) if m.len() > 0)
+    }
+
+    /// Push the current status to the tray. No-op if no tray.
+    fn refresh_tray_status(&mut self) {
+        let status = self.compute_tray_status();
+        if let Some(tray) = self.tray.as_mut() {
+            if let Err(e) = tray.set_status(status) {
+                tracing::warn!(error = %e, "tray status refresh failed");
+            }
+        }
     }
 
     /// Whether the app is currently displaying the setup wizard.
@@ -1435,6 +1528,8 @@ impl eframe::App for ClipApp {
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
         }
+
+        self.refresh_tray_status();
     }
 }
 

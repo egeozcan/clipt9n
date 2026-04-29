@@ -91,12 +91,17 @@ fn main() -> anyhow::Result<()> {
 
     // Platform precondition (Accessibility on macOS, no-op elsewhere).
     let plat = platform::current();
-    if let Err(e) = plat.ensure_hotkey_permissions() {
-        tracing::error!(error = %e, "hotkey permission check failed");
-        // ensure_hotkey_permissions has already opened System Settings;
-        // exit non-zero so the user grants permission and relaunches.
-        return Err(anyhow::anyhow!(e));
-    }
+    // Per spec §8: if Accessibility is missing, surface via tray
+    // warning state rather than aborting startup. The hotkey will
+    // simply fail to register below; the user can fix the permission
+    // and the tray icon's tooltip + click-to-help guides them there.
+    let accessibility_revoked = match plat.ensure_hotkey_permissions() {
+        Ok(()) => false,
+        Err(e) => {
+            tracing::warn!(error = %e, "accessibility permission missing; running with tray warning state");
+            true
+        }
+    };
 
     // Secrets resolution (M1 behavior: env-var only).
     let secrets: Box<dyn Secrets> = clipt9n::secrets::resolve(&cfg.provider.api_key);
@@ -136,9 +141,17 @@ fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("unsupported hotkey key: {}", cfg.hotkey.key))?;
     let prompt_hotkey = HotKey::new(Some(prompt_mods), prompt_key_code);
     let prompt_hotkey_id = prompt_hotkey.id();
-    if cfg.hotkey.enabled {
-        manager.register(prompt_hotkey)?;
-    }
+    let hotkey_in_use = if cfg.hotkey.enabled {
+        match manager.register(prompt_hotkey) {
+            Ok(()) => false,
+            Err(e) => {
+                tracing::warn!(error = %e, "prompt hotkey registration failed; tray menu remains the entry point");
+                true
+            }
+        }
+    } else {
+        false
+    };
 
     // History hotkey — M5 addition. Failure to register (e.g., already
     // claimed by another app) is non-fatal; we log warn and the user
@@ -288,15 +301,25 @@ fn main() -> anyhow::Result<()> {
                 hotkey_rx,
                 prompt_hotkey_id,
                 history_hotkey_id,
+                accessibility_revoked,
+                hotkey_in_use,
             );
             app.install_glossary_reload(glossary_reload_tx);
 
             // M7: tray construction. Failure is non-fatal.
             if tray_should_show {
-                let initial_status = if has_api_key {
-                    clipt9n::tray::TrayStatus::Ready
-                } else {
+                let initial_status = if !has_api_key {
                     clipt9n::tray::TrayStatus::NoApiKey
+                } else if accessibility_revoked {
+                    clipt9n::tray::TrayStatus::Warn(
+                        clipt9n::tray::WarnReason::AccessibilityPermissionRevoked,
+                    )
+                } else if hotkey_in_use {
+                    clipt9n::tray::TrayStatus::Warn(
+                        clipt9n::tray::WarnReason::HotkeyInUse,
+                    )
+                } else {
+                    clipt9n::tray::TrayStatus::Ready
                 };
                 match clipt9n::tray::TrayHandle::build(initial_status) {
                     Ok(handle) => app.attach_tray(handle),
