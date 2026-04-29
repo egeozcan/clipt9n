@@ -703,7 +703,7 @@ impl ClipApp {
         let outcome = crate::ui::tray_modal::draw(ctx, &model);
         match outcome {
             Some(crate::ui::tray_modal::TrayHideOutcome::Cancel) => {
-                self.dismiss_to_idle(ctx);
+                self.dismiss_tray_modal_to_idle(ctx);
             }
             Some(crate::ui::tray_modal::TrayHideOutcome::Confirm) => {
                 // Persist state, drop the tray, dismiss to idle.
@@ -715,7 +715,7 @@ impl ClipApp {
                 tracing::info!(
                     "tray hidden via user confirmation; relaunch with --show-tray to restore"
                 );
-                self.dismiss_to_idle(ctx);
+                self.dismiss_tray_modal_to_idle(ctx);
             }
             None => {
                 // Modal still open — re-store the state for next frame.
@@ -1518,6 +1518,14 @@ impl ClipApp {
     }
 
     fn dismiss_history_to_idle(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            crate::ui::prompt_default_inner_size(&self.cfg.ui),
+        ));
+        self.app_state = AppState::Idle;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+    }
+
+    fn dismiss_tray_modal_to_idle(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             crate::ui::prompt_default_inner_size(&self.cfg.ui),
         ));
