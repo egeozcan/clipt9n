@@ -9,7 +9,7 @@ use crate::history::store::HistoryEntry;
 use crate::ui::theme;
 
 /// What the viewer paints per frame.
-#[derive(Default)]
+#[derive(Debug, Default, Clone)]
 pub struct HistoryModel {
     /// All entries returned by the most recent `History::query` call.
     /// The viewer applies the search filter on top of this in-memory

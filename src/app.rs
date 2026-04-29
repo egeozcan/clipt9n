@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use eframe::CreationContext;
-use egui::{Key, ViewportCommand};
+use egui::{Key, Vec2, ViewportCommand};
 use global_hotkey::GlobalHotKeyEvent;
 use tokio::runtime::Runtime;
 
@@ -52,6 +52,11 @@ enum AppState {
         action_label: String,
         overlay_label: String,
         started_at: std::time::Instant,
+    },
+    /// Encrypted history viewer is open. The model holds the
+    /// most-recent query results plus search/selection state.
+    ShowingHistory {
+        model: crate::ui::history::HistoryModel,
     },
 }
 
@@ -111,18 +116,13 @@ pub struct ClipApp {
 
     /// Set to true the first time the corruption toast has been shown
     /// to the user. Mirrors M4's "warned once per session" pattern.
-    #[allow(dead_code)]
     history_warned: std::sync::atomic::AtomicBool,
 
     /// `global-hotkey` ID for the prompt hotkey. Always set (the prompt
-    /// hotkey is always registered). `#[allow(dead_code)]` is temporary
-    /// — Task 10 reads this in `drain_channels` to route hotkey events.
-    #[allow(dead_code)]
+    /// hotkey is always registered).
     prompt_hotkey_id: u32,
     /// `global-hotkey` ID for the history hotkey. `None` if the user
-    /// disabled it via `[hotkey.history] enabled = false`. `#[allow(dead_code)]`
-    /// is temporary — Task 10 reads this in `drain_channels`.
-    #[allow(dead_code)]
+    /// disabled it via `[hotkey.history] enabled = false`.
     history_hotkey_id: Option<u32>,
 
     app_state: AppState,
@@ -476,13 +476,29 @@ impl ClipApp {
 
     fn drain_channels(&mut self, ctx: &egui::Context) {
         // Hotkey events
-        while let Ok(_event) = self.hotkey_rx.try_recv() {
-            // Any hotkey event = "summon prompt" in M2 (we register one).
-            if matches!(self.app_state, AppState::Idle) {
-                self.show_window(ctx);
+        while let Ok(event) = self.hotkey_rx.try_recv() {
+            let is_prompt = event.id == self.prompt_hotkey_id;
+            let is_history = self
+                .history_hotkey_id
+                .map(|id| event.id == id)
+                .unwrap_or(false);
+            if is_prompt {
+                if matches!(self.app_state, AppState::Idle) {
+                    self.show_window(ctx);
+                } else {
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+            } else if is_history {
+                if matches!(self.app_state, AppState::Idle) {
+                    self.summon_history(ctx);
+                } else {
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
             } else {
-                // If translating, ignore. If already showing, just refocus.
-                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                tracing::debug!(
+                    event_id = event.id,
+                    "ignoring hotkey event from unregistered ID"
+                );
             }
         }
         // Translation results
@@ -812,6 +828,219 @@ impl ClipApp {
             None
         })
     }
+
+    /// Open the history viewer. Queries the store, builds a model,
+    /// resizes the viewport to 680×540, and transitions to
+    /// `ShowingHistory`. If history is disabled (config or corruption),
+    /// the viewer still opens but with a warning banner; this lets the
+    /// user verify the toast and explore an empty (or partially
+    /// readable) database.
+    fn summon_history(&mut self, ctx: &egui::Context) {
+        let mut model = crate::ui::history::HistoryModel::default();
+        let disabled = self
+            .history_disabled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.history.as_ref() {
+            match h.query(
+                &crate::history::store::QueryFilter::default(),
+                self.cfg.history.max_entries,
+            ) {
+                Ok(rows) => {
+                    model.entries = rows;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "history query failed; viewer will show empty");
+                    self.history_disabled
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        // First time? Show banner. Latch via the App-level warned flag.
+        if (disabled
+            || self
+                .history_disabled
+                .load(std::sync::atomic::Ordering::Relaxed))
+            && !self
+                .history_warned
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            model.show_corruption_banner = true;
+            self.history_warned
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Resize viewport for history viewer.
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(680.0, 540.0)));
+        self.has_been_focused = false;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+        self.app_state = AppState::ShowingHistory { model };
+    }
+
+    fn update_showing_history(
+        &mut self,
+        ctx: &egui::Context,
+        mut model: crate::ui::history::HistoryModel,
+    ) {
+        let click_outcome = crate::ui::history::draw(ctx, &mut model);
+        // Banner is one-shot per session — clear AFTER the first draw
+        // renders it, so subsequent frames don't re-render it.
+        model.show_corruption_banner = false;
+        let key_outcome = self.handle_keys_history(ctx, &mut model);
+        let outcome = click_outcome.or(key_outcome);
+
+        match outcome {
+            Some(crate::ui::history::HistoryOutcome::Close) => {
+                self.dismiss_history_to_idle(ctx);
+            }
+            Some(crate::ui::history::HistoryOutcome::CopyResult(id)) => {
+                if let Some(entry) = model.entries.iter().find(|e| e.id == id) {
+                    if let Some(result) = entry.result.as_ref() {
+                        let _ = self.copy_to_clipboard(result.as_str());
+                    }
+                }
+                self.dismiss_history_to_idle(ctx);
+            }
+            Some(crate::ui::history::HistoryOutcome::CopySource(id)) => {
+                if let Some(entry) = model.entries.iter().find(|e| e.id == id) {
+                    if let Some(source) = entry.source.as_ref() {
+                        let _ = self.copy_to_clipboard(source.as_str());
+                    }
+                }
+                // Stay open; user may want to copy more.
+                self.app_state = AppState::ShowingHistory { model };
+            }
+            Some(crate::ui::history::HistoryOutcome::Delete(id)) => {
+                if let Some(h) = self.history.as_ref() {
+                    if let Err(e) = h.delete(id) {
+                        tracing::warn!(error = %e, id, "history delete failed");
+                    }
+                }
+                // Re-query so the list reflects the deletion.
+                self.refresh_history_model(&mut model);
+                self.app_state = AppState::ShowingHistory { model };
+            }
+            Some(crate::ui::history::HistoryOutcome::ClearAll) => {
+                if let Some(h) = self.history.as_ref() {
+                    if let Err(e) = h.clear_all() {
+                        tracing::warn!(error = %e, "history clear_all failed");
+                    }
+                }
+                self.refresh_history_model(&mut model);
+                self.app_state = AppState::ShowingHistory { model };
+            }
+            None => {
+                self.app_state = AppState::ShowingHistory { model };
+            }
+        }
+    }
+
+    fn handle_keys_history(
+        &self,
+        ctx: &egui::Context,
+        model: &mut crate::ui::history::HistoryModel,
+    ) -> Option<crate::ui::history::HistoryOutcome> {
+        // If the modal is up, only Esc/Enter act on it.
+        if model.confirm_clear {
+            return ctx.input(|i| {
+                if i.key_pressed(Key::Escape) {
+                    model.confirm_clear = false;
+                    None
+                } else if i.key_pressed(Key::Enter) {
+                    model.confirm_clear = false;
+                    Some(crate::ui::history::HistoryOutcome::ClearAll)
+                } else {
+                    None
+                }
+            });
+        }
+
+        // Apply filter to find the focused row's id (we only act on it
+        // for s/d/Enter shortcuts).
+        let filtered = crate::ui::history::filter_entries(&model.entries, &model.query);
+        let focused_id = filtered.get(model.selected).map(|e| e.id);
+
+        let len = filtered.len();
+        ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                return Some(crate::ui::history::HistoryOutcome::Close);
+            }
+            if i.key_pressed(Key::ArrowDown) && len > 0 {
+                model.selected = (model.selected + 1).min(len - 1);
+            }
+            if i.key_pressed(Key::ArrowUp) && len > 0 {
+                model.selected = model.selected.saturating_sub(1);
+            }
+            if i.key_pressed(Key::Delete) && i.modifiers.shift {
+                if self.cfg.history.confirm_clear {
+                    model.confirm_clear = true;
+                    return None;
+                }
+                return Some(crate::ui::history::HistoryOutcome::ClearAll);
+            }
+            if i.key_pressed(Key::Enter) {
+                if let Some(id) = focused_id {
+                    return Some(crate::ui::history::HistoryOutcome::CopyResult(id));
+                }
+            }
+            // For 's' / 'd', reject when a Text event of that letter
+            // was emitted this frame — that means the search field
+            // captured it (so the user is typing into the search box).
+            let typed_letters: std::collections::HashSet<char> = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(s) if s.len() == 1 => s.chars().next(),
+                    _ => None,
+                })
+                .collect();
+            if i.key_pressed(Key::S) && !typed_letters.contains(&'s') {
+                if let Some(id) = focused_id {
+                    return Some(crate::ui::history::HistoryOutcome::CopySource(id));
+                }
+            }
+            if i.key_pressed(Key::D) && !typed_letters.contains(&'d') {
+                if let Some(id) = focused_id {
+                    return Some(crate::ui::history::HistoryOutcome::Delete(id));
+                }
+            }
+            None
+        })
+    }
+
+    fn refresh_history_model(&self, model: &mut crate::ui::history::HistoryModel) {
+        if let Some(h) = self.history.as_ref() {
+            match h.query(
+                &crate::history::store::QueryFilter::default(),
+                self.cfg.history.max_entries,
+            ) {
+                Ok(rows) => {
+                    model.entries = rows;
+                    if model.selected >= model.entries.len() {
+                        model.selected = 0;
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "history re-query failed"),
+            }
+        }
+    }
+
+    fn dismiss_history_to_idle(&mut self, ctx: &egui::Context) {
+        // Restore the prompt-default viewport size.
+        let inner_w = if self.cfg.ui.density == "compact" {
+            460.0
+        } else {
+            520.0
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(inner_w, 470.0)));
+        self.app_state = AppState::Idle;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+    }
+
+    fn copy_to_clipboard(&self, text: &str) -> Result<(), TranslateError> {
+        let mut cb = ArboardClipboard::new()?;
+        cb.write_text(text)
+    }
 }
 
 impl eframe::App for ClipApp {
@@ -873,6 +1102,7 @@ impl eframe::App for ClipApp {
             } => {
                 self.update_translating(ctx, gen, action_label, overlay_label, started_at);
             }
+            AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
         }
     }
 }
