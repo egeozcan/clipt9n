@@ -126,7 +126,13 @@ impl LlmProvider for AnthropicProvider {
                                 }),
                             }
                         } else if status == StatusCode::TOO_MANY_REQUESTS {
-                            AttemptOutcome::Fatal(TranslateError::RateLimited)
+                            if let Some(delay) =
+                                super::client::parse_retry_after(resp.headers().get("Retry-After"))
+                            {
+                                AttemptOutcome::RetryAfter(delay, TranslateError::RateLimited)
+                            } else {
+                                AttemptOutcome::Fatal(TranslateError::RateLimited)
+                            }
                         } else if status.is_server_error() {
                             AttemptOutcome::Retry(TranslateError::Provider {
                                 status: status.as_u16(),
