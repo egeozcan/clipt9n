@@ -129,24 +129,75 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Hotkey registration.
+    // Hotkey registration. Two registered: the prompt hotkey (always)
+    // and the history hotkey (M5; suppressible via [hotkey.history]
+    // enabled = false).
     let manager = GlobalHotKeyManager::new()?;
-    let modifier = Modifier::parse(&cfg.hotkey.modifier)
+
+    // Prompt hotkey — same as M2.
+    let prompt_modifier = Modifier::parse(&cfg.hotkey.modifier)
         .ok_or_else(|| anyhow::anyhow!("unknown hotkey modifier: {}", cfg.hotkey.modifier))?;
-    let mut mods = match modifier.resolve_native() {
+    let mut prompt_mods = match prompt_modifier.resolve_native() {
         NativeModifier::Ctrl => Modifiers::CONTROL,
         NativeModifier::Alt => Modifiers::ALT,
         NativeModifier::Meta => Modifiers::META,
     };
     if cfg.hotkey.shift {
-        mods |= Modifiers::SHIFT;
+        prompt_mods |= Modifiers::SHIFT;
     }
-    let key_code = letter_to_code(&cfg.hotkey.key)
+    let prompt_key_code = letter_to_code(&cfg.hotkey.key)
         .ok_or_else(|| anyhow::anyhow!("unsupported hotkey key: {}", cfg.hotkey.key))?;
-    let hotkey = HotKey::new(Some(mods), key_code);
+    let prompt_hotkey = HotKey::new(Some(prompt_mods), prompt_key_code);
+    let prompt_hotkey_id = prompt_hotkey.id();
     if cfg.hotkey.enabled {
-        manager.register(hotkey)?;
+        manager.register(prompt_hotkey)?;
     }
+
+    // History hotkey — M5 addition. Failure to register (e.g., already
+    // claimed by another app) is non-fatal; we log warn and the user
+    // can still use the tray-menu "History" item once M7 lands.
+    let history_hotkey_id = if cfg.hotkey.history.enabled {
+        let mod_kind = match Modifier::parse(&cfg.hotkey.history.modifier) {
+            Some(m) => m,
+            None => {
+                tracing::warn!(
+                    modifier = %cfg.hotkey.history.modifier,
+                    "unknown history hotkey modifier; viewer hotkey disabled"
+                );
+                Modifier::Cmd
+            }
+        };
+        let mut mods = match mod_kind.resolve_native() {
+            NativeModifier::Ctrl => Modifiers::CONTROL,
+            NativeModifier::Alt => Modifiers::ALT,
+            NativeModifier::Meta => Modifiers::META,
+        };
+        if cfg.hotkey.history.shift {
+            mods |= Modifiers::SHIFT;
+        }
+        match letter_to_code(&cfg.hotkey.history.key) {
+            Some(code) => {
+                let hk = HotKey::new(Some(mods), code);
+                let id = hk.id();
+                match manager.register(hk) {
+                    Ok(()) => Some(id),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "history hotkey registration failed; viewer hotkey unavailable");
+                        None
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    key = %cfg.hotkey.history.key,
+                    "unsupported history hotkey key; viewer hotkey disabled"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Forward hotkey events from the global-hotkey channel into ours.
     let hotkey_rx = GlobalHotKeyEvent::receiver().clone();
@@ -188,8 +239,8 @@ fn main() -> anyhow::Result<()> {
                 secrets,
                 state_path,
                 hotkey_rx,
-                0,    // Task 11 will replace with real prompt hotkey id
-                None, // Task 11 will replace with real history hotkey id
+                prompt_hotkey_id,
+                history_hotkey_id,
             );
             app.install_glossary_reload(glossary_reload_tx);
             Ok(Box::new(app))

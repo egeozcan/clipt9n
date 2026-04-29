@@ -249,6 +249,74 @@ custom = "templates/custom.j2"
   hot-reloadable). M8 may add a tray-menu "Reload templates" action if
   there's demand.
 
+### Encrypted history (M5)
+
+clipt9n persists every successful translation to a local SQLite
+database at `<config_dir>/history.db`. Source and result text are
+encrypted at the application layer with ChaCha20-Poly1305; metadata
+(timestamp, action, language pair, character count) is plaintext for
+search. The encryption key is derived via Argon2id from a 32-byte
+secret stored at `<config_dir>/.history-key` (mode `0600` on Unix).
+
+#### Opening the viewer
+
+Press **Cmd+Shift+H** (macOS) / **Ctrl+Shift+H** (Linux/Windows) to
+open the history viewer. The viewer is a 680px window with:
+
+- Top search input (filter as you type — matches source, result,
+  action, and language pair)
+- Scrollable list of recent entries (newest first; capped at
+  `[history] max_entries`, default 100)
+- Detail block showing source and result side-by-side for the
+  selected row
+- Footer keymap:
+  - `↵` (Enter) — copy the result back to clipboard, close viewer
+  - `s` — copy the original source instead
+  - `d` — delete the selected entry
+  - `⇧+Del` — clear all entries (key file preserved)
+  - `Esc` — close
+
+#### `[history]` configuration
+
+```toml
+[history]
+enabled = true            # set false to disable the database entirely
+max_entries = 100         # older rows pruned at insert time
+store_text = true         # set false to record metadata only (no source/result)
+confirm_clear = true      # ⇧+Del prompts before wiping; set false for instant clear
+
+[hotkey.history]
+modifier = "cmd"          # "cmd" → Cmd on macOS, Ctrl on Linux/Windows
+shift = true
+key = "H"
+enabled = true            # set false to skip registering the history hotkey
+```
+
+#### Key file caveats (M5 → M6 migration)
+
+The current keyfile fallback (`<config_dir>/.history-key`) is the M5
+implementation of spec §7's key storage. M6 adds OS-keychain support
+via the `keyring` crate; on first run after upgrading, the keyfile
+will be migrated into Keychain (macOS) / Credential Manager (Windows)
+/ Secret Service (Linux) and the file will be left in place for safety.
+
+The keyfile mode is less secure than the keychain mode because:
+- A reader of `<config_dir>` with sufficient permissions can read it
+  (mitigated by `0600` on Unix; subject to user-profile ACL on Windows).
+- It doesn't benefit from the OS keychain's per-app sandboxing.
+
+Treat M5 as appropriate for personal use; production use should wait
+for M6.
+
+#### Failure modes
+
+| Condition | Behavior |
+|---|---|
+| Keyfile or DB missing | Created on first translation; no error. |
+| DB corruption | Toast on viewer open: "History database unreadable. New history will not be saved." App continues to function. Delete `history.db` manually to reset. |
+| Wrong key (e.g., keyfile regenerated) | Existing rows can't be decrypted; viewer shows them as skipped. New rows write fine. |
+| Disk full / write failure | Logged; clipboard write succeeds; only the history record is lost. |
+
 ## Development
 
 ```bash
