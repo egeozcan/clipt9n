@@ -205,17 +205,22 @@ fn validate_template_source(
         })
         .collect();
     undeclared.sort();
+    let (target_language, user_instruction) = match kind {
+        TemplateKind::Translate => ("Stub", ""),
+        TemplateKind::FixGrammar | TemplateKind::Rewrite => ("", ""),
+        TemplateKind::Custom => ("", "stub"),
+    };
     let contexts = [
         context! {
             source_language => "stub",
-            target_language => "Stub",
-            user_instruction => "stub",
+            target_language => target_language,
+            user_instruction => user_instruction,
             glossary_block => "",
         },
         context! {
             source_language => "stub",
-            target_language => "Stub",
-            user_instruction => "stub",
+            target_language => target_language,
+            user_instruction => user_instruction,
             glossary_block => "GLOSSARY",
         },
     ];
@@ -392,6 +397,26 @@ mod tests {
         match err {
             TranslateError::Template(msg) => {
                 assert!(msg.contains("missing_in_truthy"), "msg: {msg}")
+            }
+            other => panic!("expected Template error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn override_validation_checks_runtime_empty_target_language_branch() {
+        let dir = tempdir().unwrap();
+        let templates_dir = dir.path().join("templates");
+        std::fs::create_dir(&templates_dir).unwrap();
+        std::fs::write(
+            templates_dir.join("fix_grammar.j2"),
+            "{% if not target_language %}{{ missing_when_no_target }}{% endif %}",
+        )
+        .unwrap();
+
+        let err = Templates::load(dir.path(), &TemplatesConfig::default()).unwrap_err();
+        match err {
+            TranslateError::Template(msg) => {
+                assert!(msg.contains("missing_when_no_target"), "msg: {msg}")
             }
             other => panic!("expected Template error, got {other:?}"),
         }
