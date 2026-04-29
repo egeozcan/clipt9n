@@ -58,6 +58,13 @@ enum AppState {
     ShowingHistory {
         model: crate::ui::history::HistoryModel,
     },
+    /// First-launch setup wizard is open. Persists the API key into
+    /// the keychain (or env-var hint), runs connectivity + sample-
+    /// translation checks, and persists the resulting config back to
+    /// disk before transitioning to `Idle`.
+    SetupWizard {
+        model: crate::ui::setup::SetupWizardModel,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +124,14 @@ pub struct ClipApp {
     /// Set to true the first time the corruption toast has been shown
     /// to the user. Mirrors M4's "warned once per session" pattern.
     history_warned: std::sync::atomic::AtomicBool,
+
+    /// API-key resolver. `KeychainSecrets` (preferred) or
+    /// `EnvSecrets` (fallback). Used by the setup wizard's "Save and
+    /// start" handler to persist the entered key. Read-only outside
+    /// that path; the actual provider construction in `main.rs`
+    /// already consumed the key once at startup.
+    #[allow(dead_code)]
+    secrets: Box<dyn Secrets>,
 
     /// `global-hotkey` ID for the prompt hotkey. Always set (the prompt
     /// hotkey is always registered).
@@ -182,7 +197,7 @@ impl ClipApp {
         glossary_reload_rx: CrossbeamReceiver<()>,
         history: Option<std::sync::Arc<crate::history::store::History>>,
         history_disabled_initial: bool,
-        _secrets: Box<dyn Secrets>,
+        secrets: Box<dyn Secrets>,
         state_path: PathBuf,
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
         prompt_hotkey_id: u32,
@@ -227,6 +242,7 @@ impl ClipApp {
                 history_disabled_initial,
             )),
             history_warned: std::sync::atomic::AtomicBool::new(false),
+            secrets,
             prompt_hotkey_id,
             history_hotkey_id,
             app_state: AppState::Idle,
@@ -1025,14 +1041,51 @@ impl ClipApp {
         }
     }
 
+    fn update_setup_wizard(
+        &mut self,
+        ctx: &egui::Context,
+        mut model: crate::ui::setup::SetupWizardModel,
+    ) {
+        let outcome = crate::ui::setup::draw(ctx, &mut model);
+
+        match outcome {
+            Some(crate::ui::setup::SetupOutcome::Cancel) => {
+                tracing::warn!("setup wizard cancelled — no API key persisted");
+                self.dismiss_setup_to_idle(ctx);
+            }
+            Some(crate::ui::setup::SetupOutcome::Verify) => {
+                // Task 9 wires the actual checks here. For Task 6 the
+                // outcome is unreachable (stub draw returns None).
+                tracing::debug!("setup wizard: Verify outcome (Task 9 wires checks)");
+                self.app_state = AppState::SetupWizard { model };
+            }
+            Some(crate::ui::setup::SetupOutcome::SaveAndStart) => {
+                // Task 10 wires the persistence here.
+                tracing::debug!("setup wizard: SaveAndStart outcome (Task 10 wires persist)");
+                self.dismiss_setup_to_idle(ctx);
+            }
+            Some(crate::ui::setup::SetupOutcome::OpenConfig) => {
+                tracing::debug!("setup wizard: OpenConfig outcome (Task 10 wires platform open)");
+                self.app_state = AppState::SetupWizard { model };
+            }
+            None => {
+                self.app_state = AppState::SetupWizard { model };
+            }
+        }
+    }
+
+    fn dismiss_setup_to_idle(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            crate::ui::prompt_default_inner_size(&self.cfg.ui),
+        ));
+        self.app_state = AppState::Idle;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
     fn dismiss_history_to_idle(&mut self, ctx: &egui::Context) {
-        // Restore the prompt-default viewport size.
-        let inner_w = if self.cfg.ui.density == "compact" {
-            460.0
-        } else {
-            520.0
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(inner_w, 470.0)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            crate::ui::prompt_default_inner_size(&self.cfg.ui),
+        ));
         self.app_state = AppState::Idle;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
@@ -1103,6 +1156,7 @@ impl eframe::App for ClipApp {
                 self.update_translating(ctx, gen, action_label, overlay_label, started_at);
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
+            AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
         }
     }
 }

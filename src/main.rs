@@ -203,13 +203,9 @@ fn main() -> anyhow::Result<()> {
     let hotkey_rx = GlobalHotKeyEvent::receiver().clone();
 
     // eframe options: hidden, undecorated, always-on-top, centered window.
-    let inner_w = if cfg.ui.density == "compact" {
-        460.0
-    } else {
-        520.0
-    };
+    let inner_size = clipt9n::ui::prompt_default_inner_size(&cfg.ui);
     let viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([inner_w, 470.0])
+        .with_inner_size([inner_size.x, inner_size.y])
         .with_decorations(false)
         .with_resizable(false)
         .with_transparent(false)
