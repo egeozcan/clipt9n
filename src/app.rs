@@ -92,9 +92,15 @@ pub struct ClipApp {
     state_path: PathBuf,
     state: State,
 
-    /// Boxed for shared ownership across async tasks. We keep the `Arc` form
-    /// to allow cheap clones into the spawn closure.
-    provider: std::sync::Arc<dyn LlmProvider>,
+    /// Live LLM provider. Wrapped in `Option` so
+    /// `persist_setup_completion` can swap it after a successful
+    /// Save-and-start (M7 Task 10 — the Q6 brainstorming decision).
+    /// The `None` state is brief and only occurs in the unlikely race
+    /// where the wizard saves but build_provider fails post-save (the
+    /// wizard's Verify gate already proved the key works, so this is
+    /// near-impossible — but defensive). Translation dispatch sites
+    /// `.as_ref().expect(...)` with an informative panic message.
+    provider: Option<std::sync::Arc<dyn LlmProvider>>,
 
     /// Compiled templates (built-in + user overrides). Immutable for the
     /// lifetime of the app — overrides are validated at startup and
@@ -279,7 +285,7 @@ impl ClipApp {
             cfg,
             state_path,
             state,
-            provider,
+            provider: Some(provider),
             templates,
             glossary,
             glossary_path,
@@ -426,7 +432,11 @@ impl ClipApp {
         self.dispatch_gen = next_gen(self.dispatch_gen);
         let gen = self.dispatch_gen;
         let cfg = self.cfg.clone();
-        let provider = self.provider.clone();
+        let provider = self
+            .provider
+            .as_ref()
+            .expect("provider must be initialized; transient None state should never be observed by translation dispatch")
+            .clone();
         let tx = self.result_tx.clone();
         let source_text = self.prompt_model.clipboard_text.clone();
 
@@ -1564,6 +1574,26 @@ impl ClipApp {
                 );
             }
         }
+
+        // M7 Task 10 (Q6): live provider rebuild — replaces self.provider
+        // so the next translation uses the just-saved key without
+        // requiring a restart. The wizard's Verify gate already proved
+        // the key works at the network level; if build_provider fails
+        // here, the constraint is config-shape (e.g., a malformed URL).
+        // Wipe self.provider so the next translation surfaces the
+        // failure rather than using the stale provider.
+        match crate::llm::factory::build_provider(&self.cfg, model.key.clone()) {
+            Ok(new_provider) => {
+                self.provider = Some(new_provider);
+                tracing::info!("setup wizard: provider rebuilt with new key");
+            }
+            Err(e) => {
+                self.provider = None;
+                tracing::error!(error = %e, "setup wizard: provider rebuild failed; next translation will surface this");
+                return Err(e);
+            }
+        }
+
         Ok(())
     }
 
