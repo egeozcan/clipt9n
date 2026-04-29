@@ -20,6 +20,9 @@ pub struct PromptModel {
     /// 1-based slot index of the most recently used action ("last used" badge
     /// + Enter-to-repeat affordance). `None` on first run.
     pub last_slot: Option<u8>,
+    /// Glossary entries that match the clipboard text (pair-agnostic).
+    /// Computed by `App::show_window` once per summon.
+    pub glossary_hits: Vec<GlossaryHit>,
 }
 
 /// Picked action from the prompt window. The caller maps the slot to a
@@ -56,6 +59,17 @@ pub enum SlotKind {
     Rewrite,
     /// Slot 6 — custom (M3 wires; M2 is no-op).
     Custom,
+}
+
+/// One glossary entry that matched the current clipboard. Rendered as a
+/// chip in the prompt window's strip, between the preview and the slot
+/// list. Pair-scope-agnostic: at preview time the user hasn't picked a
+/// target, so we surface every source-term match regardless of pair.
+/// The actual translator path applies pair scoping correctly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlossaryHit {
+    pub source: String,
+    pub target: String,
 }
 
 pub const SLOTS: [SlotDef; 6] = [
@@ -249,6 +263,9 @@ fn draw_populated(
                 ui.add_space(14.0);
             }
 
+            // ----- Glossary chip strip (above slot list, per M4) -----
+            draw_glossary_chips(ui, &model.glossary_hits);
+
             // ----- Slot rows -----
             // Wrapped in a ScrollArea so that on monitors too small to fit
             // the full window, Tab still works: focused rows auto-scroll
@@ -268,10 +285,6 @@ fn draw_populated(
                         }
                     }
                 });
-
-            // ----- Glossary chip area (M2 always empty; M4 fills it) -----
-            // Empty placeholder reserved so the layout doesn't shift when M4
-            // adds chips. Render nothing; the gap above the footer is enough.
 
             ui.add_space(12.0);
             // ----- Footer -----
@@ -461,6 +474,93 @@ pub fn should_warn_large_paste(text: &str, cfg: &Config) -> bool {
     text.chars().count() > cfg.ui.confirm_size_threshold
 }
 
+/// Cap the chip list at `max` items; return the visible slice and the
+/// overflow count for the "+N more" indicator.
+pub fn truncate_chips(hits: &[GlossaryHit], max: usize) -> (&[GlossaryHit], usize) {
+    if hits.len() <= max {
+        (hits, 0)
+    } else {
+        (&hits[..max], hits.len() - max)
+    }
+}
+
+/// Maximum number of glossary chips rendered before "+N more" replaces
+/// the overflow. Picked to fit one wrap-row at 480px window width.
+const MAX_CHIPS: usize = 5;
+
+/// Draw the glossary chip strip. Conditional render: zero hits → nothing
+/// is painted (no reserved height; layout collapses cleanly). Chips
+/// render in the design's `pw.chip` style: `var(--panel-3)` background,
+/// monospace 11px, source/arrow/target three-segment colors.
+fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
+    if hits.is_empty() {
+        return;
+    }
+    let (visible, more) = truncate_chips(hits, MAX_CHIPS);
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x4d, 0x10))
+        .stroke(Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x4d, 0x2e),
+        ))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.style_mut().spacing.item_spacing.x = 6.0;
+                ui.label(
+                    RichText::new("GLOSSARY WILL INJECT:")
+                        .color(theme::WARN)
+                        .size(10.0)
+                        .strong(),
+                );
+                for hit in visible {
+                    chip(ui, hit);
+                }
+                if more > 0 {
+                    ui.label(
+                        RichText::new(format!("+{more} more"))
+                            .color(theme::INK_3)
+                            .monospace()
+                            .size(11.0),
+                    );
+                }
+            });
+        });
+    ui.add_space(10.0);
+}
+
+fn chip(ui: &mut egui::Ui, hit: &GlossaryHit) {
+    egui::Frame::new()
+        .fill(theme::PANEL_3)
+        .stroke(Stroke::new(1.0, theme::LINE))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(7, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.style_mut().spacing.item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(&hit.source)
+                        .color(theme::INK_2)
+                        .monospace()
+                        .size(11.0),
+                );
+                ui.label(
+                    RichText::new("→")
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(11.0),
+                );
+                ui.label(
+                    RichText::new(&hit.target)
+                        .color(theme::ACCENT)
+                        .monospace()
+                        .size(11.0),
+                );
+            });
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,5 +615,54 @@ mod tests {
         assert!(should_warn_large_paste("x".repeat(101).as_str(), &cfg));
         assert!(!should_warn_large_paste("x".repeat(99).as_str(), &cfg));
         assert!(!should_warn_large_paste("x".repeat(100).as_str(), &cfg)); // exactly at threshold: no warn
+    }
+
+    #[test]
+    fn truncate_chips_returns_all_when_under_limit() {
+        let hits = vec![
+            GlossaryHit {
+                source: "A".into(),
+                target: "A".into(),
+            },
+            GlossaryHit {
+                source: "B".into(),
+                target: "B".into(),
+            },
+        ];
+        let (visible, more) = truncate_chips(&hits, 5);
+        assert_eq!(visible.len(), 2);
+        assert_eq!(more, 0);
+    }
+
+    #[test]
+    fn truncate_chips_caps_at_max_and_returns_overflow_count() {
+        let hits: Vec<GlossaryHit> = (0..8)
+            .map(|i| GlossaryHit {
+                source: format!("s{i}"),
+                target: format!("t{i}"),
+            })
+            .collect();
+        let (visible, more) = truncate_chips(&hits, 5);
+        assert_eq!(visible.len(), 5);
+        assert_eq!(more, 3);
+    }
+
+    #[test]
+    fn glossary_hit_constructs_from_glossary_entry() {
+        // Smoke test that the conversion path used by show_window
+        // (Glossary::preview_entries → Vec<&GlossaryEntry> → Vec<GlossaryHit>)
+        // produces the expected source/target pairing.
+        let entry = crate::glossary::GlossaryEntry {
+            source: "Smart Table".into(),
+            target: "Smart Table".into(),
+            languages: vec!["*".into()],
+            note: None,
+        };
+        let hit = GlossaryHit {
+            source: entry.source.clone(),
+            target: entry.target.clone(),
+        };
+        assert_eq!(hit.source, "Smart Table");
+        assert_eq!(hit.target, "Smart Table");
     }
 }

@@ -165,6 +165,7 @@ impl ClipApp {
                 clipboard_text: String::new(),
                 detected_lang: None,
                 last_slot: state.last_slot,
+                glossary_hits: vec![],
             },
             cfg,
             state_path,
@@ -200,6 +201,30 @@ impl ClipApp {
     fn show_window(&mut self, ctx: &egui::Context) {
         self.prompt_model.clipboard_text = self.snapshot_clipboard();
         self.prompt_model.last_slot = self.state.last_slot;
+
+        // Compute pair-agnostic glossary hits for the chip strip preview.
+        // The translator applies pair scoping correctly at execute time;
+        // this preview is informational only.
+        let detected_iso3 = crate::glossary::detect_source_lang(&self.prompt_model.clipboard_text);
+        let source_iso2 = detected_iso3
+            .as_deref()
+            .and_then(crate::glossary::iso3_to_iso2);
+        self.prompt_model.detected_lang = source_iso2.map(String::from);
+        let g = self.glossary.read().expect("glossary RwLock poisoned");
+        self.prompt_model.glossary_hits = g
+            .preview_entries(
+                &self.prompt_model.clipboard_text,
+                source_iso2,
+                &self.cfg.glossary,
+            )
+            .into_iter()
+            .map(|e| prompt::GlossaryHit {
+                source: e.source.clone(),
+                target: e.target.clone(),
+            })
+            .collect();
+        drop(g); // release the read lock before mutating other state.
+
         self.has_been_focused = false;
         self.initial_focus_pending = true;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
