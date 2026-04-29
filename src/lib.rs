@@ -128,14 +128,29 @@ pub async fn run() -> Result<(), TranslateError> {
 
     let provider = build_provider(&cfg, secrets.as_ref())?;
 
+    // Build templates (strict — abort on malformed override) and glossary
+    // (graceful — log warn + fall back to empty on malformed).
+    let config_dir = cfg_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| TranslateError::Config("config path has no parent dir".into()))?;
+    let templates = std::sync::Arc::new(crate::llm::templates::Templates::load(
+        &config_dir,
+        &cfg.templates,
+    )?);
+    let glossary_path = config_dir.join(&cfg.glossary.file);
+    let glossary = match crate::glossary::Glossary::load(&glossary_path) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(error = %e, "glossary load failed; continuing without glossary");
+            crate::glossary::Glossary::empty()
+        }
+    };
+
     // Test-only path: when CLIPT9N_TEST_INPUT is set, skip the real clipboard
     // and use it as source text. When CLIPT9N_TEST_PRINT_RESULT is set, print
     // the translated result to stdout instead of writing to the clipboard.
     // This makes `tests/cli_smoke.rs` runnable in CI without a desktop session.
-    // M4 Task 7 scaffolding: built-in templates + empty glossary.
-    // Task 8 replaces these with real loaders and threads them through `App`.
-    let templates = crate::llm::templates::Templates::built_in();
-    let glossary = crate::glossary::Glossary::empty();
 
     if let Ok(input) = std::env::var("CLIPT9N_TEST_INPUT") {
         let print_result = std::env::var("CLIPT9N_TEST_PRINT_RESULT").is_ok();

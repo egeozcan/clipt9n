@@ -70,10 +70,33 @@ pub struct ClipApp {
     /// to allow cheap clones into the spawn closure.
     provider: std::sync::Arc<dyn LlmProvider>,
 
+    /// Compiled templates (built-in + user overrides). Immutable for the
+    /// lifetime of the app — overrides are validated at startup and
+    /// changes require a restart.
+    templates: std::sync::Arc<crate::llm::templates::Templates>,
+
+    /// Glossary loaded from `<config_dir>/<cfg.glossary.file>`. Wrapped
+    /// in `Arc<RwLock<_>>` so a SIGHUP handler (Task 10) can swap it
+    /// atomically without touching anything else. Read access in
+    /// `start_translation` is uncontended (no concurrent writes during
+    /// rendering since the render path takes a read lock and the SIGHUP
+    /// handler takes a write lock).
+    glossary: std::sync::Arc<std::sync::RwLock<crate::glossary::Glossary>>,
+
+    /// Path to the glossary file on disk. The SIGHUP handler reuses
+    /// this for re-reads.
+    #[allow(dead_code)]
+    glossary_path: PathBuf,
+
     runtime: Runtime,
     hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
     result_tx: mpsc::Sender<TranslationOutcome>,
     result_rx: mpsc::Receiver<TranslationOutcome>,
+
+    /// SIGHUP / glossary-reload signal receiver. A unit value is sent
+    /// each time a reload is requested (Task 10 wires the sender).
+    #[allow(dead_code)]
+    glossary_reload_rx: CrossbeamReceiver<()>,
 
     app_state: AppState,
     prompt_model: prompt::PromptModel,
@@ -109,10 +132,15 @@ struct TranslationOutcome {
 }
 
 impl ClipApp {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cc: &CreationContext<'_>,
         cfg: Config,
         provider: std::sync::Arc<dyn LlmProvider>,
+        templates: std::sync::Arc<crate::llm::templates::Templates>,
+        glossary: std::sync::Arc<std::sync::RwLock<crate::glossary::Glossary>>,
+        glossary_path: PathBuf,
+        glossary_reload_rx: CrossbeamReceiver<()>,
         _secrets: Box<dyn Secrets>,
         state_path: PathBuf,
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
@@ -142,10 +170,14 @@ impl ClipApp {
             state_path,
             state,
             provider,
+            templates,
+            glossary,
+            glossary_path,
             runtime,
             hotkey_rx,
             result_tx,
             result_rx,
+            glossary_reload_rx,
             app_state: AppState::Idle,
             has_been_focused: false,
             initial_focus_pending: false,
@@ -268,12 +300,15 @@ impl ClipApp {
         // Internal error — guaranteeing `tx.send` always fires exactly once,
         // so the overlay never gets stuck.
         let label_for_panic = action_label.clone();
+        let templates = self.templates.clone();
+        let glossary = self.glossary.clone();
         let worker = self.runtime.spawn(async move {
-            // M4 Task 7 scaffolding: built-in templates + empty glossary.
-            // Task 8 will thread real Templates + Glossary through `App`.
-            let templates = crate::llm::templates::Templates::built_in();
-            let glossary = crate::glossary::Glossary::empty();
-            let translator = Translator::new(&cfg, provider.as_ref(), &templates, &glossary);
+            // Take a read snapshot of the glossary at dispatch time. If a
+            // SIGHUP-driven reload arrives mid-translation, the running
+            // worker uses the snapshot it captured here; the next dispatch
+            // sees the new entries.
+            let g_snapshot = glossary.read().expect("glossary RwLock poisoned").clone();
+            let translator = Translator::new(&cfg, provider.as_ref(), &templates, &g_snapshot);
             let result = translator.execute(&action, &source_text).await;
             TranslationOutcome {
                 result,
