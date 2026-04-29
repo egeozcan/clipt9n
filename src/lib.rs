@@ -14,17 +14,12 @@ pub mod state;
 pub mod translator;
 pub mod ui;
 
-use std::time::Duration;
-
 use clap::{ArgGroup, Parser};
 use directories::ProjectDirs;
 
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::config::Config;
 use crate::error::TranslateError;
-use crate::llm::anthropic::AnthropicProvider;
-use crate::llm::openai::OpenAiCompatibleProvider;
-use crate::llm::LlmProvider;
 use crate::secrets::{EnvSecrets, Secrets};
 use crate::translator::{Action, Translator};
 
@@ -90,35 +85,6 @@ fn default_config_path() -> Option<std::path::PathBuf> {
     ProjectDirs::from("", "", "clipboard-translator").map(|d| d.config_dir().join("config.toml"))
 }
 
-/// Build the configured `LlmProvider` for the current `[provider]` block.
-fn build_provider(
-    cfg: &Config,
-    secrets: &dyn Secrets,
-) -> Result<Box<dyn LlmProvider>, TranslateError> {
-    let api_key = secrets.get_api_key()?;
-    let timeout = Duration::from_secs(cfg.provider.timeout_seconds);
-    let provider: Box<dyn LlmProvider> = match cfg.provider.kind.as_str() {
-        "anthropic" => Box::new(AnthropicProvider::new(
-            &cfg.provider.base_url,
-            api_key,
-            &cfg.provider.model,
-            timeout,
-        )?),
-        "openai" | "gemini" | "ollama" => Box::new(OpenAiCompatibleProvider::new(
-            &cfg.provider.base_url,
-            api_key,
-            &cfg.provider.model,
-            timeout,
-        )?),
-        other => {
-            return Err(TranslateError::Config(format!(
-                "unknown provider type '{other}'; expected one of: anthropic, openai, gemini, ollama"
-            )));
-        }
-    };
-    Ok(provider)
-}
-
 /// End-to-end run: parse args → load config → resolve secrets → read clipboard
 /// → call translator → write clipboard. Public for the cli_smoke integration
 /// test.
@@ -135,7 +101,8 @@ pub async fn run() -> Result<(), TranslateError> {
 
     let secrets: Box<dyn Secrets> = Box::new(EnvSecrets::new(cfg.provider.api_key.env_var.clone()));
 
-    let provider = build_provider(&cfg, secrets.as_ref())?;
+    let key = secrets.get_api_key()?;
+    let provider = crate::llm::factory::build_provider(&cfg, key)?;
 
     // Build templates (strict — abort on malformed override) and glossary
     // (graceful — log warn + fall back to empty on malformed).

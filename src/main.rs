@@ -1,12 +1,6 @@
-use std::sync::Arc;
-
 use clap::Parser;
 use clipt9n::app::ClipApp;
 use clipt9n::config::{Config, Modifier, NativeModifier};
-use clipt9n::error::TranslateError;
-use clipt9n::llm::anthropic::AnthropicProvider;
-use clipt9n::llm::openai::OpenAiCompatibleProvider;
-use clipt9n::llm::LlmProvider;
 use clipt9n::platform::{self, Platform};
 use clipt9n::secrets::Secrets;
 use clipt9n::Cli;
@@ -114,27 +108,10 @@ fn main() -> anyhow::Result<()> {
     // triggers a config rewrite that the user honors on next launch).
     let api_key =
         api_key_opt.unwrap_or_else(|| zeroize::Zeroizing::new("placeholder-no-key".into()));
-    let timeout = std::time::Duration::from_secs(cfg.provider.timeout_seconds);
 
-    let provider: Arc<dyn LlmProvider> = match cfg.provider.kind.as_str() {
-        "anthropic" => Arc::new(AnthropicProvider::new(
-            &cfg.provider.base_url,
-            api_key,
-            &cfg.provider.model,
-            timeout,
-        )?),
-        "openai" | "gemini" | "ollama" => Arc::new(OpenAiCompatibleProvider::new(
-            &cfg.provider.base_url,
-            api_key,
-            &cfg.provider.model,
-            timeout,
-        )?),
-        other => {
-            return Err(anyhow::anyhow!(TranslateError::Config(format!(
-                "unknown provider type '{other}'"
-            ))))
-        }
-    };
+    // Build the runtime provider via the factory. Same source of truth
+    // as persist_setup_completion's live-rebuild path (M7 Task 10).
+    let provider = clipt9n::llm::factory::build_provider(&cfg, api_key)?;
 
     // Hotkey registration. Two registered: the prompt hotkey (always)
     // and the history hotkey (M5; suppressible via [hotkey.history]
