@@ -54,6 +54,14 @@ pub struct Cli {
     #[arg(long = "custom", value_name = "INSTRUCTION")]
     pub custom: Option<String>,
 
+    /// Force the tray icon to appear even if `state.toml` has
+    /// `[tray] visible = false`. Side effect: also flips the persisted
+    /// state back to `visible = true` so subsequent launches without
+    /// the flag continue showing the tray. Recovery path documented in
+    /// the hide-icon confirm modal.
+    #[arg(long = "show-tray")]
+    pub show_tray: bool,
+
     /// Optional path to config.toml. Defaults to platform config dir.
     #[arg(long = "config", value_name = "PATH")]
     pub config_path: Option<std::path::PathBuf>,

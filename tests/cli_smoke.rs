@@ -26,6 +26,13 @@ use tempfile::NamedTempFile;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[test]
+fn show_tray_flag_parses() {
+    use clap::Parser;
+    let cli = clipt9n::Cli::try_parse_from(["clipt9n", "--show-tray"]).unwrap();
+    assert!(cli.show_tray, "--show-tray should set the show_tray field");
+}
+
 const SUCCESS_BODY: &str = r#"{
     "content": [{"type": "text", "text": "Hallo, Welt."}]
 }"#;
