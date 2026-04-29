@@ -118,6 +118,41 @@ pub fn default_base_url(provider_kind: &str) -> &'static str {
     }
 }
 
+/// Which check produced a result. The App receives this in a channel
+/// and flips the corresponding `check1` / `check2` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupCheck {
+    Connectivity,
+    SampleTranslation,
+}
+
+/// Outcome of a single check. `Ok(())` flips the corresponding row to
+/// `CheckStatus::Ok`; `Err(msg)` flips to `Fail` and stores the
+/// message in `model.err_msg`.
+pub type SetupCheckResult = (SetupCheck, Result<(), String>);
+
+/// Construct the connectivity-check URL + auth header set for the
+/// configured provider. Returns (url, auth_kind) where auth_kind is
+/// either ("Authorization", "Bearer ...") for OpenAI-compat or
+/// ("x-api-key", "...") + ("anthropic-version", "2023-06-01") for
+/// Anthropic.
+pub fn connectivity_request(
+    provider: &str,
+    base_url: &str,
+    key: &str,
+) -> (String, Vec<(String, String)>) {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let headers: Vec<(String, String)> = match provider {
+        "anthropic" => vec![
+            ("x-api-key".into(), key.to_string()),
+            ("anthropic-version".into(), "2023-06-01".into()),
+        ],
+        // openai / gemini / ollama all use Bearer auth on /v1/models
+        _ => vec![("Authorization".into(), format!("Bearer {}", key))],
+    };
+    (url, headers)
+}
+
 /// Whether the Save-and-start button is enabled. Mirrors the jsx's
 /// `phase === "done"` gate.
 pub fn save_enabled(model: &SetupWizardModel) -> bool {
@@ -566,5 +601,31 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(m.provider, "anthropic");
+    }
+
+    #[test]
+    fn connectivity_request_anthropic_uses_x_api_key_and_version_header() {
+        let (url, headers) =
+            connectivity_request("anthropic", "https://api.anthropic.com/v1", "sk-ant-...");
+        assert_eq!(url, "https://api.anthropic.com/v1/models");
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "x-api-key" && v == "sk-ant-..."));
+        assert!(headers.iter().any(|(k, _)| k == "anthropic-version"));
+    }
+
+    #[test]
+    fn connectivity_request_openai_uses_bearer_auth() {
+        let (url, headers) = connectivity_request("openai", "https://api.openai.com/v1", "sk-test");
+        assert_eq!(url, "https://api.openai.com/v1/models");
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v == "Bearer sk-test"));
+    }
+
+    #[test]
+    fn connectivity_request_strips_trailing_slash_from_base_url() {
+        let (url, _) = connectivity_request("openai", "https://api.openai.com/v1/", "sk");
+        assert_eq!(url, "https://api.openai.com/v1/models");
     }
 }

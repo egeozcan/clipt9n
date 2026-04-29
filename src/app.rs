@@ -133,6 +133,12 @@ pub struct ClipApp {
     #[allow(dead_code)]
     secrets: Box<dyn Secrets>,
 
+    /// Setup-wizard check results channel. The connectivity + sample-
+    /// translation tasks send `(SetupCheck, Result<(), String>)` here;
+    /// `update_setup_wizard` drains it on every frame.
+    setup_check_tx: std::sync::mpsc::Sender<crate::ui::setup::SetupCheckResult>,
+    setup_check_rx: std::sync::mpsc::Receiver<crate::ui::setup::SetupCheckResult>,
+
     /// `global-hotkey` ID for the prompt hotkey. Always set (the prompt
     /// hotkey is always registered).
     prompt_hotkey_id: u32,
@@ -212,6 +218,8 @@ impl ClipApp {
             .expect("tokio runtime");
 
         let (result_tx, result_rx) = mpsc::channel();
+        let (setup_check_tx, setup_check_rx) =
+            std::sync::mpsc::channel::<crate::ui::setup::SetupCheckResult>();
         let state = State::load(&state_path);
 
         // Cache the OS reduced-motion preference once at startup. Spec
@@ -243,6 +251,8 @@ impl ClipApp {
             )),
             history_warned: std::sync::atomic::AtomicBool::new(false),
             secrets,
+            setup_check_tx,
+            setup_check_rx,
             prompt_hotkey_id,
             history_hotkey_id,
             app_state: AppState::Idle,
@@ -1046,6 +1056,37 @@ impl ClipApp {
         ctx: &egui::Context,
         mut model: crate::ui::setup::SetupWizardModel,
     ) {
+        // First, drain any check results sitting on our channel.
+        while let Ok((check, result)) = self.setup_check_rx.try_recv() {
+            match (check, result) {
+                (crate::ui::setup::SetupCheck::Connectivity, Ok(())) => {
+                    model.check1 = crate::ui::setup::CheckStatus::Ok;
+                    if !model.test_translation {
+                        // Skip check2; advance to Done.
+                        model.phase = crate::ui::setup::WizardPhase::Done;
+                    } else {
+                        // Kick off check2.
+                        model.check2 = crate::ui::setup::CheckStatus::Running;
+                        self.spawn_sample_translation_check(&model.provider, model.key.clone());
+                    }
+                }
+                (crate::ui::setup::SetupCheck::Connectivity, Err(msg)) => {
+                    model.check1 = crate::ui::setup::CheckStatus::Fail;
+                    model.err_msg = msg;
+                    model.phase = crate::ui::setup::WizardPhase::Error;
+                }
+                (crate::ui::setup::SetupCheck::SampleTranslation, Ok(())) => {
+                    model.check2 = crate::ui::setup::CheckStatus::Ok;
+                    model.phase = crate::ui::setup::WizardPhase::Done;
+                }
+                (crate::ui::setup::SetupCheck::SampleTranslation, Err(msg)) => {
+                    model.check2 = crate::ui::setup::CheckStatus::Fail;
+                    model.err_msg = msg;
+                    model.phase = crate::ui::setup::WizardPhase::Error;
+                }
+            }
+        }
+
         let outcome = crate::ui::setup::draw(ctx, &mut model);
 
         match outcome {
@@ -1054,24 +1095,121 @@ impl ClipApp {
                 self.dismiss_setup_to_idle(ctx);
             }
             Some(crate::ui::setup::SetupOutcome::Verify) => {
-                // Task 9 wires the actual checks here. For Task 6 the
-                // outcome is unreachable (stub draw returns None).
-                tracing::debug!("setup wizard: Verify outcome (Task 9 wires checks)");
+                model.phase = crate::ui::setup::WizardPhase::Verifying;
+                model.check1 = crate::ui::setup::CheckStatus::Running;
+                model.check2 = crate::ui::setup::CheckStatus::Idle;
+                model.err_msg.clear();
+                self.spawn_connectivity_check(&model.provider, model.key.clone());
                 self.app_state = AppState::SetupWizard { model };
             }
             Some(crate::ui::setup::SetupOutcome::SaveAndStart) => {
-                // Task 10 wires the persistence here.
-                tracing::debug!("setup wizard: SaveAndStart outcome (Task 10 wires persist)");
+                // Task 10 wires the actual persist + restart.
+                tracing::debug!("setup wizard: SaveAndStart (Task 10 wires persist)");
                 self.dismiss_setup_to_idle(ctx);
             }
             Some(crate::ui::setup::SetupOutcome::OpenConfig) => {
-                tracing::debug!("setup wizard: OpenConfig outcome (Task 10 wires platform open)");
+                // Task 10 wires the platform open.
+                tracing::debug!("setup wizard: OpenConfig (Task 10 wires platform open)");
                 self.app_state = AppState::SetupWizard { model };
             }
             None => {
                 self.app_state = AppState::SetupWizard { model };
             }
         }
+    }
+
+    fn spawn_connectivity_check(&self, provider: &str, key: zeroize::Zeroizing<String>) {
+        // Use the wizard-selected provider's default base URL — the
+        // live cfg.provider.base_url may not match the wizard's
+        // selection until Save-and-start rewrites the config.
+        let provider = provider.to_string();
+        let base_url = crate::ui::setup::default_base_url(&provider).to_string();
+        let tx = self.setup_check_tx.clone();
+        let runtime = self.runtime.handle().clone();
+        runtime.spawn(async move {
+            let result = run_connectivity_check(&provider, &base_url, &key).await;
+            // One auto-retry per spec §13.
+            let final_result = if result.is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                run_connectivity_check(&provider, &base_url, &key).await
+            } else {
+                result
+            };
+            let _ = tx.send((
+                crate::ui::setup::SetupCheck::Connectivity,
+                final_result.map_err(|e| e.to_string()),
+            ));
+        });
+    }
+
+    fn spawn_sample_translation_check(&self, provider_kind: &str, key: zeroize::Zeroizing<String>) {
+        // The wizard's selected provider may differ from the running
+        // self.provider (which was built from the cfg at startup, possibly
+        // with a placeholder key). Build a fresh provider from the
+        // wizard's typed key + the wizard's selected provider kind +
+        // the kind-default base URL.
+        let provider_kind = provider_kind.to_string();
+        let cfg = self.cfg.clone();
+        let templates = self.templates.clone();
+        let glossary = self.glossary.clone();
+        let tx = self.setup_check_tx.clone();
+        let runtime = self.runtime.handle().clone();
+        runtime.spawn(async move {
+            let timeout = std::time::Duration::from_secs(cfg.provider.timeout_seconds);
+            let base_url = crate::ui::setup::default_base_url(&provider_kind);
+            let provider_result: Result<
+                std::sync::Arc<dyn crate::llm::LlmProvider>,
+                TranslateError,
+            > = match provider_kind.as_str() {
+                "anthropic" => crate::llm::anthropic::AnthropicProvider::new(
+                    base_url,
+                    key.clone(),
+                    &cfg.provider.model,
+                    timeout,
+                )
+                .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn crate::llm::LlmProvider>),
+                _ => crate::llm::openai::OpenAiCompatibleProvider::new(
+                    base_url,
+                    key.clone(),
+                    &cfg.provider.model,
+                    timeout,
+                )
+                .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn crate::llm::LlmProvider>),
+            };
+            let provider = match provider_result {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = tx.send((
+                        crate::ui::setup::SetupCheck::SampleTranslation,
+                        Err(e.to_string()),
+                    ));
+                    return;
+                }
+            };
+            let action = crate::translator::Action::Translate { code: "de".into() };
+            let attempt = || async {
+                let g_snapshot = glossary.read().expect("glossary RwLock poisoned").clone();
+                let translator = crate::translator::Translator::new(
+                    &cfg,
+                    provider.as_ref(),
+                    &templates,
+                    &g_snapshot,
+                );
+                translator.execute(&action, "Hello, world.").await
+            };
+            let result = attempt().await;
+            // One auto-retry per spec §13.
+            let final_result = if result.is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                attempt().await
+            } else {
+                result
+            };
+            let _ = tx.send((
+                crate::ui::setup::SetupCheck::SampleTranslation,
+                final_result.map(|_| ()).map_err(|e| e.to_string()),
+            ));
+        });
     }
 
     fn dismiss_setup_to_idle(&mut self, ctx: &egui::Context) {
@@ -1158,6 +1296,44 @@ impl eframe::App for ClipApp {
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
         }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Async helpers
+// -----------------------------------------------------------------------
+
+async fn run_connectivity_check(
+    provider: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<(), TranslateError> {
+    let (url, headers) = crate::ui::setup::connectivity_request(provider, base_url, key);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| TranslateError::Network(e.to_string()))?;
+    let mut req = client.get(&url);
+    for (k, v) in headers {
+        req = req.header(&k, &v);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| TranslateError::Network(e.to_string()))?;
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else if status.as_u16() == 401 {
+        Err(TranslateError::SetupWizard(format!(
+            "{} Invalid API key",
+            status.as_u16()
+        )))
+    } else {
+        Err(TranslateError::Provider {
+            status: status.as_u16(),
+            message: status.canonical_reason().unwrap_or("provider error").into(),
+        })
     }
 }
 

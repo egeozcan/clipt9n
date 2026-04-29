@@ -2,7 +2,7 @@
 //! Tasks 7–9 each add tests; this file collects all five before the
 //! M6 milestone closes.
 
-use clipt9n::ui::setup::{draw, SetupWizardModel, Storage, WizardPhase};
+use clipt9n::ui::setup::{draw, SetupOutcome, SetupWizardModel, Storage, WizardPhase};
 use egui::accesskit::Role;
 use egui_kittest::kittest::{by, Queryable};
 use egui_kittest::Harness;
@@ -290,16 +290,16 @@ fn save_and_start_button_only_visible_in_done_phase() {
         harness.get_by_label("Verify →")
     }))
     .is_ok();
-    assert!(verify_present, "Verify button must be visible in Entry phase");
+    assert!(
+        verify_present,
+        "Verify button must be visible in Entry phase"
+    );
 
     let save_absent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         harness.get_by_label("Save and start ✓")
     }))
     .is_err();
-    assert!(
-        save_absent,
-        "Save button must be absent in Entry phase"
-    );
+    assert!(save_absent, "Save button must be absent in Entry phase");
 
     // Mutate the model to phase=Done. In real usage, the App's
     // update_setup_wizard handler flips this when both check1 and
@@ -314,17 +314,87 @@ fn save_and_start_button_only_visible_in_done_phase() {
         harness.get_by_label("Verify →")
     }))
     .is_err();
-    assert!(
-        verify_absent,
-        "Verify must yield to Save in Done phase"
-    );
+    assert!(verify_absent, "Verify must yield to Save in Done phase");
 
     let save_present = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         harness.get_by_label("Save and start ✓")
     }))
     .is_ok();
+    assert!(save_present, "Save button must be visible in Done phase");
+}
+
+/// Verify that clicking "Verify →" emits `SetupOutcome::Verify`.
+///
+/// kittest 0.31.1 adaptations:
+/// - `Harness::new_state` / `harness.state()` don't exist — we use
+///   `Arc<Mutex<_>>` shared between the closure and the test body.
+/// - `.click()` is tried first on the button node; if the AccessKit click
+///   doesn't propagate through egui's hit-test (the button is `add_enabled`
+///   and the node may be reported as disabled), we fall back to raw pixel
+///   events at the button's `raw_bounds()` center (same pattern as Test 1).
+#[test]
+fn verify_button_click_does_not_panic_when_check_handler_is_absent() {
+    use std::sync::{Arc, Mutex};
+
+    let model = Arc::new(Mutex::new(SetupWizardModel {
+        key: Zeroizing::new("sk-ant-test".into()),
+        ..entry_model()
+    }));
+
+    // We stash the emitted outcome into model.err_msg as a sentinel string
+    // so we can read it back through the Arc.
+    let model_clone = Arc::clone(&model);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        if let Some(o) = draw(ctx, &mut m) {
+            m.err_msg = format!("__outcome:{o:?}");
+        }
+    });
+
+    // Initial render so AccessKit tree is populated.
+    harness.run();
+
+    // Try AccessKit .click() first.
+    let click_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness.get_by_label("Verify →").click();
+    }));
+
+    if click_result.is_err() {
+        // Fallback: raw pixel events at the Verify button's bounds center.
+        let label_node = harness.get(by().role(Role::Label).label("Verify →").include_labels());
+        let bounds = label_node
+            .raw_bounds()
+            .expect("'Verify →' label node must have raw_bounds after layout");
+        let center = egui::Pos2::new(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        let modifiers = egui::Modifiers::default();
+        {
+            let input = harness.input_mut();
+            input.events.push(egui::Event::PointerMoved(center));
+            input.events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            });
+            input.events.push(egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            });
+        }
+    }
+
+    harness.run();
+
+    let err_msg = model.lock().unwrap().err_msg.clone();
     assert!(
-        save_present,
-        "Save button must be visible in Done phase"
+        err_msg.contains("Verify"),
+        "Verify outcome should have been emitted, got err_msg={err_msg:?}"
     );
+    // Keep the import used.
+    let _ = SetupOutcome::Verify;
 }
