@@ -13,7 +13,7 @@
 
 use crate::config::Config;
 use crate::error::TranslateError;
-use crate::llm::templates::{render, TemplateContext, TemplateKind};
+use crate::llm::templates::{render, TemplateContext, TemplateKind, Templates};
 use crate::llm::LlmProvider;
 
 /// What the user wants to do with their clipboard text.
@@ -59,7 +59,8 @@ impl<'a> Translator<'a> {
                 TemplateContext::for_custom(instruction.as_deref().unwrap_or(""), "")
             }
         };
-        let system = render(kind, &ctx)?;
+        let templates = Templates::built_in();
+        let system = render(&templates, kind, &ctx)?;
         let model_output = self.provider.complete(&system, clipboard_text).await?;
         Ok(post_process(&model_output, clipboard_text))
     }
