@@ -134,10 +134,12 @@ pub struct ClipApp {
     history_warned: std::sync::atomic::AtomicBool,
 
     /// API-key resolver. `KeychainSecrets` (preferred) or
-    /// `EnvSecrets` (fallback). Used by the setup wizard's "Save and
-    /// start" handler to persist the entered key. Read-only outside
-    /// that path; the actual provider construction in `main.rs`
-    /// already consumed the key once at startup.
+    /// `EnvSecrets` (fallback). Currently dead-allocated — Task 9 of
+    /// M7 revives this field as the source of `keychain_available()`
+    /// for the tray menu's "Re-run setup wizard" entry. Keep the
+    /// `#[allow(dead_code)]` until then; persistence in
+    /// `persist_setup_completion` goes through a freshly-constructed
+    /// `KeychainSecrets` (M6 stale-account fix), not through this.
     #[allow(dead_code)]
     secrets: Box<dyn Secrets>,
 
@@ -581,14 +583,23 @@ impl ClipApp {
     }
 
     /// Drain pending tray menu events and dispatch. Called once per
-    /// frame from `update()`. No-op if `self.tray` is None.
+    /// frame from `update()`. The static `MenuEvent` channel is drained
+    /// unconditionally — events queued from a previous tray that's
+    /// since been dropped would otherwise accumulate forever and fire
+    /// stale on a future re-attach (Task 7's --show-tray recovery
+    /// path). Dispatch is gated on `self.tray.is_some()`.
     fn drain_tray_events(&mut self, ctx: &egui::Context) {
-        if self.tray.is_none() {
-            return;
-        }
+        // Drain the global static MenuEvent channel unconditionally —
+        // events queued from a previous tray that's since been dropped
+        // would otherwise accumulate forever and fire stale on a future
+        // re-attach (Task 7's --show-tray recovery path).
         let Some(id) = crate::tray::TrayHandle::try_drain_menu_event() else {
             return;
         };
+        if self.tray.is_none() {
+            // Tray not active; silently discard.
+            return;
+        }
         match id.as_str() {
             crate::tray::ID_TRANSLATE => self.show_window(ctx),
             crate::tray::ID_HISTORY => self.summon_history(ctx),

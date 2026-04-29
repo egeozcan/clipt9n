@@ -18,7 +18,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use crate::error::TranslateError;
 
 /// Stable IDs used in the tray menu. Constants because the drain match
-/// in `app.rs::handle_tray_menu_event` references them too — no string
+/// in `app.rs::drain_tray_events` references them too — no string
 /// literal duplication.
 pub const ID_TRANSLATE: &str = "clipt9n.translate";
 pub const ID_HISTORY: &str = "clipt9n.history";
