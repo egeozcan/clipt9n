@@ -1,7 +1,7 @@
 //! Tray icon integration. `tray-icon` crate is the unified
 //! cross-platform abstraction (macOS NSStatusItem / Windows shell tray
 //! / Linux StatusNotifierItem). Per the cross-cutting decision, this
-//! file contains zero `#[cfg(target_os = …)]` — all OS-specific bits
+//! file contains no target-OS cfg attributes — all OS-specific bits
 //! live inside the crate.
 //!
 //! Construction site is the eframe creator closure (main thread, after
