@@ -55,6 +55,14 @@ impl Platform for MacOsPlatform {
             _ => false,
         }
     }
+
+    fn open_path(&self, path: &std::path::Path) -> Result<(), crate::error::TranslateError> {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| crate::error::TranslateError::Internal(format!("open: {e}")))
+    }
 }
 
 /// Returns true if the current process has Accessibility permission.

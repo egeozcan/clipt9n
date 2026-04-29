@@ -106,7 +106,14 @@ fn main() -> anyhow::Result<()> {
 
     // Secrets resolution (M1 behavior: env-var only).
     let secrets: Box<dyn Secrets> = clipt9n::secrets::resolve(&cfg.provider.api_key);
-    let api_key = secrets.get_api_key()?;
+    let api_key_opt = secrets.get_api_key().ok();
+    // If we have no key, construct a provider with a placeholder. The
+    // setup wizard's Verify checks build their own client (with the
+    // user's freshly-typed key) so the placeholder is unused until
+    // the wizard completes and the app restarts (or Save-and-start
+    // triggers a config rewrite that the user honors on next launch).
+    let api_key =
+        api_key_opt.unwrap_or_else(|| zeroize::Zeroizing::new("placeholder-no-key".into()));
     let timeout = std::time::Duration::from_secs(cfg.provider.timeout_seconds);
 
     let provider: Arc<dyn LlmProvider> = match cfg.provider.kind.as_str() {
@@ -202,6 +209,56 @@ fn main() -> anyhow::Result<()> {
     // Forward hotkey events from the global-hotkey channel into ours.
     let hotkey_rx = GlobalHotKeyEvent::receiver().clone();
 
+    // M6: first-launch detection. If we have no key in keychain AND
+    // the keychain is reachable, start in the setup wizard. Otherwise
+    // fall through to the normal Idle startup.
+    let initial_setup_wizard: Option<clipt9n::ui::setup::SetupWizardModel> = {
+        let probe = secrets.get_api_key();
+        let keychain_avail = secrets.keychain_available();
+        match probe {
+            Err(clipt9n::error::TranslateError::MissingApiKey { .. }) if keychain_avail => {
+                tracing::info!("setup wizard: no API key found; opening first-launch wizard");
+                Some(clipt9n::ui::setup::SetupWizardModel {
+                    provider: cfg.provider.kind.clone(),
+                    keychain_available: true,
+                    storage: clipt9n::ui::setup::Storage::Keychain,
+                    test_translation: true,
+                    ..Default::default()
+                })
+            }
+            Err(clipt9n::error::TranslateError::MissingApiKey { .. }) => {
+                tracing::warn!(
+                    "no API key and keychain unavailable; falling back to env-only \
+                     start — user will see translation failures until env is set"
+                );
+                Some(clipt9n::ui::setup::SetupWizardModel {
+                    provider: cfg.provider.kind.clone(),
+                    keychain_available: false,
+                    storage: clipt9n::ui::setup::Storage::Env,
+                    test_translation: false,
+                    ..Default::default()
+                })
+            }
+            _ => None,
+        }
+    };
+
+    // M6: keyfile-to-keychain migration (one-shot, idempotent).
+    if secrets.keychain_available() {
+        match clipt9n::secrets::migrate_keyfile_to_keychain(
+            &keyfile_path,
+            &cfg.provider.api_key.service,
+            "history-key",
+        ) {
+            Ok(true) => tracing::info!(
+                "M5 keyfile migrated to keychain; original file left in place \
+                 (delete manually after verifying the keychain entry)"
+            ),
+            Ok(false) => {} // nothing to do
+            Err(e) => tracing::warn!(error = %e, "keyfile migration failed; M5 path still works"),
+        }
+    }
+
     // eframe options: hidden, undecorated, always-on-top, centered window.
     let inner_size = clipt9n::ui::prompt_default_inner_size(&cfg.ui);
     let viewport = eframe::egui::ViewportBuilder::default()
@@ -239,6 +296,25 @@ fn main() -> anyhow::Result<()> {
                 history_hotkey_id,
             );
             app.install_glossary_reload(glossary_reload_tx);
+            let app = match initial_setup_wizard {
+                Some(model) => {
+                    app.with_initial_state(clipt9n::app::InitialState::SetupWizard(model))
+                }
+                None => app,
+            };
+            // Make the viewport visible if we're starting in the wizard.
+            // (Normal startup is hidden — only the hotkey shows the prompt.)
+            if app.is_setup_wizard() {
+                cc.egui_ctx
+                    .send_viewport_cmd(eframe::egui::ViewportCommand::InnerSize(
+                        eframe::egui::Vec2::new(
+                            clipt9n::ui::setup::SETUP_WIZARD_INNER_SIZE.x,
+                            clipt9n::ui::setup::SETUP_WIZARD_INNER_SIZE.y,
+                        ),
+                    ));
+                cc.egui_ctx
+                    .send_viewport_cmd(eframe::egui::ViewportCommand::Visible(true));
+            }
             Ok(Box::new(app))
         }),
     )

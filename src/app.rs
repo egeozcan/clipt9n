@@ -24,6 +24,14 @@ use crate::translator::{Action, Translator};
 #[allow(unused_imports)]
 use crate::ui::{custom_prompt as prompt_custom, prompt, size_confirm, theme, translating};
 
+/// Initial state override passed by `main.rs` to ClipApp at construction.
+/// Used to land the app in the setup wizard on first launch instead of
+/// the default Idle state.
+pub enum InitialState {
+    Idle,
+    SetupWizard(crate::ui::setup::SetupWizardModel),
+}
+
 /// Top-level UI state machine.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -573,6 +581,24 @@ impl ClipApp {
         crate::platform::install_sighup_reload(&self.runtime, tx);
     }
 
+    /// Whether the app is currently displaying the setup wizard.
+    /// Used by main.rs to decide whether to show the viewport at startup.
+    pub fn is_setup_wizard(&self) -> bool {
+        matches!(self.app_state, AppState::SetupWizard { .. })
+    }
+
+    /// Override the initial AppState. Used by main.rs to land in
+    /// `SetupWizard` instead of `Idle` on first launch.
+    pub fn with_initial_state(mut self, state_kind: InitialState) -> Self {
+        match state_kind {
+            InitialState::Idle => {} // already the default
+            InitialState::SetupWizard(model) => {
+                self.app_state = AppState::SetupWizard { model };
+            }
+        }
+        self
+    }
+
     /// Best-effort: persist a successful translation to the history
     /// store. Runs on the tokio runtime. Failures are logged at warn;
     /// panics are caught by the watcher and similarly logged. The user
@@ -1103,13 +1129,23 @@ impl ClipApp {
                 self.app_state = AppState::SetupWizard { model };
             }
             Some(crate::ui::setup::SetupOutcome::SaveAndStart) => {
-                // Task 10 wires the actual persist + restart.
-                tracing::debug!("setup wizard: SaveAndStart (Task 10 wires persist)");
+                if let Err(e) = self.persist_setup_completion(&model) {
+                    tracing::error!(error = %e, "setup wizard persist failed");
+                    model.err_msg = format!("save failed: {e}");
+                    model.phase = crate::ui::setup::WizardPhase::Error;
+                    self.app_state = AppState::SetupWizard { model };
+                    return;
+                }
                 self.dismiss_setup_to_idle(ctx);
             }
             Some(crate::ui::setup::SetupOutcome::OpenConfig) => {
-                // Task 10 wires the platform open.
-                tracing::debug!("setup wizard: OpenConfig (Task 10 wires platform open)");
+                let cfg_path = self.state_path.parent().map(|p| p.join("config.toml"));
+                if let Some(p) = cfg_path {
+                    let plat = crate::platform::current();
+                    if let Err(e) = plat.open_path(&p) {
+                        tracing::warn!(error = %e, "open_path failed");
+                    }
+                }
                 self.app_state = AppState::SetupWizard { model };
             }
             None => {
@@ -1218,6 +1254,48 @@ impl ClipApp {
         ));
         self.app_state = AppState::Idle;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
+    fn persist_setup_completion(
+        &mut self,
+        model: &crate::ui::setup::SetupWizardModel,
+    ) -> Result<(), TranslateError> {
+        // Update in-memory config.
+        self.cfg.provider.kind = model.provider.clone();
+        let new_source = match model.storage {
+            crate::ui::setup::Storage::Keychain => "keychain",
+            crate::ui::setup::Storage::Env => "env",
+        };
+        self.cfg.provider.api_key.source = new_source.into();
+        self.cfg.provider.api_key.account = model.provider.clone();
+        // Update env-var name for the env case so the user knows what
+        // to export.
+        let (_, _, env_var) = crate::ui::setup::provider_meta(&model.provider);
+        self.cfg.provider.api_key.env_var = env_var.into();
+
+        // Persist config to disk.
+        let cfg_path = self
+            .state_path
+            .parent()
+            .map(|p| p.join("config.toml"))
+            .ok_or_else(|| TranslateError::Config("state path has no parent".into()))?;
+        self.cfg.persist(&cfg_path)?;
+
+        // Persist the key to the chosen backend. Env-storage logs a
+        // warning that the user must set the env var manually — the
+        // wizard already showed them the variable name.
+        match model.storage {
+            crate::ui::setup::Storage::Keychain => {
+                self.secrets.set_api_key(model.key.clone())?;
+            }
+            crate::ui::setup::Storage::Env => {
+                tracing::warn!(
+                    env_var = %env_var,
+                    "setup wizard: storage=env — user must set the env var manually before next launch"
+                );
+            }
+        }
+        Ok(())
     }
 
     fn dismiss_history_to_idle(&mut self, ctx: &egui::Context) {

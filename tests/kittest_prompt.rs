@@ -74,11 +74,7 @@ fn clicking_the_literal_slot_text_fires_pick_outcome() {
     // kittest filters out label-provider nodes when querying by label,
     // so we use `By::new().role(Label).label("English").include_labels()`
     // to keep them in the result.
-    let label_node = harness.get(
-        by().role(Role::Label)
-            .label("English")
-            .include_labels(),
-    );
+    let label_node = harness.get(by().role(Role::Label).label("English").include_labels());
 
     // Step 2: Get the Label's pixel rect from AccessKit (egui populates
     // this when the widget is laid out).

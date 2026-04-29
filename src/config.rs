@@ -280,6 +280,24 @@ impl Config {
         }
         Err(TranslateError::UnsupportedLanguage(code.to_string()))
     }
+
+    /// Persist the `[provider]` and `[provider.api_key]` sections
+    /// back to disk. Used by the setup wizard's Save-and-start path.
+    /// Conservatively rewrites the entire file — the existing toml
+    /// crate doesn't support in-place section replacement, and
+    /// config.toml is small. Other sections are preserved (we
+    /// re-serialize the full Config).
+    pub fn persist(&self, path: &Path) -> Result<(), TranslateError> {
+        let toml_str = toml::to_string_pretty(self)
+            .map_err(|e| TranslateError::Config(format!("serializing config: {e}")))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TranslateError::Config(format!("creating {}: {e}", parent.display()))
+            })?;
+        }
+        std::fs::write(path, toml_str)
+            .map_err(|e| TranslateError::Config(format!("writing {}: {e}", path.display())))
+    }
 }
 
 /// Logical hotkey modifier as authored by the user. Mapped to the
@@ -673,5 +691,19 @@ enabled = true
         assert!(!cfg.hotkey.history.shift);
         assert_eq!(cfg.hotkey.history.key, "L");
         assert!(cfg.hotkey.history.enabled);
+    }
+
+    #[test]
+    fn persist_round_trips_through_load() {
+        let mut cfg = Config::default();
+        cfg.provider.kind = "openai".into();
+        cfg.provider.api_key.source = "keychain".into();
+        cfg.provider.api_key.account = "openai".into();
+        let f = NamedTempFile::new().unwrap();
+        cfg.persist(f.path()).unwrap();
+        let reloaded = Config::load(f.path()).unwrap();
+        assert_eq!(reloaded.provider.kind, "openai");
+        assert_eq!(reloaded.provider.api_key.source, "keychain");
+        assert_eq!(reloaded.provider.api_key.account, "openai");
     }
 }

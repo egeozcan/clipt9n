@@ -23,6 +23,17 @@ pub trait Platform {
     fn reduced_motion(&self) -> bool {
         false
     }
+
+    /// Open a path in the OS default handler. macOS shells out to
+    /// `open`; Linux to `xdg-open`; Windows to `cmd.exe /C start`.
+    /// Best-effort — returns `Err` if the helper isn't on PATH; the
+    /// caller (M6 wizard, M7 tray menu) logs warn and stays open.
+    fn open_path(&self, path: &std::path::Path) -> Result<(), TranslateError> {
+        let _ = path;
+        Err(TranslateError::Internal(
+            "open_path not implemented on this platform".into(),
+        ))
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -57,7 +57,8 @@ fn modal_opens_then_cancel_button_dismisses_without_clearing() {
     // Try to check if modal is absent
     let modal_absent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         harness.get_by_label("Clear all history?")
-    })).is_err();
+    }))
+    .is_err();
     assert!(modal_absent, "modal should be hidden initially");
 
     // Open the modal by simulating Shift+Del. The viewer's draw doesn't
@@ -108,14 +109,10 @@ fn modal_clear_button_emits_clear_all_outcome() {
     {
         let m = model.lock().unwrap();
         assert_eq!(
-            m.query,
-            "__clear_all__",
+            m.query, "__clear_all__",
             "ClearAll outcome should have been emitted"
         );
-        assert!(
-            !m.confirm_clear,
-            "modal should auto-dismiss after click"
-        );
+        assert!(!m.confirm_clear, "modal should auto-dismiss after click");
     }
 }
 
@@ -300,9 +297,9 @@ fn active_row_marker_renders_when_selected_changes() {
     harness.run();
 
     // Verify the active-row arrow marker ("▸") is visible when selected=2.
-    let has_marker = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        harness.get_by_label("▸")
-    })).is_ok();
+    let has_marker =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| harness.get_by_label("▸")))
+            .is_ok();
     assert!(has_marker, "the active-row arrow marker should be visible");
 
     // When selected=1 (interior index), verify rendering works without panic.

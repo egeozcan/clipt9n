@@ -101,7 +101,10 @@ impl Secrets for KeychainSecrets {
         match entry.get_password() {
             Ok(s) => Ok(Zeroizing::new(s)),
             Err(keyring::Error::NoEntry) => Err(TranslateError::MissingApiKey {
-                env_var: format!("(keychain service={} account={})", self.service, self.account),
+                env_var: format!(
+                    "(keychain service={} account={})",
+                    self.service, self.account
+                ),
             }),
             Err(e) => Err(TranslateError::SetupWizard(format!(
                 "keychain read failed: {e}"
@@ -131,6 +134,49 @@ impl Secrets for KeychainSecrets {
             Err(_) => false,
         }
     }
+}
+
+/// One-shot migration helper for M5 → M6 upgrades. Reads the bytes of
+/// `<config_dir>/.history-key` and writes them to a `history-key`
+/// keychain entry under the configured service. The keyfile is left
+/// in place (per the M6 plan §3 "copies, never moves" decision); the
+/// README documents that users can `rm` it after verifying.
+///
+/// Returns `Ok(true)` if migration happened (file existed AND keychain
+/// entry was empty), `Ok(false)` if there was nothing to do (file
+/// missing OR keychain entry already populated), or `Err(_)` only on a
+/// real failure (I/O reading the file, or keychain write failure other
+/// than `NoStorageAccess`).
+///
+/// Migration failure is best-effort — callers log warn and continue;
+/// the M5 keyfile path still works as a fallback.
+pub fn migrate_keyfile_to_keychain(
+    keyfile_path: &std::path::Path,
+    service: &str,
+    account: &str,
+) -> Result<bool, TranslateError> {
+    if !keyfile_path.exists() {
+        return Ok(false);
+    }
+    let entry = keyring::Entry::new(service, account).map_err(|e| {
+        TranslateError::SetupWizard(format!(
+            "keychain entry construction failed for service={service} account={account}: {e}"
+        ))
+    })?;
+    // If a keychain entry already exists, do nothing.
+    if entry.get_password().is_ok() {
+        return Ok(false);
+    }
+    let bytes = std::fs::read(keyfile_path).map_err(|e| {
+        TranslateError::SetupWizard(format!(
+            "reading {} for migration: {e}",
+            keyfile_path.display()
+        ))
+    })?;
+    entry.set_secret(&bytes).map_err(|e| {
+        TranslateError::SetupWizard(format!("keychain write during migration: {e}"))
+    })?;
+    Ok(true)
 }
 
 /// Construct the `Secrets` impl matching `cfg.provider.api_key.source`.

@@ -3,8 +3,8 @@
 //! `get_by_label`. This is the contract that every kittest test in this
 //! crate relies on; if it fails, no kittest test can pass.
 
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use egui_kittest::Harness;
 
 #[test]
 fn harness_runs_one_frame_against_a_no_op_app() {
