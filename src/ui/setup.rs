@@ -1,21 +1,46 @@
-//! Setup wizard view. Full implementation lands in Task 7. This stub
-//! exists so the `pub mod setup` declaration in `ui/mod.rs` resolves
-//! during Task 6's incremental commits.
+//! Setup wizard view — egui paint of the design's `setup-wizard.jsx`.
+//! Pure view + small pure helpers. Connectivity check + sample-
+//! translation orchestration live in `src/app.rs::update_setup_wizard`
+//! (Task 9); this module emits intents (`SetupOutcome`) and the App
+//! flips the `check1` / `check2` / `phase` / `err_msg` model fields in
+//! response to channel results.
 
-use egui::Vec2;
+use egui::{Color32, RichText, Stroke, TextEdit, Vec2};
 use zeroize::Zeroizing;
 
+use crate::ui::theme;
+
+/// What the wizard paints per frame. Mirrors `setup-wizard.jsx`'s
+/// React state hooks: provider/key/show/storage/testRequested/phase/
+/// check1/check2/errMsg.
 #[derive(Debug, Clone, Default)]
 pub struct SetupWizardModel {
+    /// One of "anthropic" | "openai" | "gemini" | "ollama". Default
+    /// "anthropic" per design.
     pub provider: String,
+    /// API key in flight. Wrapped in `Zeroizing` from the moment the
+    /// user types it.
     pub key: Zeroizing<String>,
+    /// Toggle between password and visible-text rendering.
     pub show_key: bool,
+    /// "Keychain" (default) or "Env". When `keychain_available ==
+    /// false`, this is forced to `Env` and the radio is hidden.
     pub storage: Storage,
+    /// "Test with a real translation" checkbox. Default true per
+    /// design. When false, only the connectivity check runs.
     pub test_translation: bool,
+    /// State machine: Entry → Verifying → Done | Error → (Save) →
+    /// Idle (the App-layer transition).
     pub phase: WizardPhase,
+    /// Connectivity check status.
     pub check1: CheckStatus,
+    /// Sample-translation check status.
     pub check2: CheckStatus,
+    /// User-facing error string for the err-box. Empty unless
+    /// `phase == Error`.
     pub err_msg: String,
+    /// Cached at construction; the wizard hides the Keychain radio if
+    /// false. The probe runs in `KeychainSecrets::keychain_available`.
     pub keychain_available: bool,
 }
 
@@ -46,17 +71,500 @@ pub enum CheckStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupOutcome {
+    /// "Cancel" button — abandon the wizard.
     Cancel,
+    /// "Verify →" button — kick off check1 + (optional) check2.
     Verify,
+    /// "Save and start ✓" button (only enabled when phase=Done).
     SaveAndStart,
+    /// Error-recovery "Open config" button.
     OpenConfig,
 }
 
-/// Default setup-wizard viewport size (matches design's 580×640).
+/// Default setup-wizard viewport size. Matches design's 580×640.
 pub const SETUP_WIZARD_INNER_SIZE: Vec2 = Vec2::new(580.0, 640.0);
 
-/// Painted in Task 7. The stub returns `None` so the App's match arm
-/// compiles cleanly during the incremental Task 6 commit.
-pub fn draw(_ctx: &egui::Context, _model: &mut SetupWizardModel) -> Option<SetupOutcome> {
-    None
+/// All four providers per design. The label is what the wizard shows;
+/// `default_env_var` is the hint string under the Env-storage radio
+/// (e.g., `$ANTHROPIC_API_KEY`).
+pub fn providers() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("anthropic", "Anthropic (Claude)", "ANTHROPIC_API_KEY"),
+        ("openai", "OpenAI", "OPENAI_API_KEY"),
+        ("gemini", "Google Gemini", "GEMINI_API_KEY"),
+        ("ollama", "Ollama (local)", "OLLAMA_API_KEY"),
+    ]
+}
+
+/// Look up the provider tuple by id. Returns `("anthropic", ..., ...)`
+/// for unknown ids (defensive — should never happen in normal flow).
+pub fn provider_meta(id: &str) -> (&'static str, &'static str, &'static str) {
+    providers()
+        .into_iter()
+        .find(|(p, _, _)| *p == id)
+        .unwrap_or(providers()[0])
+}
+
+/// Default base URL for each provider. Used by the wizard's
+/// sample-translation spawn (Task 9) to construct a fresh provider
+/// from the user's selection.
+pub fn default_base_url(provider_kind: &str) -> &'static str {
+    match provider_kind {
+        "anthropic" => "https://api.anthropic.com/v1",
+        "openai" => "https://api.openai.com/v1",
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
+        "ollama" => "http://localhost:11434/v1",
+        _ => "https://api.anthropic.com/v1",
+    }
+}
+
+/// Whether the Save-and-start button is enabled. Mirrors the jsx's
+/// `phase === "done"` gate.
+pub fn save_enabled(model: &SetupWizardModel) -> bool {
+    matches!(model.phase, WizardPhase::Done)
+}
+
+/// Whether the Verify button is enabled. Mirrors `!key || phase ==
+/// "verifying"` from jsx (negated).
+pub fn verify_enabled(model: &SetupWizardModel) -> bool {
+    !model.key.is_empty() && !matches!(model.phase, WizardPhase::Verifying)
+}
+
+/// Paint the wizard. Returns at most one outcome per frame.
+pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOutcome> {
+    let mut outcome: Option<SetupOutcome> = None;
+    let frame = egui::CentralPanel::default()
+        .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(20.0));
+
+    frame.show(ctx, |ui| {
+        ui.set_max_width(540.0); // 580px outer - 2 × 20px margin
+
+        // Header.
+        ui.label(
+            RichText::new("Welcome to clipt9n")
+                .color(theme::INK)
+                .strong()
+                .size(15.0),
+        );
+        ui.label(
+            RichText::new("first-run · setup")
+                .color(theme::INK_3)
+                .monospace()
+                .size(11.0),
+        );
+        ui.add_space(14.0);
+
+        // Step 1: provider grid.
+        ui.label(
+            RichText::new("STEP 1 OF 3 · PROVIDER")
+                .color(theme::INK_3)
+                .monospace()
+                .size(10.0)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Pick your translation provider.")
+                .color(theme::INK)
+                .strong()
+                .size(13.5),
+        );
+        ui.add_space(8.0);
+
+        let provs = providers();
+        ui.columns(2, |cols| {
+            for (i, (id, label, _env_var)) in provs.iter().enumerate() {
+                let col = &mut cols[i % 2];
+                let active = model.provider == *id;
+                let bg = if active {
+                    Color32::from_rgba_unmultiplied(200, 255, 94, 16)
+                } else {
+                    theme::PANEL_2
+                };
+                let stroke = if active {
+                    Stroke::new(1.0, theme::ACCENT)
+                } else {
+                    Stroke::new(1.0, theme::LINE_SOFT)
+                };
+                let resp = egui::Frame::new()
+                    .fill(bg)
+                    .stroke(stroke)
+                    .corner_radius(6.0)
+                    .inner_margin(9.0)
+                    .show(col, |ui| {
+                        ui.horizontal(|ui| {
+                            let dot_color = if active { theme::ACCENT } else { theme::INK_3 };
+                            ui.label(RichText::new("●").color(dot_color).size(10.0));
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(*label).color(theme::INK).size(12.5));
+                            if *id == "anthropic" {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("recommended")
+                                        .color(theme::ACCENT)
+                                        .monospace()
+                                        .size(10.0),
+                                );
+                            }
+                            if *id == "ollama" {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("offline")
+                                        .color(Color32::from_rgb(0x9a, 0xd6, 0xff))
+                                        .monospace()
+                                        .size(10.0),
+                                );
+                            }
+                        });
+                    })
+                    .response
+                    .interact(egui::Sense::click());
+                if resp.clicked() {
+                    model.provider = (*id).to_string();
+                    if matches!(model.phase, WizardPhase::Error) {
+                        // jsx: `if (phase !== "entry") setPhase("entry")`
+                        model.phase = WizardPhase::Entry;
+                        model.err_msg.clear();
+                    }
+                }
+            }
+        });
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("Get your API key →")
+                .color(theme::ACCENT)
+                .monospace()
+                .size(11.0),
+        );
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        // Step 2: key entry.
+        ui.label(
+            RichText::new("STEP 2 · KEY")
+                .color(theme::INK_3)
+                .monospace()
+                .size(10.0)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            // The TextEdit needs to mutate the underlying String. We
+            // get a `&mut String` from `Deref<Target=String>` —
+            // egui's TextEdit accepts that.
+            let key_str: &mut String = &mut model.key;
+            let edit = TextEdit::singleline(key_str)
+                .password(!model.show_key)
+                .hint_text("sk-ant-…")
+                .desired_width(ui.available_width() - 80.0);
+            let resp = ui.add(edit);
+            if resp.changed() && matches!(model.phase, WizardPhase::Error) {
+                model.phase = WizardPhase::Entry;
+                model.err_msg.clear();
+            }
+            ui.add_space(4.0);
+            let toggle_label = if model.show_key { "hide" } else { "show" };
+            if ui
+                .button(RichText::new(toggle_label).monospace().size(11.0))
+                .clicked()
+            {
+                model.show_key = !model.show_key;
+            }
+        });
+
+        // Storage radio.
+        ui.add_space(8.0);
+        let (_, _, env_var) = provider_meta(&model.provider);
+        ui.columns(2, |cols| {
+            // Keychain option (only shown if available).
+            if model.keychain_available {
+                let active = matches!(model.storage, Storage::Keychain);
+                let stroke = if active {
+                    Stroke::new(1.0, theme::ACCENT)
+                } else {
+                    Stroke::new(1.0, theme::LINE_SOFT)
+                };
+                let resp = egui::Frame::new()
+                    .fill(theme::PANEL_2)
+                    .stroke(stroke)
+                    .corner_radius(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[0], |ui| {
+                        ui.label(
+                            RichText::new("System Keychain")
+                                .color(theme::INK)
+                                .size(12.5)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Bound to clipt9n; other apps prompted on read.")
+                                .color(theme::INK_3)
+                                .size(11.0),
+                        );
+                    })
+                    .response
+                    .interact(egui::Sense::click());
+                if resp.clicked() {
+                    model.storage = Storage::Keychain;
+                }
+            } else {
+                cols[0].label(
+                    RichText::new("(Keychain unavailable on this system)")
+                        .color(theme::INK_3)
+                        .size(11.5),
+                );
+            }
+            // Env option (always shown).
+            let active = matches!(model.storage, Storage::Env);
+            let stroke = if active {
+                Stroke::new(1.0, theme::ACCENT)
+            } else {
+                Stroke::new(1.0, theme::LINE_SOFT)
+            };
+            let resp = egui::Frame::new()
+                .fill(theme::PANEL_2)
+                .stroke(stroke)
+                .corner_radius(6.0)
+                .inner_margin(8.0)
+                .show(&mut cols[1], |ui| {
+                    ui.label(
+                        RichText::new("Environment variable")
+                            .color(theme::INK)
+                            .size(12.5)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(format!("${env_var}"))
+                            .color(theme::INK_3)
+                            .monospace()
+                            .size(11.0),
+                    );
+                })
+                .response
+                .interact(egui::Sense::click());
+            if resp.clicked() {
+                model.storage = Storage::Env;
+            }
+        });
+
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        // Step 3: verify.
+        ui.label(
+            RichText::new("STEP 3 · VERIFY")
+                .color(theme::INK_3)
+                .monospace()
+                .size(10.0)
+                .strong(),
+        );
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            let mut t = model.test_translation;
+            ui.checkbox(&mut t, "");
+            model.test_translation = t;
+            ui.label(
+                RichText::new("Test with a real translation")
+                    .color(theme::INK_2)
+                    .size(12.5),
+            );
+            ui.label(
+                RichText::new(" (~$0.0001 in tokens, recommended)")
+                    .color(theme::INK_3)
+                    .size(11.5),
+            );
+        });
+
+        ui.add_space(6.0);
+        // Check rows, painted in a panel.
+        egui::Frame::new()
+            .fill(theme::PANEL_2)
+            .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+            .corner_radius(6.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                draw_check_row(ui, "Connectivity (auth)", "GET /v1/models", model.check1);
+                if model.test_translation {
+                    draw_check_row(
+                        ui,
+                        "Sample translation",
+                        "\"Hello, world.\" → \"Hallo, Welt.\"",
+                        model.check2,
+                    );
+                }
+            });
+
+        // Error box.
+        if matches!(model.phase, WizardPhase::Error) && !model.err_msg.is_empty() {
+            ui.add_space(8.0);
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(255, 118, 118, 20))
+                .stroke(Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(255, 118, 118, 64),
+                ))
+                .corner_radius(6.0)
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("!")
+                                .color(theme::BAD)
+                                .strong()
+                                .monospace()
+                                .size(13.0),
+                        );
+                        ui.add_space(6.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(&model.err_msg)
+                                    .color(theme::BAD)
+                                    .strong()
+                                    .monospace()
+                                    .size(12.5),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Try a different key, or open config.toml to switch provider.",
+                                )
+                                .color(theme::INK_2)
+                                .size(11.0),
+                            );
+                            if ui
+                                .button(RichText::new("Open config").monospace().size(11.0))
+                                .clicked()
+                            {
+                                outcome = Some(SetupOutcome::OpenConfig);
+                            }
+                        });
+                    });
+                });
+        }
+
+        // Footer.
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                outcome = Some(SetupOutcome::Cancel);
+            }
+            ui.allocate_space(egui::Vec2::new(ui.available_width() - 180.0, 0.0));
+            if matches!(model.phase, WizardPhase::Done) {
+                let btn = egui::Button::new(
+                    RichText::new("Save and start ✓")
+                        .color(theme::ACCENT_INK)
+                        .strong(),
+                )
+                .fill(theme::GOOD);
+                if ui.add(btn).clicked() {
+                    outcome = Some(SetupOutcome::SaveAndStart);
+                }
+            } else {
+                let label = match model.phase {
+                    WizardPhase::Verifying => "Verifying…",
+                    _ => "Verify →",
+                };
+                let btn = egui::Button::new(RichText::new(label).color(theme::ACCENT_INK).strong())
+                    .fill(if verify_enabled(model) {
+                        theme::ACCENT
+                    } else {
+                        theme::PANEL_3
+                    });
+                let resp = ui.add_enabled(verify_enabled(model), btn);
+                if resp.clicked() {
+                    outcome = Some(SetupOutcome::Verify);
+                }
+            }
+        });
+    });
+
+    outcome
+}
+
+fn draw_check_row(ui: &mut egui::Ui, label: &str, detail: &str, status: CheckStatus) {
+    let (dot, color) = match status {
+        CheckStatus::Idle => ("○", theme::INK_3),
+        CheckStatus::Running => ("◐", theme::WARN),
+        CheckStatus::Ok => ("✓", theme::GOOD),
+        CheckStatus::Fail => ("✕", theme::BAD),
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(dot)
+                .color(color)
+                .monospace()
+                .size(13.0)
+                .strong(),
+        );
+        ui.add_space(8.0);
+        ui.label(RichText::new(label).color(theme::INK).size(12.5));
+        ui.allocate_space(Vec2::new(ui.available_width() - 220.0, 0.0));
+        ui.label(
+            RichText::new(detail)
+                .color(theme::INK_3)
+                .monospace()
+                .size(11.0),
+        );
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn providers_returns_four_entries_in_design_order() {
+        let p = providers();
+        assert_eq!(p.len(), 4);
+        assert_eq!(p[0].0, "anthropic");
+        assert_eq!(p[1].0, "openai");
+        assert_eq!(p[2].0, "gemini");
+        assert_eq!(p[3].0, "ollama");
+    }
+
+    #[test]
+    fn provider_meta_falls_back_to_anthropic_for_unknown() {
+        let (id, _, _) = provider_meta("nonexistent");
+        assert_eq!(id, "anthropic");
+    }
+
+    #[test]
+    fn provider_meta_resolves_known_id() {
+        let (_, label, env_var) = provider_meta("openai");
+        assert_eq!(label, "OpenAI");
+        assert_eq!(env_var, "OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn save_enabled_only_when_phase_is_done() {
+        let mut m = SetupWizardModel::default();
+        assert!(!save_enabled(&m));
+        m.phase = WizardPhase::Verifying;
+        assert!(!save_enabled(&m));
+        m.phase = WizardPhase::Error;
+        assert!(!save_enabled(&m));
+        m.phase = WizardPhase::Done;
+        assert!(save_enabled(&m));
+    }
+
+    #[test]
+    fn verify_enabled_requires_key_and_not_verifying() {
+        let mut m = SetupWizardModel::default();
+        assert!(!verify_enabled(&m), "empty key disables verify");
+        m.key = Zeroizing::new("sk-test-12345".into());
+        assert!(verify_enabled(&m));
+        m.phase = WizardPhase::Verifying;
+        assert!(!verify_enabled(&m), "verifying disables re-click");
+    }
+
+    #[test]
+    fn default_provider_is_anthropic_after_explicit_set() {
+        let m = SetupWizardModel {
+            provider: "anthropic".into(),
+            ..Default::default()
+        };
+        assert_eq!(m.provider, "anthropic");
+    }
 }
