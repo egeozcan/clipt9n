@@ -24,14 +24,13 @@ use tokio::runtime::Runtime;
 /// fail silently (logged at debug) and the task exits.
 pub(crate) fn install(rt: &Runtime, tx: Sender<()>) {
     let _enter = rt.enter();
-    let mut sighup =
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to install SIGHUP listener");
-                return;
-            }
-        };
+    let mut sighup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to install SIGHUP listener");
+            return;
+        }
+    };
     drop(_enter);
     tracing::info!("SIGHUP listener installed; pkill -HUP triggers glossary reload");
     rt.spawn(async move {

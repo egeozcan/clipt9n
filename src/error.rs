@@ -44,6 +44,9 @@ pub enum TranslateError {
 
     #[error("glossary error: {0}")]
     Glossary(String),
+
+    #[error("history error: {0}")]
+    History(String),
 }
 
 #[cfg(test)]
@@ -78,6 +81,10 @@ mod tests {
         assert_eq!(
             TranslateError::Glossary("malformed entry at line 5".into()).to_string(),
             "glossary error: malformed entry at line 5"
+        );
+        assert_eq!(
+            TranslateError::History("encrypted db unreadable".into()).to_string(),
+            "history error: encrypted db unreadable"
         );
     }
 }
