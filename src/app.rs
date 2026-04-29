@@ -99,10 +99,7 @@ pub struct ClipApp {
     /// Encrypted history store. `None` means history was disabled at
     /// config time (`[history] enabled = false`) OR open failed at
     /// startup. The `Arc<History>` lets worker tasks clone the handle
-    /// cheaply; `Option` is the "no store" shortcut. `#[allow(dead_code)]`
-    /// is temporary — Task 8 reads this in `schedule_history_insert`,
-    /// Task 10 reads it in `summon_history` / `update_showing_history`.
-    #[allow(dead_code)]
+    /// cheaply; `Option` is the "no store" shortcut.
     history: Option<std::sync::Arc<crate::history::store::History>>,
 
     /// Set to true if history-side errors should short-circuit. Read
@@ -110,7 +107,6 @@ pub struct ClipApp {
     /// (which surfaces the corruption toast). The flag persists for
     /// the life of the app — the user must restart after fixing the DB
     /// to re-enable history.
-    #[allow(dead_code)]
     history_disabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
     /// Set to true the first time the corruption toast has been shown
@@ -160,6 +156,18 @@ struct TranslationOutcome {
     /// Dispatch-generation that produced this outcome. If `App.dispatch_gen`
     /// has advanced since dispatch, this outcome is stale (user cancelled).
     gen: u64,
+    /// ISO-2 source language detected at dispatch time (carries into
+    /// the history row's `source_lang` column on success). `None` if
+    /// `whatlang` confidence was below the threshold.
+    detected_source_lang: Option<String>,
+    /// The source text we fed to the translator. The history insert
+    /// path uses this to compute `char_count` and (when
+    /// `[history] store_text = true`) to encrypt as the source column.
+    source_text: String,
+    /// Action that produced this outcome — used to fill the history
+    /// row's `action` and `target_lang` columns. Cloned at dispatch
+    /// time so the worker doesn't hold a `&Action` reference.
+    action: Action,
 }
 
 impl ClipApp {
@@ -369,6 +377,9 @@ impl ClipApp {
         let label_for_panic = action_label.clone();
         let templates = self.templates.clone();
         let glossary = self.glossary.clone();
+        let detected_source = self.prompt_model.detected_lang.clone();
+        let action_for_outcome = action.clone();
+        let source_text_for_outcome = source_text.clone();
         let worker = self.runtime.spawn(async move {
             // Take a read snapshot of the glossary at dispatch time. If a
             // SIGHUP-driven reload arrives mid-translation, the running
@@ -382,6 +393,9 @@ impl ClipApp {
                 action_label,
                 slot,
                 gen,
+                detected_source_lang: detected_source,
+                source_text: source_text_for_outcome,
+                action: action_for_outcome,
             }
         });
         self.runtime.spawn(async move {
@@ -396,6 +410,9 @@ impl ClipApp {
                         action_label: label_for_panic,
                         slot,
                         gen,
+                        detected_source_lang: None,
+                        source_text: String::new(),
+                        action: Action::FixGrammar, // placeholder — never read on Err
                     }
                 }
             };
@@ -419,7 +436,7 @@ impl ClipApp {
             return;
         }
         match outcome.result {
-            Ok(translated) => {
+            Ok(ref translated) => {
                 let mut cb = match ArboardClipboard::new() {
                     Ok(c) => c,
                     Err(e) => {
@@ -428,10 +445,15 @@ impl ClipApp {
                         return;
                     }
                 };
-                if let Err(e) = cb.write_text(&translated) {
+                if let Err(e) = cb.write_text(translated) {
                     tracing::error!(error = %e, "clipboard write failed");
-                } else if let Err(e) = crate::notify::translation_copied(&outcome.action_label) {
-                    tracing::warn!(error = %e, "notification failed");
+                } else {
+                    if let Err(e) = crate::notify::translation_copied(&outcome.action_label) {
+                        tracing::warn!(error = %e, "notification failed");
+                    }
+                    // History insert: best-effort, AFTER clipboard write
+                    // succeeds, NEVER blocks the user's primary outcome.
+                    self.schedule_history_insert(&outcome, translated);
                 }
                 tracing::info!(
                     slot = outcome.slot,
@@ -507,6 +529,67 @@ impl ClipApp {
     /// the runtime.
     pub fn install_glossary_reload(&self, tx: crossbeam_channel::Sender<()>) {
         crate::platform::install_sighup_reload(&self.runtime, tx);
+    }
+
+    /// Best-effort: persist a successful translation to the history
+    /// store. Runs on the tokio runtime. Failures are logged at warn;
+    /// panics are caught by the watcher and similarly logged. The user
+    /// never sees a toast — the clipboard write is the primary outcome
+    /// and has already happened by the time we get here.
+    fn schedule_history_insert(&self, outcome: &TranslationOutcome, translated: &str) {
+        // Short-circuit if history is disabled (config or corruption).
+        let Some(history) = self.history.clone() else {
+            return;
+        };
+        if self
+            .history_disabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let history_disabled = self.history_disabled.clone();
+        let max_entries = self.cfg.history.max_entries;
+        let store_text = self.cfg.history.store_text;
+        let source_text = outcome.source_text.clone();
+        let result_text = translated.to_string();
+        let action = outcome.action.clone();
+        let detected = outcome.detected_source_lang.clone();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let entry = crate::history::store::NewEntry {
+            created_at: now,
+            action: action_kind_str(&action).to_string(),
+            source_lang: detected,
+            target_lang: target_lang_for(&action),
+            char_count: source_text.chars().count() as i64,
+            source: if store_text { Some(source_text) } else { None },
+            result: if store_text { Some(result_text) } else { None },
+        };
+
+        let inner = self.runtime.spawn(async move {
+            // history is Arc<History> (already unwrapped from the Option
+            // above). insert_with_cap takes &self.
+            if let Err(e) = history.insert_with_cap(entry, max_entries) {
+                tracing::warn!(error = %e, "history insert failed; row dropped");
+                // Don't disable globally — a transient SQLite error
+                // (e.g., disk full) shouldn't permanently take down
+                // history. Corruption-class errors set the flag at
+                // open time, not at insert time.
+                let _ = history_disabled; // suppress unused warning
+            }
+        });
+        // Watcher: catch a panic in the inner task and log it.
+        self.runtime.spawn(async move {
+            if let Err(join_err) = inner.await {
+                tracing::warn!(
+                    error = %join_err,
+                    "history insert panicked; row dropped"
+                );
+            }
+        });
     }
 
     fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
@@ -899,6 +982,28 @@ pub(crate) fn action_label_for(action: &Action, cfg: &Config) -> String {
     }
 }
 
+/// Map an `Action` to the string we persist in `entries.action`. Must
+/// match the `'translate' | 'fix_grammar' | 'rewrite' | 'custom'`
+/// alphabet from spec §7.
+fn action_kind_str(action: &Action) -> &'static str {
+    match action {
+        Action::Translate { .. } => "translate",
+        Action::FixGrammar => "fix_grammar",
+        Action::Rewrite => "rewrite",
+        Action::Custom { .. } => "custom",
+    }
+}
+
+/// Target language for the history row. `None` for fix_grammar /
+/// rewrite / custom (which stay in source language); `Some(code)` for
+/// translate.
+fn target_lang_for(action: &Action) -> Option<String> {
+    match action {
+        Action::Translate { code } => Some(code.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,5 +1204,37 @@ mod tests {
         let outcome_gen = dispatched_gen;
         // Stale check (mirrors handle_translation_done):
         assert_ne!(current, outcome_gen);
+    }
+
+    #[test]
+    fn action_kind_str_maps_per_spec() {
+        assert_eq!(
+            action_kind_str(&Action::Translate { code: "de".into() }),
+            "translate"
+        );
+        assert_eq!(action_kind_str(&Action::FixGrammar), "fix_grammar");
+        assert_eq!(action_kind_str(&Action::Rewrite), "rewrite");
+        assert_eq!(
+            action_kind_str(&Action::Custom {
+                instruction: "x".into()
+            }),
+            "custom"
+        );
+    }
+
+    #[test]
+    fn target_lang_for_only_set_on_translate() {
+        assert_eq!(
+            target_lang_for(&Action::Translate { code: "de".into() }),
+            Some("de".to_string())
+        );
+        assert_eq!(target_lang_for(&Action::FixGrammar), None);
+        assert_eq!(target_lang_for(&Action::Rewrite), None);
+        assert_eq!(
+            target_lang_for(&Action::Custom {
+                instruction: "x".into()
+            }),
+            None
+        );
     }
 }
