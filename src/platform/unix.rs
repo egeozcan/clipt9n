@@ -51,3 +51,44 @@ pub(crate) fn install(rt: &Runtime, tx: Sender<()>) {
         }
     });
 }
+
+/// Set the file at `path` to mode `0o600` (owner read/write only). Called
+/// by `History` after writing the keyfile. On non-Unix platforms the
+/// equivalent caller path no-ops via `cfg(not(unix))` dispatch in
+/// `src/history/crypto.rs`.
+#[allow(dead_code)]
+pub(crate) fn set_owner_only_permissions(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn set_owner_only_permissions_writes_0o600() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "secret bytes").unwrap();
+        let path = f.path().to_path_buf();
+        // Pre-condition: tempfile defaults are 0o600 on most Unixes, but
+        // we explicitly set 0o644 first to make the test meaningful.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        set_owner_only_permissions(&path).expect("chmod 0o600 should succeed");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        // PermissionsExt::mode returns the full st_mode; mask off the
+        // file-type bits.
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "expected 0o600, got {:o}",
+            mode & 0o777
+        );
+    }
+}
