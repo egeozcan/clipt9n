@@ -317,6 +317,124 @@ for M6.
 | Wrong key (e.g., keyfile regenerated) | Existing rows can't be decrypted; viewer shows them as skipped. New rows write fine. |
 | Disk full / write failure | Logged; clipboard write succeeds; only the history record is lost. |
 
+### Setup wizard + keychain (M6)
+
+On first launch, clipt9n shows a 3-step setup wizard if no API key is
+found in the keychain and no environment variable is set. The wizard
+covers:
+
+1. **Provider** — Anthropic (Claude, recommended), OpenAI, Google
+   Gemini (via OpenAI-compat shim), or Ollama (local).
+2. **Key** — paste your API key with show/hide toggle. Storage radio:
+   System Keychain (default — bound to clipt9n; other apps prompted
+   on read) or Environment variable (the wizard shows the variable
+   name; user must export it before next launch).
+3. **Verify** — connectivity check (`GET /v1/models`, no token spend)
+   and an optional sample translation (`Hello, world.` → German). One
+   auto-retry per check; failure shows a `401 Invalid API key`-style
+   error inside the wizard, with an "Open config" recovery button.
+
+After "Save and start ✓", the wizard:
+- Writes the key to the OS keychain (macOS Keychain Services, Windows
+  Credential Manager, Linux Secret Service) via the `keyring` crate.
+- Rewrites `<config_dir>/config.toml` with `[provider.api_key] source
+  = "keychain"` so subsequent launches resolve the key from there.
+- Closes the wizard and lands in the normal idle state.
+
+#### Migration from M5
+
+On the first M6 launch with a keychain available, the existing
+`<config_dir>/.history-key` (M5's encryption-key fallback) is COPIED
+into a `history-key` keychain entry. **The file is left in place.**
+After verifying that history works (Cmd+Shift+H opens the viewer with
+your existing entries), you can `rm <config_dir>/.history-key`. Don't
+delete it before verifying — there is no rollback.
+
+#### Keychain unavailable (Linux without Secret Service)
+
+If the keychain probe fails (typical: a Linux desktop without a
+Secret Service provider running, e.g., a headless server with a
+DISPLAY exported), the wizard hides the Keychain radio and forces
+storage = Environment variable. The user must `export ANTHROPIC_API_KEY=...`
+(or the equivalent) before the next launch. clipt9n logs a warning at
+startup explaining this.
+
+#### Resolution order
+
+```
+keychain (if cfg.provider.api_key.source = "keychain")
+    ↓ (NoEntry / unavailable)
+environment variable (cfg.provider.api_key.env_var)
+    ↓ (var missing)
+setup wizard (re-run via M7 tray-menu, deferred)
+```
+
+The CLI mode (`clipt9n --action translate ...`) inherits this same
+resolution order automatically — no separate keychain wiring needed.
+
+#### Failure modes
+
+| Condition | Behavior |
+|---|---|
+| First launch, keychain available, no env var | Wizard opens; user enters key; saved to keychain. |
+| First launch, keychain unavailable, no env var | Wizard opens with env-only mode; user is told to set env var. |
+| Existing keychain entry, normal launch | No wizard; key resolved from keychain; normal startup. |
+| Keychain returns a stale/wrong key (revoked at provider) | First translation hits 401; M7's tray menu offers "re-run wizard". |
+| Save-and-start fails to write keychain | Wizard surfaces the error, stays open with key intact. |
+
+#### Manual smoke matrix (M6 — deferred to M8 polish pass)
+
+This matrix is the human verification of the setup wizard's full flow.
+**It is NOT a blocker for M6 merge** (per the M6 plan §17 decision).
+The M8 polish pass owns running this on a clean macOS install before
+shipping a public binary. Steps:
+
+1. **First-launch with no key**
+   - Delete `<config_dir>/.history-key` and any `clipt9n` keychain
+     entries from Keychain Access.app.
+   - Unset the env var: `unset ANTHROPIC_API_KEY`.
+   - Launch the binary. Wizard opens with viewport size 580×640.
+   - Verify the provider grid shows all 4 options; default selected
+     is "anthropic".
+
+2. **Invalid-key error path**
+   - Type `sk-ant-bad-key`. Click Verify. Connectivity row turns red
+     with "401 Invalid API key" in the err-box.
+   - Click into the key field, replace with a real key. Verify the
+     err-box dismisses and the connectivity row resets to idle.
+
+3. **Sample-translation skip warning**
+   - Uncheck the "Test with a real translation" checkbox. Click Verify.
+   - Connectivity row turns green; sample-translation row is hidden.
+   - Phase advances to Done; "Save and start ✓" button appears.
+
+4. **Keychain-unavailable fallback (Linux)**
+   - On a Linux box without Secret Service: launch the binary.
+   - The Keychain radio is hidden; Env-only mode is forced; the
+     wizard explains in the storage row.
+
+5. **Restart picks up keychain key**
+   - After Save-and-start with a real key, quit the app.
+   - Relaunch — the wizard does NOT open. The prompt window summons
+     normally on Cmd+Shift+T and the translation completes.
+
+6. **macOS Accessibility-permission revoked**
+   - In System Settings → Privacy & Security → Accessibility, remove
+     clipt9n. Relaunch. The pre-existing M2 modal points the user to
+     re-grant permission. (This is M2-owned; M6 just doesn't break it.)
+
+7. **Migration: keyfile → keychain**
+   - On a fresh M6 install with an existing M5 `<config_dir>/.history-key`,
+     launch. Tracing logs show: `M5 keyfile migrated to keychain`.
+   - In Keychain Access.app, search for the service name (e.g.,
+     `clipboard-translator`); a `history-key` entry is present.
+   - The file is still on disk. After Cmd+Shift+H confirms history
+     works, `rm <config_dir>/.history-key` is safe.
+
+8. **Cross-platform discipline (one more check)**
+   - The grep from Step 11.4 still returns empty (M6 added no new
+     `cfg(target_os)` outside `platform/`).
+
 ## Development
 
 ```bash
