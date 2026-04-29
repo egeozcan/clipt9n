@@ -229,6 +229,11 @@ mod tests {
     }
 
     #[test]
+    fn strips_translation_preamble_after_outer_quotes_are_removed() {
+        assert_eq!(post_process("\"Translation: Hallo\"", "Hello"), "Hallo");
+    }
+
+    #[test]
     fn strips_german_preamble() {
         assert_eq!(post_process("Übersetzung: Hallo", "Hello"), "Hallo");
     }
@@ -242,8 +247,24 @@ mod tests {
     }
 
     #[test]
+    fn strips_preamble_with_leading_newline_after_trim() {
+        assert_eq!(
+            post_process("\n\nHere is the translation: Hallo", "Hello"),
+            "Hallo"
+        );
+    }
+
+    #[test]
     fn preamble_is_case_insensitive() {
         assert_eq!(post_process("translation: Hallo", "Hello"), "Hallo");
+    }
+
+    #[test]
+    fn preserves_wrapping_quotes_when_source_started_with_curly_quote() {
+        assert_eq!(
+            post_process("\u{201C}Hallo\u{201D}", "\u{201C}Hello\u{201D}"),
+            "\u{201C}Hallo\u{201D}"
+        );
     }
 
     #[test]

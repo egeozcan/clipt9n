@@ -194,18 +194,44 @@ fn validate_template_source(
     let tmpl = env
         .get_template(kind.name())
         .map_err(|e| TranslateError::Template(format!("{}: load error: {e}", path.display())))?;
-    let render_result = tmpl.render(context! {
-        source_language => "stub",
-        target_language => "Stub",
-        user_instruction => "stub",
-        glossary_block => "",
-    });
-    if let Err(e) = render_result {
-        return Err(TranslateError::Template(format!(
-            "{} line {}: undefined variable or render error: {e}",
-            path.display(),
-            err_line(&e),
-        )));
+    let mut undeclared: Vec<_> = tmpl
+        .undeclared_variables(false)
+        .into_iter()
+        .filter(|name| {
+            !matches!(
+                name.as_str(),
+                "source_language" | "target_language" | "user_instruction" | "glossary_block"
+            )
+        })
+        .collect();
+    undeclared.sort();
+    let contexts = [
+        context! {
+            source_language => "stub",
+            target_language => "Stub",
+            user_instruction => "stub",
+            glossary_block => "",
+        },
+        context! {
+            source_language => "stub",
+            target_language => "Stub",
+            user_instruction => "stub",
+            glossary_block => "GLOSSARY",
+        },
+    ];
+    for ctx in contexts {
+        if let Err(e) = tmpl.render(ctx) {
+            let undeclared_note = if undeclared.is_empty() {
+                String::new()
+            } else {
+                format!("; undeclared variables: {}", undeclared.join(", "))
+            };
+            return Err(TranslateError::Template(format!(
+                "{} line {}: undefined variable or render error: {e}{undeclared_note}",
+                path.display(),
+                err_line(&e),
+            )));
+        }
     }
     Ok(())
 }
@@ -349,6 +375,54 @@ mod tests {
         let ctx2 = TemplateContext::for_fix_grammar("");
         let out2 = render(&t, TemplateKind::FixGrammar, &ctx2).unwrap();
         assert!(out2.contains("IN THE SAME LANGUAGE"));
+    }
+
+    #[test]
+    fn override_validation_checks_truthy_and_falsey_conditional_branches() {
+        let dir = tempdir().unwrap();
+        let templates_dir = dir.path().join("templates");
+        std::fs::create_dir(&templates_dir).unwrap();
+        std::fs::write(
+            templates_dir.join("translate.j2"),
+            "{% if glossary_block %}{{ glossary_block }} {{ missing_in_truthy }}{% else %}Translate to {{ target_language }}{% endif %}",
+        )
+        .unwrap();
+
+        let err = Templates::load(dir.path(), &TemplatesConfig::default()).unwrap_err();
+        match err {
+            TranslateError::Template(msg) => {
+                assert!(msg.contains("missing_in_truthy"), "msg: {msg}")
+            }
+            other => panic!("expected Template error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn override_conditional_template_renders_both_paths_when_valid() {
+        let dir = tempdir().unwrap();
+        let templates_dir = dir.path().join("templates");
+        std::fs::create_dir(&templates_dir).unwrap();
+        std::fs::write(
+            templates_dir.join("translate.j2"),
+            "{% if glossary_block %}WITH {{ glossary_block }}{% else %}WITHOUT {{ target_language }}{% endif %}",
+        )
+        .unwrap();
+
+        let t = Templates::load(dir.path(), &TemplatesConfig::default()).unwrap();
+        let without = render(
+            &t,
+            TemplateKind::Translate,
+            &TemplateContext::for_translate("German", ""),
+        )
+        .unwrap();
+        let with = render(
+            &t,
+            TemplateKind::Translate,
+            &TemplateContext::for_translate("German", "GLOSSARY"),
+        )
+        .unwrap();
+        assert_eq!(without, "WITHOUT German");
+        assert_eq!(with, "WITH GLOSSARY");
     }
 
     #[test]
