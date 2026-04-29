@@ -70,15 +70,16 @@ impl TrayStatus {
     pub fn tooltip(&self) -> &'static str {
         match self {
             Self::Ready => "clipt9n — ready",
-            Self::NoApiKey => "clipt9n — no API key",
+            Self::NoApiKey => "clipt9n — no API key; click to run setup wizard",
             Self::Warn(r) => r.tooltip(),
         }
     }
 }
 
 /// Owns the live `TrayIcon`. Drop = remove the icon from the tray.
-/// Cloneable inside `Option<Arc<…>>` shape if multiple call sites need
-/// it, but ClipApp owns the only handle.
+/// Not `Clone` (TrayIcon is `Rc<RefCell<…>>`-backed). If shared
+/// ownership is ever needed, wrap in `Arc<Mutex<TrayHandle>>`. For
+/// now `ClipApp` owns the only instance.
 pub struct TrayHandle {
     /// Underlying tray-icon handle. Held to keep the icon alive; on
     /// drop the icon disappears from the menu bar.
@@ -97,7 +98,7 @@ impl TrayHandle {
             .with_menu(Box::new(menu))
             .with_icon(build_icon(initial_status))
             .with_tooltip(initial_status.tooltip())
-            .with_icon_as_template(true) // macOS: render with menu-bar tint
+            .with_icon_as_template(true) // macOS: render with menu-bar tint (no-op on Windows/Linux; tray-icon handles the cfg internally — no platform branch needed here)
             .build()
             .map_err(|e| TranslateError::Internal(format!("tray icon build failed: {e}")))?;
         Ok(Self {
@@ -167,8 +168,10 @@ impl TrayHandle {
         Ok(())
     }
 
-    /// Drain ALL pending MenuEvents. Returns the latest event's ID
-    /// string if any; `None` if the queue was empty. Caller dispatches
+    /// Drain ALL pending MenuEvents. Returns the *most recent* event's ID
+    /// string (any earlier events in the queue are discarded — fine for
+    /// our usage where at most one menu item is clicked per user
+    /// interaction). `None` if the queue was empty. Caller dispatches
     /// on the ID. Static-channel global state means the receiver is
     /// process-wide; we drain from this thread (the eframe update
     /// loop's main thread) only.
@@ -185,19 +188,19 @@ fn menu_err(e: tray_icon::menu::Error) -> TranslateError {
     TranslateError::Internal(format!("tray menu construction: {e}"))
 }
 
-/// Build the 22×22 RGBA icon for the given status. Procedural — no
-/// asset bundling. The glyph is a simple "T" stencil (clipt9n's "T") in
-/// ink color with a 4×4 dot in the bottom-right corner whose color
-/// encodes the status.
-pub(crate) fn build_icon(status: TrayStatus) -> Icon {
-    const SIZE: u32 = 22;
-    let mut buf = vec![0u8; (SIZE * SIZE * 4) as usize];
+/// Build the raw RGBA pixel buffer for the icon at the given size. The
+/// glyph is a simple "T" stencil (clipt9n's "T") in ink color with a 4×4
+/// dot in the bottom-right corner whose color encodes the status.
+/// Extracted from `build_icon` so unit tests can probe individual
+/// pixels (the `Icon` type is opaque).
+fn build_icon_buffer(status: TrayStatus, size: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; (size * size * 4) as usize];
     // Draw a solid black-with-transparent stencil for the glyph. macOS
     // template rendering will tint this in the menu bar to match the
     // user's appearance (light/dark) automatically.
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let i = ((y * SIZE + x) * 4) as usize;
+    for y in 0..size {
+        for x in 0..size {
+            let i = ((y * size + x) * 4) as usize;
             // Glyph: a "T" — top bar (rows 4..7, cols 4..18) plus a
             // vertical stroke (rows 7..18, cols 9..13).
             let in_bar = (4..7).contains(&y) && (4..18).contains(&x);
@@ -218,13 +221,21 @@ pub(crate) fn build_icon(status: TrayStatus) -> Icon {
     };
     for y in 17..21 {
         for x in 17..21 {
-            let i = ((y * SIZE + x) * 4) as usize;
+            let i = ((y * size + x) * 4) as usize;
             buf[i] = dr;
             buf[i + 1] = dg;
             buf[i + 2] = db;
             buf[i + 3] = 255;
         }
     }
+    buf
+}
+
+/// Build the 22×22 RGBA icon for the given status. Procedural — no
+/// asset bundling.
+pub(crate) fn build_icon(status: TrayStatus) -> Icon {
+    const SIZE: u32 = 22;
+    let buf = build_icon_buffer(status, SIZE);
     Icon::from_rgba(buf, SIZE, SIZE).expect("22x22 RGBA buffer is always valid")
 }
 
@@ -245,6 +256,29 @@ mod tests {
         let _ = build_icon(TrayStatus::Warn(WarnReason::AccessibilityPermissionRevoked));
         let _ = build_icon(TrayStatus::Warn(WarnReason::KeychainStaleKey));
         let _ = build_icon(TrayStatus::Warn(WarnReason::KeychainUnavailable));
+    }
+
+    #[test]
+    fn icon_buffer_dot_color_matches_status() {
+        let cases = [
+            (TrayStatus::Ready, [0xC8, 0xFF, 0x5E]),
+            (TrayStatus::NoApiKey, [0xFF, 0x76, 0x76]),
+            (
+                TrayStatus::Warn(WarnReason::HotkeyInUse),
+                [0xFF, 0xC4, 0x5E],
+            ),
+        ];
+        for (status, expected_rgb) in cases {
+            let buf = build_icon_buffer(status, 22);
+            // pixel at (y=18, x=18) — inside the 4x4 dot at rows 17..21, cols 17..21
+            let i = (18 * 22 + 18) * 4;
+            assert_eq!(
+                &buf[i..i + 3],
+                &expected_rgb,
+                "dot color for {status:?} should match expected RGB"
+            );
+            assert_eq!(buf[i + 3], 255, "dot alpha should be 255");
+        }
     }
 
     #[test]
@@ -270,7 +304,10 @@ mod tests {
     #[test]
     fn status_tooltip_dispatches_to_warn_reason() {
         assert_eq!(TrayStatus::Ready.tooltip(), "clipt9n — ready");
-        assert_eq!(TrayStatus::NoApiKey.tooltip(), "clipt9n — no API key");
+        assert_eq!(
+            TrayStatus::NoApiKey.tooltip(),
+            "clipt9n — no API key; click to run setup wizard"
+        );
         let warn = TrayStatus::Warn(WarnReason::KeychainStaleKey);
         assert_eq!(warn.tooltip(), WarnReason::KeychainStaleKey.tooltip());
     }
