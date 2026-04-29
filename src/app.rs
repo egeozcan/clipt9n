@@ -1193,6 +1193,12 @@ impl ClipApp {
         runtime.spawn(async move {
             let timeout = std::time::Duration::from_secs(cfg.provider.timeout_seconds);
             let base_url = crate::ui::setup::default_base_url(&provider_kind);
+            // NOTE: This intentionally bypasses crate::llm::factory::build_provider
+            // because the wizard wants the per-provider default base URL (from
+            // setup::default_base_url) rather than cfg.provider.base_url — the user
+            // might be configuring a fresh provider whose base_url hasn't been
+            // persisted yet. A follow-up may extend the factory with an
+            // Option<&str> base-URL override; until then this stays hand-rolled.
             let provider_result: Result<
                 std::sync::Arc<dyn crate::llm::LlmProvider>,
                 TranslateError,

@@ -2,11 +2,16 @@
 //! the configured `LlmProvider` from a `Config` + a freshly-resolved
 //! API key. Used by:
 //!   - `main.rs` at startup,
-//!   - `app.rs::persist_setup_completion` for live provider rebuild
-//!     after the Save-and-start path (M7 Task 10),
-//!   - `lib.rs::run` for the CLI mode,
-//!   - the wizard's sample-translation check (`app.rs::spawn_sample_translation_check`)
-//!     when we want a *real* provider rather than just the connectivity probe.
+//!   - `lib.rs::run` for the CLI mode.
+//!
+//! Future consumers (planned for M7 Task 10): the live provider rebuild
+//! inside `app.rs::persist_setup_completion` will route through here so
+//! the wizard's Save-and-start can replace the running provider without
+//! a restart. The wizard's `spawn_sample_translation_check` may also
+//! migrate, but that path uses the per-provider default base URL (not
+//! `cfg.provider.base_url`), so it would require either a config-clone
+//! at the call site or an `Option<&str>` base-URL override parameter
+//! here — design TBD when Task 10 lands.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,6 +67,17 @@ mod tests {
         // Type-level smoke: we got an Arc<dyn LlmProvider> back. No
         // network is touched here.
         assert_eq!(Arc::strong_count(&p), 1);
+    }
+
+    #[test]
+    fn openai_compatible_kinds_route_to_openai_provider() {
+        for kind in ["openai", "gemini", "ollama"] {
+            let mut cfg = Config::default();
+            cfg.provider.kind = kind.into();
+            let key = Zeroizing::new("sk-test".to_string());
+            let p = build_provider(&cfg, key).expect("should build for openai-compat kinds");
+            assert_eq!(Arc::strong_count(&p), 1);
+        }
     }
 
     #[test]
