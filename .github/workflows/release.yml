@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install cargo-bundle
+        run: cargo install cargo-bundle --locked
+      - name: package app
+        run: scripts/package-macos.sh
+      - name: zip app
+        run: ditto -c -k --keepParent target/release/bundle/osx/clipt9n.app clipt9n-macos.app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipt9n-macos-app
+          path: clipt9n-macos.app.zip
+
+  linux-binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: package linux
+        run: scripts/package-linux.sh
+      - name: archive linux package
+        run: tar -C target/release/package-linux -czf clipt9n-linux-x86_64.tar.gz clipt9n
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipt9n-linux-x86_64
+          path: clipt9n-linux-x86_64.tar.gz
+
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build release
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipt9n-windows-x86_64
+          path: target/release/clipt9n.exe
