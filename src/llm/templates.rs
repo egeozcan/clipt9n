@@ -146,6 +146,34 @@ impl Templates {
         })
     }
 
+    #[cfg(any(test, feature = "internal-test-helpers"))]
+    pub fn from_sources_for_test(
+        translate: &str,
+        fix_grammar: &str,
+        rewrite: &str,
+        custom: &str,
+    ) -> Result<Self, TranslateError> {
+        validate_template_source(
+            translate,
+            Path::new("translate.j2"),
+            TemplateKind::Translate,
+        )?;
+        validate_template_source(
+            fix_grammar,
+            Path::new("fix_grammar.j2"),
+            TemplateKind::FixGrammar,
+        )?;
+        validate_template_source(rewrite, Path::new("rewrite.j2"), TemplateKind::Rewrite)?;
+        validate_template_source(custom, Path::new("custom.j2"), TemplateKind::Custom)?;
+
+        Ok(Self {
+            translate: translate.to_string(),
+            fix_grammar: fix_grammar.to_string(),
+            rewrite: rewrite.to_string(),
+            custom: custom.to_string(),
+        })
+    }
+
     fn source(&self, kind: TemplateKind) -> &str {
         match kind {
             TemplateKind::Translate => &self.translate,
@@ -448,6 +476,25 @@ mod tests {
         .unwrap();
         assert_eq!(without, "WITHOUT German");
         assert_eq!(with, "WITH GLOSSARY");
+    }
+
+    #[test]
+    fn from_sources_for_test_validates_and_uses_inline_sources() {
+        let t = Templates::from_sources_for_test(
+            "Inline {{ target_language }} {{ glossary_block }}",
+            "",
+            "",
+            "",
+        )
+        .unwrap();
+
+        let out = render(
+            &t,
+            TemplateKind::Translate,
+            &TemplateContext::for_translate("German", "GLOSSARY"),
+        )
+        .unwrap();
+        assert_eq!(out, "Inline German GLOSSARY");
     }
 
     #[test]

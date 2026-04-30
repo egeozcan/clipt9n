@@ -1,0 +1,31 @@
+[package]
+name = "clipt9n-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+clipt9n = { path = "..", features = ["internal-test-helpers"] }
+zeroize = "1.8"
+
+[[bin]]
+name = "glossary_parser_fuzz"
+path = "fuzz_targets/glossary_parser_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "template_renderer_fuzz"
+path = "fuzz_targets/template_renderer_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "history_decrypt_fuzz"
+path = "fuzz_targets/history_decrypt_fuzz.rs"
+test = false
+doc = false
