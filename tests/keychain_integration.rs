@@ -1,6 +1,28 @@
 use clipt9n::secrets::{KeychainSecrets, Secrets};
 use zeroize::Zeroizing;
 
+struct KeychainEntryCleanup {
+    service: &'static str,
+    account: String,
+}
+
+impl KeychainEntryCleanup {
+    fn new(service: &'static str, account: &str) -> Self {
+        Self {
+            service,
+            account: account.to_string(),
+        }
+    }
+}
+
+impl Drop for KeychainEntryCleanup {
+    fn drop(&mut self) {
+        if let Ok(entry) = keyring::Entry::new(self.service, &self.account) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
 fn enabled() -> bool {
     std::env::var("CLIPT9N_KEYCHAIN_INTEGRATION").as_deref() == Ok("1")
 }
@@ -22,6 +44,8 @@ fn keychain_round_trip_when_enabled() {
     secrets
         .set_api_key(Zeroizing::new("sk-test-keychain-roundtrip".to_string()))
         .unwrap();
+    let _cleanup = KeychainEntryCleanup::new("clipt9n-test", &account);
+
     let key = secrets.get_api_key().unwrap();
     assert_eq!(&*key, "sk-test-keychain-roundtrip");
 }
