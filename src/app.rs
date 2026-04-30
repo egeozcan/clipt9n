@@ -1608,6 +1608,38 @@ impl ClipApp {
                     &self.cfg.provider.api_key.account,
                 );
                 fresh.set_api_key(model.key.clone())?;
+                // Read-back self-test: macOS silently fails to persist
+                // keychain items written by unsigned binaries — the
+                // underlying SecItemAdd call returns success but the
+                // item is never findable. Catch that here and surface
+                // an actionable error rather than letting the user
+                // restart and "lose" the key.
+                let verify = crate::secrets::KeychainSecrets::new(
+                    &self.cfg.provider.api_key.service,
+                    &self.cfg.provider.api_key.account,
+                );
+                match verify.get_api_key() {
+                    Ok(read_back) if *read_back == *model.key.clone() => {}
+                    Ok(_) => {
+                        return Err(TranslateError::SetupWizard(
+                            "keychain readback returned a different value than what \
+                             was written — likely a stale entry from a previous run. \
+                             Open Keychain Access.app, search for the configured service, \
+                             delete any existing entries, and try again."
+                                .into(),
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(TranslateError::SetupWizard(
+                            "keychain write reported success but the entry was not \
+                             persisted. macOS silently rejects keychain writes from \
+                             unsigned binaries — launch the packaged clipt9n.app \
+                             (built via scripts/package-macos.sh) instead of the raw \
+                             target/release/clipt9n binary."
+                                .into(),
+                        ));
+                    }
+                }
             }
             crate::ui::setup::Storage::Env => {
                 tracing::warn!(
