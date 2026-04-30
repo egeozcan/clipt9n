@@ -58,14 +58,25 @@ impl Glossary {
         }
         let contents = std::fs::read_to_string(path)
             .map_err(|e| TranslateError::Glossary(format!("reading {}: {e}", path.display())))?;
-        let mut g: Self = toml::from_str(&contents)
-            .map_err(|e| TranslateError::Glossary(format!("parsing {}: {e}", path.display())))?;
-        // Normalize: empty `languages` is equivalent to `["*"]`.
-        for entry in g.entries.iter_mut() {
-            if entry.languages.is_empty() {
-                entry.languages.push("*".into());
-            }
-        }
+        Self::load_str(&contents).map_err(|err| match err {
+            TranslateError::Glossary(msg) => match msg.strip_prefix("parsing glossary: ") {
+                Some(detail) => {
+                    TranslateError::Glossary(format!("parsing {}: {detail}", path.display()))
+                }
+                None => TranslateError::Glossary(format!("{}: {msg}", path.display())),
+            },
+            other => other,
+        })
+    }
+
+    /// Load a glossary from TOML contents.
+    ///
+    /// Empty `languages` lists are normalized to `["*"]`; malformed TOML
+    /// and invalid entries are returned as `TranslateError::Glossary`.
+    pub fn load_str(contents: &str) -> Result<Self, TranslateError> {
+        let mut g: Self = toml::from_str(contents)
+            .map_err(|e| TranslateError::Glossary(format!("parsing glossary: {e}")))?;
+        g.normalize_and_validate()?;
         Ok(g)
     }
 
@@ -86,6 +97,48 @@ impl Glossary {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    fn normalize_and_validate(&mut self) -> Result<(), TranslateError> {
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if entry.source.trim().is_empty() {
+                return Err(TranslateError::Glossary(format!(
+                    "entry {index} source must not be empty"
+                )));
+            }
+            if entry.target.trim().is_empty() {
+                return Err(TranslateError::Glossary(format!(
+                    "entry {index} target must not be empty"
+                )));
+            }
+            if entry.languages.is_empty() {
+                entry.languages.push("*".into());
+            }
+            if entry
+                .languages
+                .iter()
+                .any(|language| !valid_language_scope(language))
+            {
+                return Err(TranslateError::Glossary(format!(
+                    "entry {index} languages must contain only '*' or '<src>-><target>' ISO-639-1 pairs"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn valid_language_scope(language: &str) -> bool {
+    if language == "*" {
+        return true;
+    }
+    let Some((source, target)) = language.split_once("->") else {
+        return false;
+    };
+    !target.contains("->") && is_iso2_code(source) && is_iso2_code(target)
+}
+
+fn is_iso2_code(code: &str) -> bool {
+    code.len() == 2 && code.chars().all(|c| c.is_ascii_lowercase())
 }
 
 /// Configured matching strategy. Spec §5.4 + §6.
@@ -200,21 +253,53 @@ pub fn term_matches(
     case_sensitive: bool,
     strategy: MatchingStrategy,
 ) -> bool {
-    if term.is_empty() || source_text.is_empty() {
-        return false;
+    TermMatcher::new(source_text, case_sensitive, strategy).matches(term)
+}
+
+struct TermMatcher<'a> {
+    source_text: &'a str,
+    source_lower: Option<String>,
+    case_sensitive: bool,
+    strategy: MatchingStrategy,
+}
+
+impl<'a> TermMatcher<'a> {
+    fn new(source_text: &'a str, case_sensitive: bool, strategy: MatchingStrategy) -> Self {
+        Self {
+            source_text,
+            source_lower: (!case_sensitive).then(|| source_text.to_lowercase()),
+            case_sensitive,
+            strategy,
+        }
     }
-    let resolved = match strategy {
-        MatchingStrategy::Auto => unreachable!(
-            "term_matches is called only with a resolved strategy; \
-             callers must convert Auto via default_strategy first"
-        ),
-        s => s,
-    };
-    let (haystack, needle) = if case_sensitive {
-        (source_text.to_string(), term.to_string())
-    } else {
-        (source_text.to_lowercase(), term.to_lowercase())
-    };
+
+    fn matches(&self, term: &str) -> bool {
+        let resolved = match self.strategy {
+            MatchingStrategy::Auto => unreachable!(
+                "term_matches is called only with a resolved strategy; \
+                 callers must convert Auto via default_strategy first"
+            ),
+            s => s,
+        };
+        if term.is_empty() {
+            return false;
+        }
+        if self.source_text.is_empty() {
+            return false;
+        }
+        if self.case_sensitive {
+            return term_matches_normalized(self.source_text, term, resolved);
+        }
+        let needle = term.to_lowercase();
+        term_matches_normalized(
+            self.source_lower.as_deref().unwrap_or(self.source_text),
+            &needle,
+            resolved,
+        )
+    }
+}
+
+fn term_matches_normalized(haystack: &str, needle: &str, resolved: MatchingStrategy) -> bool {
     match resolved {
         MatchingStrategy::WordBoundary => {
             // Plain `contains` for the substring half of the check.
@@ -320,10 +405,11 @@ impl Glossary {
             }
             other => other,
         };
+        let matcher = TermMatcher::new(source_text, cfg.case_sensitive, resolved);
         self.entries
             .iter()
             .filter(|e| pair_matches(&e.languages, &pair_key))
-            .filter(|e| term_matches(source_text, &e.source, cfg.case_sensitive, resolved))
+            .filter(|e| matcher.matches(&e.source))
             .collect()
     }
 
@@ -350,9 +436,10 @@ impl Glossary {
             }
             other => other,
         };
+        let matcher = TermMatcher::new(source_text, cfg.case_sensitive, resolved);
         self.entries
             .iter()
-            .filter(|e| term_matches(source_text, &e.source, cfg.case_sensitive, resolved))
+            .filter(|e| matcher.matches(&e.source))
             .collect()
     }
 }
@@ -463,18 +550,43 @@ note = "Always preserve as-is"
     }
 
     #[test]
-    fn empty_languages_normalizes_to_wildcard() {
-        let mut f = NamedTempFile::new().unwrap();
-        writeln!(
-            f,
+    fn empty_source_is_glossary_error() {
+        let err = Glossary::load_str(
+            r#"
+[[entry]]
+source = "  "
+target = "Foo"
+languages = ["*"]
+"#,
+        )
+        .unwrap_err();
+        assert_glossary_error_contains(err, "source");
+    }
+
+    #[test]
+    fn invalid_language_pair_is_glossary_error() {
+        let err = Glossary::load_str(
+            r#"
+[[entry]]
+source = "Foo"
+target = "Bar"
+languages = ["english-to-german"]
+"#,
+        )
+        .unwrap_err();
+        assert_glossary_error_contains(err, "languages");
+    }
+
+    #[test]
+    fn load_str_normalizes_empty_languages_to_wildcard() {
+        let g = Glossary::load_str(
             r#"
 [[entry]]
 source = "FooBar"
 target = "FooBar"
-"#
+"#,
         )
         .unwrap();
-        let g = Glossary::load(f.path()).unwrap();
         assert_eq!(g.entries()[0].languages, vec!["*"]);
     }
 
@@ -492,6 +604,16 @@ source = "no-target-here"
         .unwrap();
         let err = Glossary::load(f.path()).unwrap_err();
         assert!(matches!(err, TranslateError::Glossary(_)));
+    }
+
+    fn assert_glossary_error_contains(err: TranslateError, expected: &str) {
+        match err {
+            TranslateError::Glossary(msg) => assert!(
+                msg.contains(expected),
+                "expected glossary error to contain {expected:?}, got {msg:?}"
+            ),
+            other => panic!("expected Glossary error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -795,6 +917,46 @@ source = "no-target-here"
         };
         let hits = g.matching_entries("Smart Table", Some("en"), Some("de"), &cfg);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn matching_entries_respects_case_sensitive_config() {
+        let g = build_glossary();
+        let cfg = crate::config::GlossaryConfig {
+            case_sensitive: true,
+            matching: "word_boundary".into(),
+            ..Default::default()
+        };
+
+        let mismatched =
+            g.matching_entries("we have a SMART TABLE here", Some("en"), Some("de"), &cfg);
+        assert!(
+            mismatched.is_empty(),
+            "case-sensitive glossary matching must reject uppercase source text"
+        );
+
+        let matched =
+            g.matching_entries("We have a Smart Table here", Some("en"), Some("de"), &cfg);
+        let sources: Vec<&str> = matched.iter().map(|e| e.source.as_str()).collect();
+        assert!(sources.contains(&"Smart Table"));
+    }
+
+    #[test]
+    fn auto_uses_substring_for_japanese_iso2_without_redetecting_text() {
+        let mut g = Glossary::empty();
+        g.entries_mut().push(GlossaryEntry {
+            source: "東京".into(),
+            target: "Tokyo".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        let cfg = crate::config::GlossaryConfig {
+            matching: "auto".into(),
+            ..Default::default()
+        };
+
+        let hits = g.matching_entries("abc東京def", Some("ja"), Some("en"), &cfg);
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]
