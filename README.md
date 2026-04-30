@@ -551,6 +551,10 @@ cargo clippy --all-targets    # lints
 cargo fmt                     # formatting
 ```
 
+### Latency benchmark
+
+Run `scripts/bench.sh` with a real provider key. The script writes a Markdown report to `docs/benchmarks/<date>.md`. M8's release target is p50 < 800 ms and p95 < 2000 ms with Anthropic Haiku 4.5 on the maintainer's macOS dev hardware.
+
 ## License
 
 MIT.
