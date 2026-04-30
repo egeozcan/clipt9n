@@ -542,6 +542,35 @@ M5 + M6 matrices are also deferred (each plan §11.X documents them).
 | Windows | Right-click tray → menu | All 7 items present | ☐ |
 | Windows | Open glossary via cmd /C start | Default editor opens | ☐ |
 
+## Packaging
+
+### macOS `.app`
+
+```bash
+cargo install cargo-bundle
+scripts/package-macos.sh
+```
+
+The script runs `cargo bundle --release --format osx`, patches `Info.plist` so `LSUIElement = true` (menu-bar-only — no Dock icon), and ad-hoc-signs the bundle (`codesign --sign -`). Result: `target/release/bundle/osx/clipt9n.app`.
+
+For personal distribution: ship the `.app` directly. Recipients open with **right-click → Open → Open Anyway** (Gatekeeper bypass for unnotarized apps). Apple notarization requires a paid Developer account and is out of scope for v0.1.
+
+### Linux binary + `.desktop`
+
+```bash
+scripts/package-linux.sh
+```
+
+Produces a staged tree under `target/release/package-linux/clipt9n/` with `bin/clipt9n`, an icon at `share/icons/hicolor/256x256/apps/`, and a `dev.egecan.clipt9n.desktop` launcher. Tray support depends on a working StatusNotifierItem host (KDE, GNOME with the AppIndicator extension, etc.).
+
+### Windows `.exe`
+
+```bash
+cargo build --release
+```
+
+Ship `target/release/clipt9n.exe`. The tray icon lives in the system tray; right-click for the menu.
+
 ## Development
 
 ```bash

@@ -51,6 +51,17 @@ egui_kittest = "0.31"
 [features]
 internal-test-helpers = []
 
+[package.metadata.bundle]
+name = "clipt9n"
+identifier = "dev.egecan.clipt9n"
+version = "0.1.0"
+category = "public.app-category.utilities"
+short_description = "Keyboard-driven clipboard translator"
+long_description = "clipt9n is a menu-bar clipboard translator with hotkeys, glossary support, encrypted history, and setup wizard."
+icon = ["assets/icon-32.png", "assets/icon-128.png", "assets/icon-256.png"]
+osx_minimum_system_version = "13.0"
+linux_use_terminal = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"
