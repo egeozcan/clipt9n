@@ -278,10 +278,10 @@ impl Config {
 
     fn validate(&self) -> Result<(), TranslateError> {
         match self.provider.api_key.source.as_str() {
-            "keychain" | "env" | "prompt" => {}
+            "keychain" | "env" | "prompt" | "file" => {}
             other => {
                 return Err(TranslateError::Config(format!(
-                    "provider.api_key.source must be keychain, env, or prompt; got {other}"
+                    "provider.api_key.source must be keychain, env, file, or prompt; got {other}"
                 )));
             }
         }
@@ -742,6 +742,19 @@ enabled = true
             }
             other => panic!("expected Config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn file_api_key_source_is_accepted() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            "[provider.api_key]\nsource = \"file\"\npath = \"/tmp/x\"\n"
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.provider.api_key.source, "file");
+        assert_eq!(cfg.provider.api_key.path, "/tmp/x");
     }
 
     #[test]
