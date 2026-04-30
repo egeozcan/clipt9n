@@ -79,6 +79,21 @@ pub enum SetupOutcome {
     SaveAndStart,
     /// Error-recovery "Open config" button.
     OpenConfig,
+    /// "Get your API key" link — open the provider's dashboard.
+    OpenProviderKeyUrl(&'static str),
+}
+
+/// Provider-dashboard URL for the "Get your API key" link. Falls back
+/// to Anthropic for unknown ids (defensive — should never trigger via
+/// the wizard's own provider grid).
+pub fn provider_key_url(provider_kind: &str) -> &'static str {
+    match provider_kind {
+        "anthropic" => "https://console.anthropic.com/settings/keys",
+        "openai" => "https://platform.openai.com/api-keys",
+        "gemini" => "https://aistudio.google.com/app/apikey",
+        "ollama" => "https://ollama.com/download",
+        _ => "https://console.anthropic.com/settings/keys",
+    }
 }
 
 /// Default setup-wizard viewport size. Matches design's 580×640.
@@ -273,14 +288,14 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
             }
         });
         ui.add_space(8.0);
-        // M7 will wire this to a provider-specific URL via
-        // ViewportCommand::OpenUrl. For M6, render as plain
-        // informational text without the interactive arrow.
-        ui.label(
-            RichText::new("Get your API key from the provider dashboard")
-                .color(theme::INK_3)
-                .size(11.0),
-        );
+        if ui
+            .link("Get your API key from the provider dashboard")
+            .clicked()
+        {
+            outcome = Some(SetupOutcome::OpenProviderKeyUrl(provider_key_url(
+                &model.provider,
+            )));
+        }
         ui.add_space(14.0);
         ui.separator();
         ui.add_space(10.0);
@@ -595,6 +610,31 @@ mod tests {
         let (_, label, env_var) = provider_meta("openai");
         assert_eq!(label, "OpenAI");
         assert_eq!(env_var, "OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn provider_key_url_routes_to_dashboard_per_provider() {
+        assert_eq!(
+            provider_key_url("anthropic"),
+            "https://console.anthropic.com/settings/keys"
+        );
+        assert_eq!(
+            provider_key_url("openai"),
+            "https://platform.openai.com/api-keys"
+        );
+        assert_eq!(
+            provider_key_url("gemini"),
+            "https://aistudio.google.com/app/apikey"
+        );
+        assert_eq!(provider_key_url("ollama"), "https://ollama.com/download");
+    }
+
+    #[test]
+    fn provider_key_url_falls_back_to_anthropic_for_unknown() {
+        assert_eq!(
+            provider_key_url("nonexistent"),
+            "https://console.anthropic.com/settings/keys"
+        );
     }
 
     #[test]

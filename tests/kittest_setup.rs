@@ -374,3 +374,67 @@ fn verify_button_click_does_not_panic_when_check_handler_is_absent() {
     // Keep the import used.
     let _ = SetupOutcome::Verify;
 }
+
+/// Clicking the "Get your API key" link emits `OpenProviderKeyUrl`
+/// scoped to the selected provider — Gemini in this case.
+#[test]
+fn provider_key_link_emits_url_outcome_for_selected_provider() {
+    let model = Arc::new(Mutex::new(SetupWizardModel {
+        provider: "gemini".into(),
+        ..entry_model()
+    }));
+    let outcome: Arc<Mutex<Option<SetupOutcome>>> = Arc::new(Mutex::new(None));
+
+    let model_clone = Arc::clone(&model);
+    let outcome_clone = Arc::clone(&outcome);
+    let mut harness = Harness::new(move |ctx| {
+        let mut m = model_clone.lock().unwrap();
+        if let Some(o) = draw(ctx, &mut m) {
+            *outcome_clone.lock().unwrap() = Some(o);
+        }
+    });
+    harness.run();
+
+    // The link is rendered via `ui.link(...)`. Locate the node by its
+    // visible label and inject a raw pointer click — matches the
+    // existing pattern in this file because AccessKit-targeted clicks
+    // do not route through egui's hit-test for non-Button widgets.
+    let link_node = harness.get(
+        by().label("Get your API key from the provider dashboard")
+            .include_labels(),
+    );
+    let bounds = link_node
+        .raw_bounds()
+        .expect("link node must have raw_bounds after layout");
+    let center = egui::Pos2::new(
+        ((bounds.x0 + bounds.x1) / 2.0) as f32,
+        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+    );
+    let modifiers = egui::Modifiers::default();
+    {
+        let input = harness.input_mut();
+        input.events.push(egui::Event::PointerMoved(center));
+        input.events.push(egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers,
+        });
+        input.events.push(egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        });
+    }
+    harness.run();
+
+    let got = *outcome.lock().unwrap();
+    assert_eq!(
+        got,
+        Some(SetupOutcome::OpenProviderKeyUrl(
+            "https://aistudio.google.com/app/apikey",
+        )),
+        "Gemini provider should produce the Gemini dashboard URL outcome"
+    );
+}

@@ -1428,6 +1428,13 @@ impl ClipApp {
                 }
                 self.app_state = AppState::SetupWizard { model };
             }
+            Some(crate::ui::setup::SetupOutcome::OpenProviderKeyUrl(url)) => {
+                ctx.open_url(egui::OpenUrl {
+                    url: url.to_string(),
+                    new_tab: true,
+                });
+                self.app_state = AppState::SetupWizard { model };
+            }
             None => {
                 self.app_state = AppState::SetupWizard { model };
             }

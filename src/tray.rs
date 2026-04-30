@@ -203,43 +203,47 @@ fn menu_err(e: tray_icon::menu::Error) -> TranslateError {
 }
 
 /// Build the raw RGBA pixel buffer for the icon at the given size. The
-/// glyph is a simple "T" stencil (clipt9n's "T") in ink color with a 4×4
-/// dot in the bottom-right corner whose color encodes the status.
-/// Extracted from `build_icon` so unit tests can probe individual
-/// pixels (the `Icon` type is opaque).
+/// glyph is a simple "T" stencil (clipt9n's "T") in ink color with a
+/// status dot in the bottom-right corner whose color encodes the
+/// status. Glyph and dot extents are scaled from a 22-px reference so
+/// the helper supports future bundled icon sizes without losing the
+/// existing 22-px tray contract.
 fn build_icon_buffer(status: TrayStatus, size: u32) -> Vec<u8> {
     let mut buf = vec![0u8; (size * size * 4) as usize];
-    // Draw a solid black-with-transparent stencil for the glyph. macOS
-    // template rendering will tint this in the menu bar to match the
-    // user's appearance (light/dark) automatically.
-    for y in 0..size {
-        for x in 0..size {
-            let i = ((y * size + x) * 4) as usize;
-            // Glyph: a "T" — top bar (rows 4..7, cols 4..18) plus a
-            // vertical stroke (rows 7..18, cols 9..13).
-            let in_bar = (4..7).contains(&y) && (4..18).contains(&x);
-            let in_stroke = (7..18).contains(&y) && (9..13).contains(&x);
-            if in_bar || in_stroke {
-                buf[i] = 0; // R
-                buf[i + 1] = 0; // G
-                buf[i + 2] = 0; // B
-                buf[i + 3] = 255; // A — opaque black; macOS template tints
-            }
-        }
-    }
-    // Status dot: 4×4 in the bottom-right.
+    // Reference geometry from the 22-px tray icon. Round to integers
+    // so 22-px output is bit-for-bit unchanged from the M7 stencil.
+    let scale = |v: u32| (v * size).div_ceil(22);
+    let bar_y = scale(4)..scale(7);
+    let bar_x = scale(4)..scale(18);
+    let str_y = scale(7)..scale(18);
+    let str_x = scale(9)..scale(13);
+    let dot_size = scale(4).max(3);
+    let dot_start = size.saturating_sub(dot_size + 1);
+    let dot_y = dot_start..dot_start + dot_size;
+    let dot_x = dot_start..dot_start + dot_size;
+
     let (dr, dg, db) = match status {
         TrayStatus::Ready => (0xC8, 0xFF, 0x5E),    // accent green
         TrayStatus::NoApiKey => (0xFF, 0x76, 0x76), // soft red
         TrayStatus::Warn(_) => (0xFF, 0xC4, 0x5E),  // amber
     };
-    for y in 17..21 {
-        for x in 17..21 {
+
+    for y in 0..size {
+        for x in 0..size {
             let i = ((y * size + x) * 4) as usize;
-            buf[i] = dr;
-            buf[i + 1] = dg;
-            buf[i + 2] = db;
-            buf[i + 3] = 255;
+            let in_bar = bar_y.contains(&y) && bar_x.contains(&x);
+            let in_stroke = str_y.contains(&y) && str_x.contains(&x);
+            let in_dot = dot_y.contains(&y) && dot_x.contains(&x);
+            if in_dot {
+                buf[i] = dr;
+                buf[i + 1] = dg;
+                buf[i + 2] = db;
+                buf[i + 3] = 255;
+            } else if in_bar || in_stroke {
+                // Glyph: black-with-transparent stencil. macOS template
+                // rendering tints this to match the menu bar appearance.
+                buf[i + 3] = 255;
+            }
         }
     }
     buf
