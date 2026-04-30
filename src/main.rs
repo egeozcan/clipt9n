@@ -343,7 +343,10 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     clipt9n::tray::TrayStatus::Ready
                 };
-                match clipt9n::tray::TrayHandle::build_with_panic_isolation(initial_status) {
+                match clipt9n::tray::TrayHandle::build_with_panic_isolation(
+                    initial_status,
+                    &cc.egui_ctx,
+                ) {
                     Ok(handle) => app.attach_tray(handle),
                     Err(e) => {
                         tracing::warn!(error = %e, "tray construction failed; running without tray icon");

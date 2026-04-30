@@ -12,10 +12,44 @@
 //! `MenuEvent::receiver()` static. The 150 ms repaint cadence
 //! (`app.rs:1326`) gives sub-frame dispatch latency on user clicks.
 
+use std::sync::OnceLock;
+
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::error::TranslateError;
+
+/// Process-wide channel used by the installed `MenuEvent` handler to
+/// hand IDs over to the eframe update loop, plus the `egui::Context`
+/// used to wake eframe out of its idle sleep when a menu event fires.
+///
+/// Why we replace `MenuEvent::receiver()` with our own handler: when
+/// the app sits in `Idle` with no visible viewport AND
+/// `NSApplicationActivationPolicyAccessory`, AppKit's run loop sleeps
+/// until an external event arrives. The default channel-based receiver
+/// posts events to a static channel but does not wake the egui ctx, so
+/// the next `update()` may not fire for many seconds. Calling
+/// `ctx.request_repaint()` from the menu handler guarantees same-frame
+/// drain.
+static MENU_QUEUE: OnceLock<(Sender<String>, Receiver<String>)> = OnceLock::new();
+static REPAINT_CTX: OnceLock<egui::Context> = OnceLock::new();
+static HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
+
+fn install_menu_handler(ctx: &egui::Context) {
+    let _ = REPAINT_CTX.set(ctx.clone());
+    let _ = MENU_QUEUE.get_or_init(unbounded);
+    HANDLER_INSTALLED.get_or_init(|| {
+        MenuEvent::set_event_handler(Some(|ev: MenuEvent| {
+            if let Some((tx, _)) = MENU_QUEUE.get() {
+                let _ = tx.send(ev.id.0);
+            }
+            if let Some(ctx) = REPAINT_CTX.get() {
+                ctx.request_repaint();
+            }
+        }));
+    });
+}
 
 /// Stable IDs used in the tray menu. Constants because the drain match
 /// in `app.rs::drain_tray_events` references them too — no string
@@ -92,7 +126,12 @@ impl TrayHandle {
     /// Build the tray icon, attaching the menu and the initial status
     /// dot. Constructor failure is non-fatal — `main.rs` logs warn and
     /// runs without a tray.
-    pub fn build(initial_status: TrayStatus) -> Result<Self, TranslateError> {
+    pub fn build(initial_status: TrayStatus, ctx: &egui::Context) -> Result<Self, TranslateError> {
+        // Install the wakeup-aware MenuEvent handler before
+        // TrayIconBuilder runs — set_event_handler replaces the default
+        // channel receiver, and we want all events from this point
+        // forward to flow through our queue.
+        install_menu_handler(ctx);
         let menu = Self::build_menu()?;
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -111,9 +150,12 @@ impl TrayHandle {
     /// panic, returns `Err(Internal("tray construction panicked"))`.
     /// Use this from main.rs so a tray-side panic doesn't kill the
     /// app — covers spec §8 "Tray crashed" row.
-    pub fn build_with_panic_isolation(initial_status: TrayStatus) -> Result<Self, TranslateError> {
+    pub fn build_with_panic_isolation(
+        initial_status: TrayStatus,
+        ctx: &egui::Context,
+    ) -> Result<Self, TranslateError> {
         use std::panic::{catch_unwind, AssertUnwindSafe};
-        match catch_unwind(AssertUnwindSafe(|| Self::build(initial_status))) {
+        match catch_unwind(AssertUnwindSafe(|| Self::build(initial_status, ctx))) {
             Ok(result) => result,
             Err(_) => Err(TranslateError::Internal(
                 "tray construction panicked; running without tray".into(),
@@ -196,8 +238,10 @@ impl TrayHandle {
     /// loop's main thread) only.
     pub fn try_drain_menu_event() -> Option<String> {
         let mut last: Option<String> = None;
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
-            last = Some(ev.id.0);
+        if let Some((_, rx)) = MENU_QUEUE.get() {
+            while let Ok(id) = rx.try_recv() {
+                last = Some(id);
+            }
         }
         last
     }
