@@ -176,6 +176,16 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_rejects_tampered_nonce() {
+        let secret = Zeroizing::new([9u8; 32]);
+        let key = derive_key(&secret).unwrap();
+        let (ct, mut nonce) = encrypt(&key, b"nonce protected").unwrap();
+        nonce[0] ^= 0x01;
+        let err = decrypt(&key, &ct, &nonce).unwrap_err();
+        assert!(matches!(err, TranslateError::History(_)));
+    }
+
+    #[test]
     fn argon2_derivation_is_deterministic() {
         // Spec exit criterion §M5 #6: same secret + same salt → same key.
         let secret = Zeroizing::new([7u8; 32]);

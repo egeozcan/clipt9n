@@ -550,6 +550,32 @@ mod tests {
     }
 
     #[test]
+    fn query_skips_half_null_ciphertext_rows() {
+        let h = History::in_memory(test_key()).unwrap();
+        {
+            let conn = h.conn.lock().expect("history mutex poisoned");
+            conn.execute(
+                "INSERT INTO entries
+                 (created_at, action, source_lang, target_lang, char_count,
+                  source_ciphertext, source_nonce, result_ciphertext, result_nonce)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL)",
+                rusqlite::params![
+                    1_700_000_000i64,
+                    "translate",
+                    "en",
+                    "de",
+                    15i64,
+                    b"nonce protected".as_slice(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let rows = h.query(&QueryFilter::default(), 100).unwrap();
+        assert!(rows.is_empty(), "corrupt half-NULL rows are skipped");
+    }
+
+    #[test]
     fn delete_removes_a_specific_row() {
         let h = History::in_memory(test_key()).unwrap();
         h.insert(fixture_entry("translate", "a", "b")).unwrap();
