@@ -308,7 +308,7 @@ fn term_matches_normalized(haystack: &str, needle: &str, resolved: MatchingStrat
             // languages are whitespace-separated, this naive boundary test
             // is sufficient and avoids the `regex` crate entirely.
             let mut start = 0;
-            while let Some(pos) = haystack[start..].find(&needle) {
+            while let Some(pos) = haystack[start..].find(needle) {
                 let abs = start + pos;
                 let end = abs + needle.len();
                 let pre = haystack[..abs].chars().last();
@@ -322,7 +322,7 @@ fn term_matches_normalized(haystack: &str, needle: &str, resolved: MatchingStrat
             }
             false
         }
-        MatchingStrategy::Substring => haystack.contains(&needle),
+        MatchingStrategy::Substring => haystack.contains(needle),
         MatchingStrategy::Auto => unreachable!(),
     }
 }
