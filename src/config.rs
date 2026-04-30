@@ -262,8 +262,38 @@ impl Config {
         }
         let contents = std::fs::read_to_string(path)
             .map_err(|e| TranslateError::Config(format!("reading {}: {e}", path.display())))?;
-        toml::from_str(&contents)
-            .map_err(|e| TranslateError::Config(format!("parsing {}: {e}", path.display())))
+        let cfg: Self = toml::from_str(&contents)
+            .map_err(|e| TranslateError::Config(format!("parsing {}: {e}", path.display())))?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<(), TranslateError> {
+        match self.provider.api_key.source.as_str() {
+            "keychain" | "env" | "prompt" => {}
+            other => {
+                return Err(TranslateError::Config(format!(
+                    "provider.api_key.source must be keychain, env, or prompt; got {other}"
+                )));
+            }
+        }
+
+        match self.glossary.matching.as_str() {
+            "auto" | "word_boundary" | "substring" => {}
+            other => {
+                return Err(TranslateError::Config(format!(
+                    "glossary.matching must be auto, word_boundary, or substring; got {other}"
+                )));
+            }
+        }
+
+        if self.history.max_entries == 0 {
+            return Err(TranslateError::Config(
+                "history.max_entries must be greater than zero".into(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Look up a target-language label by ISO code from configured slots.
@@ -678,6 +708,63 @@ enabled = true
         assert!(!cfg.hotkey.history.shift);
         assert_eq!(cfg.hotkey.history.key, "L");
         assert!(cfg.hotkey.history.enabled);
+    }
+
+    #[test]
+    fn invalid_glossary_matching_is_config_error() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "[glossary]\nmatching = \"regex\"\n").unwrap();
+        let err = Config::load(f.path()).unwrap_err();
+        match err {
+            TranslateError::Config(msg) => {
+                assert!(msg.contains("glossary.matching"), "msg: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_api_key_source_is_config_error() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "[provider.api_key]\nsource = \"plaintext\"\n").unwrap();
+        let err = Config::load(f.path()).unwrap_err();
+        match err {
+            TranslateError::Config(msg) => {
+                assert!(msg.contains("provider.api_key.source"), "msg: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zero_history_max_entries_is_config_error() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "[history]\nmax_entries = 0\n").unwrap();
+        let err = Config::load(f.path()).unwrap_err();
+        match err {
+            TranslateError::Config(msg) => {
+                assert!(msg.contains("history.max_entries"), "msg: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn full_config_round_trips_every_section() {
+        let mut cfg = Config::default();
+        cfg.provider.kind = "gemini".into();
+        cfg.provider.api_key.source = "keychain".into();
+        cfg.hotkey.history.enabled = false;
+        cfg.glossary.matching = "substring".into();
+        cfg.history.store_text = false;
+        let f = NamedTempFile::new().unwrap();
+        cfg.persist(f.path()).unwrap();
+        let loaded = Config::load(f.path()).unwrap();
+        assert_eq!(loaded.provider.kind, "gemini");
+        assert_eq!(loaded.provider.api_key.source, "keychain");
+        assert!(!loaded.hotkey.history.enabled);
+        assert_eq!(loaded.glossary.matching, "substring");
+        assert!(!loaded.history.store_text);
     }
 
     #[test]
