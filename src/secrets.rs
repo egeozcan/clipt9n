@@ -207,7 +207,7 @@ pub fn keychain_probe(service: &str) -> bool {
     let probe = match keyring::Entry::new(service, "_clipt9n_probe") {
         Ok(e) => e,
         Err(e) => {
-            tracing::debug!(error = %e, "keychain probe: Entry::new failed");
+            tracing::warn!(error = %e, service, "keychain probe: Entry::new failed — wizard will report keychain unavailable");
             return false;
         }
     };
@@ -215,7 +215,7 @@ pub fn keychain_probe(service: &str) -> bool {
         Ok(_) => true,
         Err(keyring::Error::NoEntry) => true,
         Err(e) => {
-            tracing::debug!(error = %e, "keychain probe: get_password failed");
+            tracing::warn!(error = %e, service, "keychain probe: get_password failed — wizard will report keychain unavailable");
             false
         }
     }
