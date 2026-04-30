@@ -274,6 +274,12 @@ impl<'a> TermMatcher<'a> {
     }
 
     fn matches(&self, term: &str) -> bool {
+        if term.is_empty() {
+            return false;
+        }
+        if self.source_text.is_empty() {
+            return false;
+        }
         let resolved = match self.strategy {
             MatchingStrategy::Auto => unreachable!(
                 "term_matches is called only with a resolved strategy; \
@@ -281,12 +287,6 @@ impl<'a> TermMatcher<'a> {
             ),
             s => s,
         };
-        if term.is_empty() {
-            return false;
-        }
-        if self.source_text.is_empty() {
-            return false;
-        }
         if self.case_sensitive {
             return term_matches_normalized(self.source_text, term, resolved);
         }
@@ -704,6 +704,26 @@ source = "no-target-here"
     }
 
     // ---- term_matches ----
+
+    #[test]
+    fn auto_empty_source_returns_false() {
+        assert!(!term_matches(
+            "",
+            "Smart Table",
+            false,
+            MatchingStrategy::Auto,
+        ));
+    }
+
+    #[test]
+    fn auto_empty_term_returns_false() {
+        assert!(!term_matches(
+            "We have a Smart Table here",
+            "",
+            false,
+            MatchingStrategy::Auto,
+        ));
+    }
 
     #[test]
     fn word_boundary_matches_full_word() {
