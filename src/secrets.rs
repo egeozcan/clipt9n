@@ -194,6 +194,33 @@ pub fn resolve(cfg: &ApiKeyConfig) -> Box<dyn Secrets> {
     }
 }
 
+/// Standalone keychain reachability probe. Used by the setup-wizard
+/// seed paths (main.rs first-launch, tray "Re-run setup wizard")
+/// because `secrets.keychain_available()` reflects the **active**
+/// `Secrets` impl: when `cfg.provider.api_key.source = "env"` (the
+/// default for fresh configs) `secrets` is `EnvSecrets`, which always
+/// reports `false` even on a working macOS keychain. The wizard needs
+/// the *underlying platform's* answer so it can decide whether to
+/// offer Keychain storage. Probes with a disposable account name to
+/// avoid reading any real key material.
+pub fn keychain_probe(service: &str) -> bool {
+    let probe = match keyring::Entry::new(service, "_clipt9n_probe") {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!(error = %e, "keychain probe: Entry::new failed");
+            return false;
+        }
+    };
+    match probe.get_password() {
+        Ok(_) => true,
+        Err(keyring::Error::NoEntry) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "keychain probe: get_password failed");
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

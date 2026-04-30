@@ -209,7 +209,13 @@ fn main() -> anyhow::Result<()> {
     // fall through to the normal Idle startup.
     let initial_setup_wizard: Option<clipt9n::ui::setup::SetupWizardModel> = {
         let probe = secrets.get_api_key();
-        let keychain_avail = secrets.keychain_available();
+        // Probe the platform keychain directly rather than asking the
+        // active `Secrets` impl — when the config still has the default
+        // `api_key.source = "env"`, `secrets` is an `EnvSecrets` whose
+        // `keychain_available()` is hardcoded to false even on a working
+        // macOS keychain. The wizard needs the underlying platform's
+        // answer so it can offer keychain storage on first launch.
+        let keychain_avail = clipt9n::secrets::keychain_probe(&cfg.provider.api_key.service);
         match probe {
             Err(clipt9n::error::TranslateError::MissingApiKey { .. }) if keychain_avail => {
                 tracing::info!("setup wizard: no API key found; opening first-launch wizard");
@@ -239,7 +245,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // M6: keyfile-to-keychain migration (one-shot, idempotent).
-    if secrets.keychain_available() {
+    if clipt9n::secrets::keychain_probe(&cfg.provider.api_key.service) {
         match clipt9n::secrets::migrate_keyfile_to_keychain(
             &keyfile_path,
             &cfg.provider.api_key.service,

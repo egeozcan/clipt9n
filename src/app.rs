@@ -169,6 +169,11 @@ pub struct ClipApp {
     /// Persistence in `persist_setup_completion` goes through a
     /// freshly-constructed `KeychainSecrets` (the M6 stale-account
     /// fix), not through this field — don't regress that.
+    /// Currently unread (M8: `keychain_probe` replaced the only
+    /// consumer) but kept so future flows can resolve secrets
+    /// through the configured backend without re-plumbing the
+    /// constructor.
+    #[allow(dead_code)]
     secrets: Box<dyn Secrets>,
 
     /// Tray icon handle. `None` means the tray was disabled by
@@ -755,7 +760,11 @@ impl ClipApp {
             crate::platform::current().activate_app();
             return;
         }
-        let keychain_available = self.secrets.keychain_available();
+        // Probe the platform directly — same reason as main.rs's
+        // first-launch path: an EnvSecrets-backed `self.secrets`
+        // always reports `false` regardless of whether the OS
+        // keychain is actually reachable.
+        let keychain_available = crate::secrets::keychain_probe(&self.cfg.provider.api_key.service);
         let storage = if keychain_available {
             crate::ui::setup::Storage::Keychain
         } else {
