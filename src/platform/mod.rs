@@ -33,6 +33,18 @@ pub trait Platform {
             "open_path not implemented on this platform".into(),
         ))
     }
+
+    /// Hide or show the app's Dock / taskbar / app-switcher presence.
+    /// Menu-bar / tray-only apps call this with `false` at startup.
+    /// macOS sets `NSApplicationActivationPolicyAccessory`. Windows
+    /// taskbar suppression is handled at viewport-construction time
+    /// via `ViewportBuilder::with_taskbar(false)`. Linux is a no-op
+    /// because tray-only apps don't create top-level windows that
+    /// would appear in the WM's task list. Best-effort: failures log
+    /// at warn and are not propagated, since this is purely cosmetic.
+    fn set_dock_visible(&self, visible: bool) {
+        let _ = visible;
+    }
 }
 
 #[cfg(target_os = "macos")]

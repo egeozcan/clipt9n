@@ -277,7 +277,11 @@ fn main() -> anyhow::Result<()> {
         .with_transparent(false)
         .with_visible(false)
         .with_always_on_top()
-        .with_active(true);
+        .with_active(true)
+        // Hide from the Windows taskbar / Linux task list. macOS Dock
+        // suppression is handled at runtime via `set_dock_visible`
+        // below (LSUIElement only takes effect inside the .app bundle).
+        .with_taskbar(false);
     let native_options = NativeOptions {
         viewport,
         centered: true,
@@ -288,6 +292,13 @@ fn main() -> anyhow::Result<()> {
         "clipt9n",
         native_options,
         Box::new(move |cc| {
+            // Hide from the macOS Dock + Cmd+Tab. Runs on the main
+            // thread inside the eframe creator closure, after winit
+            // has initialized NSApplication. Complements the .app
+            // bundle's LSUIElement=true (which only fires when
+            // launched via Finder, not under `cargo run`).
+            platform::current().set_dock_visible(false);
+
             let mut app = ClipApp::new(
                 cc,
                 cfg,

@@ -12,6 +12,8 @@
 //! list for macOS to show its own dialog. Our `open` call covers that case
 //! more reliably.
 
+use std::ffi::c_void;
+use std::os::raw::{c_char, c_long};
 use std::process::Command;
 
 use super::Platform;
@@ -20,6 +22,24 @@ use crate::error::TranslateError;
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
+}
+
+// AppKit is used for `[NSApplication sharedApplication]
+// setActivationPolicy:]`. The lib-name link is what pulls the framework
+// in; the actual symbol lookup goes through the Objective-C runtime
+// below.
+#[link(name = "AppKit", kind = "framework")]
+extern "C" {}
+
+#[link(name = "objc")]
+extern "C" {
+    fn objc_getClass(name: *const c_char) -> *mut c_void;
+    fn sel_registerName(name: *const c_char) -> *mut c_void;
+    // Declared as a bare `fn()` because objc_msgSend has no fixed
+    // signature on arm64 — callers transmute it to the per-call
+    // signature at the call site (the standard Rust idiom for
+    // direct objc FFI without the `objc2` crate).
+    fn objc_msgSend();
 }
 
 #[derive(Default)]
@@ -63,6 +83,47 @@ impl Platform for MacOsPlatform {
             .map(|_| ())
             .map_err(|e| crate::error::TranslateError::Internal(format!("open: {e}")))
     }
+
+    fn set_dock_visible(&self, visible: bool) {
+        // Must be called on the main thread after NSApplication is
+        // initialized — main.rs invokes this from the eframe creator
+        // closure, which winit guarantees runs on the main thread
+        // post-NSApp init.
+        let policy = if visible {
+            NS_APPLICATION_ACTIVATION_POLICY_REGULAR
+        } else {
+            NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY
+        };
+        unsafe { set_activation_policy(policy) };
+    }
+}
+
+// NSApplicationActivationPolicy values from AppKit/NSApplication.h.
+const NS_APPLICATION_ACTIVATION_POLICY_REGULAR: c_long = 0;
+const NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY: c_long = 1;
+
+/// Call `[[NSApplication sharedApplication] setActivationPolicy: policy]`.
+///
+/// Safety: must be called on the main thread. The objc runtime
+/// guarantees that returning a `nil` class or selector here is a
+/// programmer error, not a memory-safety issue — we'd see a crash
+/// rather than UB. In practice both `NSApplication` and the two
+/// selectors are part of the AppKit ABI and always resolve.
+unsafe fn set_activation_policy(policy: c_long) {
+    type Id = *mut c_void;
+    type Sel = *mut c_void;
+    type Class = *mut c_void;
+
+    let cls: Class = objc_getClass(c"NSApplication".as_ptr());
+    let shared_sel: Sel = sel_registerName(c"sharedApplication".as_ptr());
+    let policy_sel: Sel = sel_registerName(c"setActivationPolicy:".as_ptr());
+
+    let shared: extern "C" fn(Class, Sel) -> Id = std::mem::transmute(objc_msgSend as *const ());
+    let app: Id = shared(cls, shared_sel);
+
+    let set_policy: extern "C" fn(Id, Sel, c_long) -> bool =
+        std::mem::transmute(objc_msgSend as *const ());
+    let _ = set_policy(app, policy_sel, policy);
 }
 
 /// Returns true if the current process has Accessibility permission.
