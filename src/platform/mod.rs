@@ -54,6 +54,13 @@ pub trait Platform {
     /// macOS; no-op on Linux/Windows where window-level focus is
     /// sufficient.
     fn activate_app(&self) {}
+
+    /// Configure OS notification delivery for the app. macOS needs the
+    /// bundle identifier registered with `notify-rust`; other platforms
+    /// use the default notification backend behavior.
+    fn configure_notifications(&self) -> Result<(), TranslateError> {
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "macos")]

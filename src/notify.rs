@@ -1,10 +1,9 @@
 //! OS notifications. Currently used only for the post-translation
 //! "Translation copied" toast.
 
-use crate::error::TranslateError;
+use crate::{error::TranslateError, platform::Platform};
 use std::sync::OnceLock;
 
-const NOTIFICATION_BUNDLE_ID: &str = "dev.egecan.clipt9n";
 const RESULT_PREVIEW_MAX_CHARS: usize = 120;
 
 static NOTIFICATION_APPLICATION_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
@@ -37,10 +36,6 @@ fn show(summary: &str, body: &str, timeout_ms: u32) -> Result<(), TranslateError
         .map_err(notification_error)
 }
 
-fn notification_bundle_identifier() -> &'static str {
-    NOTIFICATION_BUNDLE_ID
-}
-
 fn notification_error<E: std::fmt::Display>(e: E) -> TranslateError {
     TranslateError::Config(format!("notification failed: {e}"))
 }
@@ -65,20 +60,15 @@ fn notification_preview(text: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn ensure_notification_application() -> Result<(), TranslateError> {
     NOTIFICATION_APPLICATION_RESULT
         .get_or_init(|| {
-            notify_rust::set_application(notification_bundle_identifier())
+            crate::platform::current()
+                .configure_notifications()
                 .map_err(|e| e.to_string())
         })
         .clone()
         .map_err(notification_error)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn ensure_notification_application() -> Result<(), TranslateError> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -90,14 +80,6 @@ mod tests {
     #[test]
     fn translation_copied_does_not_panic() {
         let _ = super::translation_copied("Fix grammar", "Fixed text.");
-    }
-
-    #[test]
-    fn macos_notifications_use_app_bundle_identifier() {
-        assert_eq!(
-            super::notification_bundle_identifier(),
-            "dev.egecan.clipt9n"
-        );
     }
 
     #[test]

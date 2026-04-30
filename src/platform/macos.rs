@@ -91,6 +91,17 @@ impl Platform for MacOsPlatform {
     fn activate_app(&self) {
         unsafe { activate_ignoring_other_apps() };
     }
+
+    fn configure_notifications(&self) -> Result<(), TranslateError> {
+        notify_rust::set_application(notification_bundle_identifier())
+            .map_err(|e| TranslateError::Config(format!("notification failed: {e}")))
+    }
+}
+
+const NOTIFICATION_BUNDLE_ID: &str = "dev.egecan.clipt9n";
+
+fn notification_bundle_identifier() -> &'static str {
+    NOTIFICATION_BUNDLE_ID
 }
 
 // NSApplicationActivationPolicy values from AppKit/NSApplication.h.
@@ -180,6 +191,11 @@ mod tests {
             accessibility_probe_result(false),
             Err(TranslateError::AccessibilityPermissionDenied)
         ));
+    }
+
+    #[test]
+    fn notifications_use_app_bundle_identifier() {
+        assert_eq!(notification_bundle_identifier(), "dev.egecan.clipt9n");
     }
 
     // Shells out to `defaults` on macOS; <50ms on real hardware but may slow
