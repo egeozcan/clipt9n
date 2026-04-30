@@ -96,34 +96,50 @@ impl Platform for MacOsPlatform {
         };
         unsafe { set_activation_policy(policy) };
     }
+
+    fn activate_app(&self) {
+        unsafe { activate_ignoring_other_apps() };
+    }
 }
 
 // NSApplicationActivationPolicy values from AppKit/NSApplication.h.
 const NS_APPLICATION_ACTIVATION_POLICY_REGULAR: c_long = 0;
 const NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY: c_long = 1;
 
-/// Call `[[NSApplication sharedApplication] setActivationPolicy: policy]`.
-///
-/// Safety: must be called on the main thread. The objc runtime
-/// guarantees that returning a `nil` class or selector here is a
-/// programmer error, not a memory-safety issue — we'd see a crash
-/// rather than UB. In practice both `NSApplication` and the two
-/// selectors are part of the AppKit ABI and always resolve.
-unsafe fn set_activation_policy(policy: c_long) {
-    type Id = *mut c_void;
-    type Sel = *mut c_void;
-    type Class = *mut c_void;
+type Id = *mut c_void;
+type Sel = *mut c_void;
+type Class = *mut c_void;
 
+/// Resolve `[NSApplication sharedApplication]`. Safe to call from any
+/// thread (lazily creates the singleton if missing), but anything
+/// downstream of the returned id must be on the main thread.
+unsafe fn shared_application() -> Id {
     let cls: Class = objc_getClass(c"NSApplication".as_ptr());
     let shared_sel: Sel = sel_registerName(c"sharedApplication".as_ptr());
-    let policy_sel: Sel = sel_registerName(c"setActivationPolicy:".as_ptr());
-
     let shared: extern "C" fn(Class, Sel) -> Id = std::mem::transmute(objc_msgSend as *const ());
-    let app: Id = shared(cls, shared_sel);
+    shared(cls, shared_sel)
+}
 
+/// Call `[[NSApplication sharedApplication] setActivationPolicy: policy]`.
+///
+/// Safety: must be called on the main thread.
+unsafe fn set_activation_policy(policy: c_long) {
+    let app: Id = shared_application();
+    let policy_sel: Sel = sel_registerName(c"setActivationPolicy:".as_ptr());
     let set_policy: extern "C" fn(Id, Sel, c_long) -> bool =
         std::mem::transmute(objc_msgSend as *const ());
     let _ = set_policy(app, policy_sel, policy);
+}
+
+/// Call `[[NSApplication sharedApplication] activateIgnoringOtherApps:YES]`.
+/// Required for accessory-policy apps to come to the foreground.
+///
+/// Safety: must be called on the main thread.
+unsafe fn activate_ignoring_other_apps() {
+    let app: Id = shared_application();
+    let activate_sel: Sel = sel_registerName(c"activateIgnoringOtherApps:".as_ptr());
+    let activate: extern "C" fn(Id, Sel, bool) = std::mem::transmute(objc_msgSend as *const ());
+    activate(app, activate_sel, true);
 }
 
 /// Returns true if the current process has Accessibility permission.

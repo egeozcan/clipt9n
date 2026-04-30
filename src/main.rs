@@ -363,6 +363,11 @@ fn main() -> anyhow::Result<()> {
                     ));
                 cc.egui_ctx
                     .send_viewport_cmd(eframe::egui::ViewportCommand::Visible(true));
+                cc.egui_ctx
+                    .send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
+                // Required for accessory-policy apps to surface the
+                // wizard window above the user's current foreground app.
+                platform::current().activate_app();
             }
             Ok(Box::new(app))
         }),

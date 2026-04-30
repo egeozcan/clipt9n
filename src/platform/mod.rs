@@ -45,6 +45,15 @@ pub trait Platform {
     fn set_dock_visible(&self, visible: bool) {
         let _ = visible;
     }
+
+    /// Bring the app to the foreground. Required for accessory-policy
+    /// macOS apps that have no Dock icon — without this, sending
+    /// `ViewportCommand::Focus` to a window when the user has tabbed
+    /// away to another app does nothing because the OS keeps the other
+    /// app activated. Calls `[NSApp activateIgnoringOtherApps:YES]` on
+    /// macOS; no-op on Linux/Windows where window-level focus is
+    /// sufficient.
+    fn activate_app(&self) {}
 }
 
 #[cfg(target_os = "macos")]

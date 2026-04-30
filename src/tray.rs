@@ -172,8 +172,13 @@ impl TrayHandle {
         if status == self.last_status {
             return Ok(());
         }
+        // Use `set_icon_with_as_template` instead of `set_icon` because
+        // tray-icon 0.22.x hardcodes `icon_is_template: false` inside
+        // `set_icon`, which silently undoes the constructor's
+        // `with_icon_as_template(true)` flag and causes the menu-bar
+        // glyph to render as opaque black on every status change.
         self.icon
-            .set_icon(Some(build_icon(status)))
+            .set_icon_with_as_template(Some(build_icon(status)), true)
             .map_err(|e| TranslateError::Internal(format!("tray set_icon failed: {e}")))?;
         self.icon
             .set_tooltip(Some(status.tooltip()))

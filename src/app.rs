@@ -743,8 +743,16 @@ impl ClipApp {
     }
 
     fn dispatch_rerun_wizard(&mut self, ctx: &egui::Context) {
-        // Already in the wizard? Ignore — double dispatch.
+        // Already in the wizard? Don't reseed the model (would lose
+        // the in-flight key); just bring the window back to the
+        // foreground so the user can resume editing after they
+        // tabbed away. With NSApplicationActivationPolicyAccessory
+        // the window has no Dock icon to click, so the tray menu's
+        // "Re-run setup wizard" item is the only re-focus path.
         if matches!(self.app_state, AppState::SetupWizard { .. }) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            crate::platform::current().activate_app();
             return;
         }
         let keychain_available = self.secrets.keychain_available();
@@ -764,6 +772,8 @@ impl ClipApp {
             crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        crate::platform::current().activate_app();
         self.app_state = AppState::SetupWizard { model };
     }
 
