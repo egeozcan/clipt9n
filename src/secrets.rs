@@ -184,13 +184,71 @@ pub fn migrate_keyfile_to_keychain(
 }
 
 /// Construct the `Secrets` impl matching `cfg.provider.api_key.source`.
-/// "keychain" → KeychainSecrets; "env" or anything else → EnvSecrets.
-/// "prompt" is treated as "env" until M7's tray-menu rewires it; the
-/// wizard handles first-launch separately via main.rs detection.
+/// "keychain" → KeychainSecrets; "file" → FileSecrets at the
+/// configured path; anything else → EnvSecrets.
 pub fn resolve(cfg: &ApiKeyConfig) -> Box<dyn Secrets> {
     match cfg.source.as_str() {
         "keychain" => Box::new(KeychainSecrets::new(&cfg.service, &cfg.account)),
+        "file" => Box::new(FileSecrets::new(std::path::PathBuf::from(&cfg.path))),
         _ => Box::new(EnvSecrets::new(cfg.env_var.clone())),
+    }
+}
+
+/// Read / write the API key from a 0600-perm file under the
+/// config dir. Used as a fallback on macOS dev/ad-hoc-signed binaries
+/// where the OS keychain silently fails to persist `SecItemAdd`
+/// writes (the user's wizard run reports success but the next launch
+/// can't find the key). Plaintext-with-0600 is the same security
+/// posture as the M5 history-key file; FileVault provides at-rest
+/// encryption when the user has it on.
+pub struct FileSecrets {
+    path: std::path::PathBuf,
+}
+
+impl FileSecrets {
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Standard keyfile path under the given config dir.
+    pub fn keyfile_path(config_dir: &std::path::Path) -> std::path::PathBuf {
+        config_dir.join("api-key")
+    }
+}
+
+impl Secrets for FileSecrets {
+    fn get_api_key(&self) -> Result<Zeroizing<String>, TranslateError> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(s) => Ok(Zeroizing::new(s.trim().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(TranslateError::MissingApiKey {
+                    env_var: format!("(keyfile {})", self.path.display()),
+                })
+            }
+            Err(e) => Err(TranslateError::Internal(format!(
+                "keyfile read {}: {e}",
+                self.path.display()
+            ))),
+        }
+    }
+
+    fn set_api_key(&self, key: Zeroizing<String>) -> Result<(), TranslateError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TranslateError::Internal(format!("keyfile mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        std::fs::write(&self.path, key.as_bytes()).map_err(|e| {
+            TranslateError::Internal(format!("keyfile write {}: {e}", self.path.display()))
+        })?;
+        if let Err(e) = crate::platform::set_owner_only_permissions(&self.path) {
+            tracing::warn!(error = %e, path = %self.path.display(), "keyfile chmod 0600 failed");
+        }
+        Ok(())
+    }
+
+    fn keychain_available(&self) -> bool {
+        false
     }
 }
 
@@ -293,6 +351,7 @@ mod tests {
             service: "clipt9n-test".into(),
             account: "test-account".into(),
             env_var: "irrelevant".into(),
+            path: String::new(),
         };
         let s = resolve(&cfg);
         // KeychainSecrets::keychain_available probes the actual OS

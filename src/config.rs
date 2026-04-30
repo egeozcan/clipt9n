@@ -51,11 +51,18 @@ impl Default for ProviderConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ApiKeyConfig {
-    /// "keychain" | "env" | "prompt". M1 only honors "env" — keychain is M6.
+    /// "keychain" | "env" | "file" | "prompt". M1 only honored "env"; M6
+    /// added "keychain"; M8 added "file" as the macOS dev fallback when
+    /// the OS keychain silently fails to persist writes.
     pub source: String,
     pub service: String,
     pub account: String,
     pub env_var: String,
+    /// Path to the keyfile when `source = "file"`. Empty by default;
+    /// the setup wizard fills this in with `<config_dir>/api-key` when
+    /// the keychain readback fails and the file fallback engages.
+    #[serde(default)]
+    pub path: String,
 }
 
 impl Default for ApiKeyConfig {
@@ -65,6 +72,7 @@ impl Default for ApiKeyConfig {
             service: "clipboard-translator".into(),
             account: "anthropic".into(),
             env_var: "ANTHROPIC_API_KEY".into(),
+            path: String::new(),
         }
     }
 }

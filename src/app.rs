@@ -1609,36 +1609,36 @@ impl ClipApp {
                 );
                 fresh.set_api_key(model.key.clone())?;
                 // Read-back self-test: macOS silently fails to persist
-                // keychain items written by unsigned binaries — the
-                // underlying SecItemAdd call returns success but the
-                // item is never findable. Catch that here and surface
-                // an actionable error rather than letting the user
-                // restart and "lose" the key.
+                // keychain items written by unsigned / ad-hoc-signed
+                // binaries (SecItemAdd reports success, the item is
+                // never findable). Detect that here and auto-fallback
+                // to a 0600 keyfile under the config dir so the user's
+                // wizard run still produces a key that survives a
+                // restart instead of throwing them back into the
+                // wizard on every launch.
                 let verify = crate::secrets::KeychainSecrets::new(
                     &self.cfg.provider.api_key.service,
                     &self.cfg.provider.api_key.account,
                 );
-                match verify.get_api_key() {
-                    Ok(read_back) if *read_back == *model.key.clone() => {}
-                    Ok(_) => {
-                        return Err(TranslateError::SetupWizard(
-                            "keychain readback returned a different value than what \
-                             was written — likely a stale entry from a previous run. \
-                             Open Keychain Access.app, search for the configured service, \
-                             delete any existing entries, and try again."
-                                .into(),
-                        ));
-                    }
-                    Err(_) => {
-                        return Err(TranslateError::SetupWizard(
-                            "keychain write reported success but the entry was not \
-                             persisted. macOS silently rejects keychain writes from \
-                             unsigned binaries — launch the packaged clipt9n.app \
-                             (built via scripts/package-macos.sh) instead of the raw \
-                             target/release/clipt9n binary."
-                                .into(),
-                        ));
-                    }
+                let readback_ok = matches!(
+                    verify.get_api_key(),
+                    Ok(read) if *read == *model.key
+                );
+                if !readback_ok {
+                    let config_dir = self
+                        .state_path
+                        .parent()
+                        .ok_or_else(|| TranslateError::Config("state path has no parent".into()))?;
+                    let keyfile = crate::secrets::FileSecrets::keyfile_path(config_dir);
+                    let file_secrets = crate::secrets::FileSecrets::new(keyfile.clone());
+                    file_secrets.set_api_key(model.key.clone())?;
+                    self.cfg.provider.api_key.source = "file".into();
+                    self.cfg.provider.api_key.path = keyfile.to_string_lossy().into_owned();
+                    self.cfg.persist(&cfg_path)?;
+                    tracing::warn!(
+                        path = %keyfile.display(),
+                        "keychain write didn't persist; fell back to 0600 keyfile"
+                    );
                 }
             }
             crate::ui::setup::Storage::Env => {
