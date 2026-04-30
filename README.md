@@ -2,8 +2,8 @@
 
 A keyboard-driven clipboard translator. Press a hotkey, pick an action, get the result back on your clipboard.
 
-> **Status: M7 — tray icon + accessibility polish + spec §8 surface coverage.**
-> CLI mode still works (M1 behavior). GUI mode summons the prompt window on Cmd+Shift+T; all six slots work end-to-end with an in-flight overlay and large-clipboard confirmation. M5 ships encrypted history; M6 ships the first-launch setup wizard backed by the OS keychain; M7 ships the menu-bar tray icon, the status pill (Ready / no-API-key / warning), the hide-icon confirm modal, the live provider rebuild on Save-and-start, and a focus-ring + AccessKit-label + reduced-motion accessibility pass. macOS tested. Linux/Windows binaries from CI but untested. See `docs/superpowers/specs/2026-04-28-clipt9n-implementation-design.md` for the full milestone roadmap.
+> **Status: M8 / v0.1.0 — release readiness.**
+> CLI mode still works (M1 behavior). GUI mode summons the prompt window on Cmd+Shift+T; all six slots work end-to-end with an in-flight overlay and large-clipboard confirmation. M5 encrypted history; M6 setup wizard + keychain; M7 menu-bar tray, status pill, hide-icon confirm modal, live provider rebuild, accessibility polish. M8 adds comprehensive unit/integration coverage, `cargo-fuzz` targets, a real-provider latency benchmark, packaging scripts (`scripts/package-{macos,linux}.sh`), GitHub Actions release workflow, and the manual QA log in `TESTING.md`. macOS Day-1 + VoiceOver pass tracked in `TESTING.md`. See `docs/superpowers/specs/2026-04-28-clipt9n-implementation-design.md` for the full milestone roadmap.
 
 ## Install (M1)
 
@@ -133,7 +133,7 @@ Set the threshold to `0` to confirm any non-empty clipboard (useful for debuggin
 
 - **Cancellation drops the *result*, not the in-flight HTTP request.** The provider call continues to its 30-second timeout — a billing nuance, not a UX bug.
 - **`reduced_motion` is read at startup only.** Toggling macOS Reduce Motion mid-session has no effect until the next launch.
-- **Bundled fonts** (Inter / JetBrains Mono per the design handoff) are deferred to M8 polish; M3 still uses egui's default Hack/Ubuntu fonts.
+- **Bundled fonts** (Inter / JetBrains Mono per the design handoff) are not yet bundled; the app uses egui's default Hack/Ubuntu fonts. Out of scope for v0.1.
 - **macOS tested only.** Linux/Windows binaries build in CI but have not been manually verified.
 - **Env-var API key only.** Keychain support lands in M6.
 - **No glossary, no history, no setup wizard.** All later milestones.
@@ -366,7 +366,7 @@ keychain (if cfg.provider.api_key.source = "keychain")
     ↓ (NoEntry / unavailable)
 environment variable (cfg.provider.api_key.env_var)
     ↓ (var missing)
-setup wizard (re-run via M7 tray-menu, deferred)
+setup wizard (re-run via M7 tray menu)
 ```
 
 The CLI mode (`clipt9n --action translate ...`) inherits this same
@@ -382,12 +382,12 @@ resolution order automatically — no separate keychain wiring needed.
 | Keychain returns a stale/wrong key (revoked at provider) | First translation hits 401; M7's tray menu offers "re-run wizard". |
 | Save-and-start fails to write keychain | Wizard surfaces the error, stays open with key intact. |
 
-#### Manual smoke matrix (M6 — deferred to M8 polish pass)
+#### Manual smoke matrix (M6)
 
 This matrix is the human verification of the setup wizard's full flow.
-**It is NOT a blocker for M6 merge** (per the M6 plan §17 decision).
-The M8 polish pass owns running this on a clean macOS install before
-shipping a public binary. Steps:
+The M8 macOS Day-1 + VoiceOver pass tracked in `TESTING.md` owns the
+release-blocking checklist; the steps below are a fuller walk-through
+of the wizard for diagnostic use. Steps:
 
 1. **First-launch with no key**
    - Delete `<config_dir>/.history-key` and any `clipt9n` keychain
@@ -512,10 +512,11 @@ prompt window.
   AccessKit role + label exposure for each interactive surface; manual
   VoiceOver smoke is M8 scope.
 
-### Manual smoke matrix (M7) — deferred to M8 execution
+### Manual smoke matrix (M7)
 
 These flows must be exercised on real hardware before declaring v1.0.
-M5 + M6 matrices are also deferred (each plan §11.X documents them).
+The release-blocking version of this matrix lives in `TESTING.md`;
+the table below is the M7-era reference list of expected behaviors.
 
 | OS | Surface | Expected | Tested? |
 |----|---------|----------|---------|
@@ -541,6 +542,18 @@ M5 + M6 matrices are also deferred (each plan §11.X documents them).
 | Windows | Tray icon in shell tray | Visible | ☐ |
 | Windows | Right-click tray → menu | All 7 items present | ☐ |
 | Windows | Open glossary via cmd /C start | Default editor opens | ☐ |
+
+## Troubleshooting
+
+| Symptom | Where to look |
+|---------|---------------|
+| Hotkey does nothing on macOS | [macOS Accessibility permission](#macos-accessibility-permission) — re-grant in System Settings → Privacy & Security → Accessibility. |
+| Setup wizard says "keychain unavailable" | [Keychain unavailable (Linux without Secret Service)](#keychain-unavailable-linux-without-secret-service) — env-only mode is the documented fallback. |
+| Tray pill is amber | Hover the tray icon. Likely *glossary malformed*, *hotkey already in use*, or *Accessibility permission revoked*. App still works via the tray menu. |
+| Translation 401s after a known-good key | Stale-key flow: the wizard auto-opens; re-enter or rotate the key; "Save and start" rebuilds the provider in place — no restart needed. |
+| History viewer says disabled | Either the `.history-key` is unreadable or `history.db` is corrupted. Delete `<config_dir>/history.db` to reset (decrypted contents are unrecoverable). |
+| Tray icon is missing on Linux | Check the desktop environment supports StatusNotifierItem (KDE, GNOME with the AppIndicator extension). Hotkey path still works without a tray. |
+| Tray hidden after "Hide icon" | Relaunch with `clipt9n --show-tray` or set `[tray] visible = true` in `state.toml` (paths in [Recovering from "Hide icon"](#recovering-from-hide-icon)). |
 
 ## Packaging
 
