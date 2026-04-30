@@ -363,7 +363,7 @@ impl ClipApp {
             .collect();
         drop(g); // release the read lock before mutating other state.
 
-        self.has_been_focused = false;
+        reset_focus_loss_latch(&mut self.has_been_focused);
         self.initial_focus_pending = true;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -544,7 +544,9 @@ impl ClipApp {
                 if let Err(e) = cb.write_text(translated) {
                     tracing::error!(error = %e, "clipboard write failed");
                 } else {
-                    if let Err(e) = crate::notify::translation_copied(&outcome.action_label) {
+                    if let Err(e) =
+                        crate::notify::translation_copied(&outcome.action_label, translated)
+                    {
                         tracing::warn!(error = %e, "notification failed");
                     }
                     // History insert: best-effort, AFTER clipboard write
@@ -579,12 +581,9 @@ impl ClipApp {
             }
             Err(e) => {
                 tracing::error!(error = %e, "translation failed");
-                let _ = notify_rust::Notification::new()
-                    .summary("Translation failed")
-                    .body(&format!("{e}"))
-                    .appname("clipt9n")
-                    .timeout(notify_rust::Timeout::Milliseconds(4000))
-                    .show();
+                if let Err(notify_err) = crate::notify::translation_failed(&e) {
+                    tracing::warn!(error = %notify_err, "notification failed");
+                }
             }
         }
         self.app_state = AppState::Idle;
@@ -743,11 +742,26 @@ impl ClipApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             crate::ui::tray_modal::TRAY_HIDE_MODAL_SIZE,
         ));
+        reset_focus_loss_latch(&mut self.has_been_focused);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.app_state = AppState::ConfirmingTrayHide { model };
     }
 
     fn dispatch_rerun_wizard(&mut self, ctx: &egui::Context) {
+        tracing::info!(
+            current_state = match &self.app_state {
+                AppState::Idle => "idle",
+                AppState::Showing => "showing",
+                AppState::EnteringCustom { .. } => "entering_custom",
+                AppState::ConfirmingSize { .. } => "confirming_size",
+                AppState::Translating { .. } => "translating",
+                AppState::ShowingHistory { .. } => "showing_history",
+                AppState::SetupWizard { .. } => "setup_wizard",
+                AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
+            },
+            "dispatch_rerun_wizard"
+        );
         // Already in the wizard? Don't reseed the model (would lose
         // the in-flight key); just bring the window back to the
         // foreground so the user can resume editing after they
@@ -755,6 +769,7 @@ impl ClipApp {
         // the window has no Dock icon to click, so the tray menu's
         // "Re-run setup wizard" item is the only re-focus path.
         if matches!(self.app_state, AppState::SetupWizard { .. }) {
+            reset_focus_loss_latch(&mut self.has_been_focused);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             crate::platform::current().activate_app();
@@ -780,6 +795,7 @@ impl ClipApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
         ));
+        reset_focus_loss_latch(&mut self.has_been_focused);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         crate::platform::current().activate_app();
@@ -1222,7 +1238,7 @@ impl ClipApp {
 
         // Resize viewport for history viewer.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(680.0, 540.0)));
-        self.has_been_focused = false;
+        reset_focus_loss_latch(&mut self.has_been_focused);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = AppState::ShowingHistory { model };
@@ -1717,9 +1733,7 @@ impl eframe::App for ClipApp {
         // `handle_translation_done`, so any in-flight outcome is detected
         // as stale (`Some(outcome.gen) != None`) and dropped silently.
         let focused = ctx.input(|i| i.focused);
-        if focused {
-            self.has_been_focused = true;
-        } else if self.has_been_focused {
+        if update_focus_loss_latch(focused, &mut self.has_been_focused) {
             self.dismiss_to_idle(ctx);
             return;
         }
@@ -1872,6 +1886,19 @@ pub(crate) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
 
 pub(crate) fn next_gen(current: u64) -> u64 {
     current.wrapping_add(1)
+}
+
+fn reset_focus_loss_latch(has_been_focused: &mut bool) {
+    *has_been_focused = false;
+}
+
+fn update_focus_loss_latch(focused: bool, has_been_focused: &mut bool) -> bool {
+    if focused {
+        *has_been_focused = true;
+        false
+    } else {
+        *has_been_focused
+    }
 }
 
 /// Return the overlay label for a non-`Translate` action.
@@ -2129,6 +2156,16 @@ mod tests {
         let outcome_gen = dispatched_gen;
         // Stale check (mirrors handle_translation_done):
         assert_ne!(current, outcome_gen);
+    }
+
+    #[test]
+    fn reset_focus_latch_prevents_immediate_dismiss_after_resummon() {
+        let mut has_been_focused = true;
+
+        reset_focus_loss_latch(&mut has_been_focused);
+
+        assert!(!update_focus_loss_latch(false, &mut has_been_focused));
+        assert!(!has_been_focused);
     }
 
     #[test]

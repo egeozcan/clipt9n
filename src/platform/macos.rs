@@ -1,16 +1,14 @@
 //! macOS-specific platform integration.
 //!
-//! Provides Accessibility-permission detection so the user gets a clear error
-//! (and a one-click open of System Settings) when the global hotkey can't be
-//! registered.
+//! Provides Accessibility-permission detection so the app can surface a tray
+//! warning when the global hotkey can't be registered.
 //!
 //! We call `AXIsProcessTrusted` directly via FFI rather than going through the
 //! `objc2-application-services` wrapper. The wrapper's surface for the
 //! `WithOptions` variant is awkward (NSDictionary + CFBoolean dance) and the
 //! prompting behavior of `AXIsProcessTrustedWithOptions` is unreliable for
 //! first-launch anyway — the binary has to already be in the Accessibility
-//! list for macOS to show its own dialog. Our `open` call covers that case
-//! more reliably.
+//! list for macOS to show its own dialog.
 
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_long};
@@ -47,14 +45,7 @@ pub struct MacOsPlatform;
 
 impl Platform for MacOsPlatform {
     fn ensure_hotkey_permissions(&self) -> Result<(), TranslateError> {
-        if is_process_trusted() {
-            return Ok(());
-        }
-        // Best-effort: bring the user to the right pane in System Settings.
-        // Failure (e.g. `open` missing) doesn't change the outcome — we still
-        // surface the permission error to the caller.
-        let _ = open_accessibility_settings();
-        Err(TranslateError::AccessibilityPermissionDenied)
+        accessibility_probe_result(is_process_trusted())
     }
 
     fn reduced_motion(&self) -> bool {
@@ -150,11 +141,12 @@ fn is_process_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
-fn open_accessibility_settings() -> std::io::Result<()> {
-    Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        .spawn()
-        .map(|_| ())
+fn accessibility_probe_result(is_trusted: bool) -> Result<(), TranslateError> {
+    if is_trusted {
+        Ok(())
+    } else {
+        Err(TranslateError::AccessibilityPermissionDenied)
+    }
 }
 
 /// Parse `defaults read -g NSReduceMotionEnabled` output. Treats "1" as
@@ -179,6 +171,15 @@ mod tests {
         assert!(!parse_reduce_motion_output("0\n"));
         assert!(!parse_reduce_motion_output("garbage"));
         assert!(!parse_reduce_motion_output(""));
+    }
+
+    #[test]
+    fn accessibility_probe_is_side_effect_free() {
+        assert!(accessibility_probe_result(true).is_ok());
+        assert!(matches!(
+            accessibility_probe_result(false),
+            Err(TranslateError::AccessibilityPermissionDenied)
+        ));
     }
 
     // Shells out to `defaults` on macOS; <50ms on real hardware but may slow

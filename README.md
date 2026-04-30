@@ -84,14 +84,13 @@ The app stays running in the background. Press **Cmd+Shift+T** (default; configu
 
 ### macOS Accessibility permission
 
-Global hotkey registration on macOS requires Accessibility permission. On first launch, clipt9n triggers a one-time grant flow:
+Global hotkey registration on macOS requires Accessibility permission. If the hotkey does not respond:
 
-1. macOS shows the system permission dialog.
-2. System Settings opens to Privacy & Security → Accessibility.
-3. Toggle **clipt9n** (or your terminal, if running from terminal in dev) on.
-4. Relaunch the binary.
+1. Open System Settings → Privacy & Security → Accessibility.
+2. Toggle **clipt9n** (or your terminal, if running from terminal in dev) on.
+3. Relaunch the binary.
 
-Without this permission, `Cmd+Shift+T` will not be detected and the app exits with `AccessibilityPermissionDenied`.
+Without this permission, `Cmd+Shift+T` will not be detected; the tray menu remains available.
 
 ### Configurable hotkey
 
@@ -461,7 +460,7 @@ The icon's bottom-right corner has a colored dot — the *status pill*:
 Amber pill triggers, mapped to spec §8:
 - *hotkey already in use* — another app claimed Cmd+Shift+T; tray menu remains the entry point
 - *glossary malformed* — file parsed as Err at startup; running without it
-- *accessibility permission revoked* (macOS) — global hotkey can't register; click for help
+- *accessibility permission revoked* (macOS) — global hotkey can't register
 - *API key invalid* — translation 401'd; setup wizard auto-opens
 
 ### Recovering from "Hide icon"

@@ -96,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     // Per spec §8: if Accessibility is missing, surface via tray
     // warning state rather than aborting startup. The hotkey will
     // simply fail to register below; the user can fix the permission
-    // and the tray icon's tooltip + click-to-help guides them there.
+    // and the tray icon's tooltip explains the degraded state.
     let accessibility_revoked = match plat.ensure_hotkey_permissions() {
         Ok(()) => false,
         Err(e) => {

@@ -92,7 +92,7 @@ impl WarnReason {
             Self::HotkeyInUse => "clipt9n — hotkey unavailable; another app is using it",
             Self::GlossaryMalformed => "clipt9n — glossary malformed; running without it",
             Self::AccessibilityPermissionRevoked => {
-                "clipt9n — accessibility permission needed; click for help"
+                "clipt9n — accessibility permission needed for hotkeys"
             }
             Self::KeychainStaleKey => "clipt9n — API key invalid; re-run setup wizard",
             Self::KeychainUnavailable => "clipt9n — keychain unavailable; using env var",
