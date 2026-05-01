@@ -2,3 +2,5 @@
 /handoff
 .DS_Store
 *.swp
+/fuzz/target
+/fuzz/corpus
