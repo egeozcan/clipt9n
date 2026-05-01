@@ -78,7 +78,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 
 ### M2 — Prompt window + global hotkey + design tokens
 
-**Goal:** the app feels real for the first time. Cmd+Shift+T → prompt → translate to one of three languages → result on clipboard.
+**Goal:** the app feels real for the first time. Cmd+Option+T → prompt → translate to one of three languages → result on clipboard.
 
 **Deliverables:**
 
@@ -144,7 +144,7 @@ Each milestone is its own implementation plan, written and executed in a separat
 - `src/history/crypto.rs` — Argon2 KDF + ChaCha20-Poly1305 AEAD; per-row nonce; `history-key` keychain account name (or `<config_dir>/.history-key` 0600 fallback with startup warning)
 - `src/history/store.rs` — rusqlite (bundled feature); spec §7 schema; create-on-first-run; CRUD; insert is best-effort (failure logged, never blocks clipboard write)
 - `src/ui/history.rs` per design `history-window.jsx`: 680 px, search input, scrollable list (truncated source), source/result detail block, footer keymap
-- Hotkey `Cmd+Shift+H` (configurable, can be disabled)
+- Hotkey `Cmd+Option+H` (configurable, can be disabled)
 - Real-time filter; arrow-key nav; Enter copy result; `s` copy source; `d` delete; Shift+Del clear-all with confirm modal; Esc close
 - `[history] enabled = false` short-circuits all writes
 - `[history] store_text = false` writes metadata-only rows

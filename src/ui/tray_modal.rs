@@ -9,7 +9,7 @@ use egui::{Align2, Color32, RichText, Vec2};
 use crate::ui::theme;
 
 /// Per-frame model. The hotkey display is the active configured prompt
-/// hotkey (e.g. "⌘⇧T"), surfaced from `cfg.hotkey_display()` at the
+/// hotkey (e.g. "Cmd+Option+T"), surfaced from `cfg.hotkey_display()` at the
 /// transition into this state.
 #[derive(Debug, Clone)]
 pub struct TrayHideModel {

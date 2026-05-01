@@ -304,7 +304,7 @@ fn tray_modal_renders_without_animation_for_reduced_motion() {
     use clipt9n::ui::tray_modal::{draw, TrayHideModel};
 
     let model = TrayHideModel {
-        hotkey_display: "⌘⇧T".into(),
+        hotkey_display: "Cmd+Option+T".into(),
     };
     let mut harness = Harness::new(move |ctx| {
         let _ = draw(ctx, &model);

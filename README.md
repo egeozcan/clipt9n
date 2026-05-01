@@ -2,9 +2,9 @@
 
 clipt9n is a small clipboard translation app for people who translate and rewrite text throughout the day.
 
-Copy some text, press `Cmd+Shift+T`, choose what you want, and clipt9n replaces your clipboard with the translated or rewritten result. It lives in the menu bar, keeps a local history, supports glossaries, and works with several AI providers.
+Copy some text, press `Cmd+Option+T`, choose what you want, and clipt9n replaces your clipboard with the translated or rewritten result. It lives in the menu bar, keeps a local history, supports glossaries, and works with several AI providers.
 
-You can also select text in another app and press `Cmd+Shift+Y` to use that selection as the source text. clipt9n still copies only the result to your clipboard; it does not paste or replace text for you.
+You can also select text in another app and press `Cmd+Option+Y` to use that selection as the source text. clipt9n still copies only the result to your clipboard; it does not paste or replace text for you.
 
 ![clipt9n prompt window](docs/images/prompt.png)
 
@@ -21,7 +21,7 @@ You can also select text in another app and press `Cmd+Shift+Y` to use that sele
 ## How It Works
 
 1. Copy text from any app.
-2. Press `Cmd+Shift+T`.
+2. Press `Cmd+Option+T`.
 3. Pick one of the numbered actions.
 4. The result is copied back to your clipboard.
 5. Paste it wherever you need it.
@@ -110,7 +110,7 @@ The app notices matching glossary terms before sending a request and includes th
 
 The global keyboard shortcut needs Accessibility permission on macOS.
 
-If `Cmd+Shift+T` does not open clipt9n:
+If `Cmd+Option+T` does not open clipt9n:
 
 1. Open System Settings.
 2. Go to Privacy & Security.
@@ -185,16 +185,25 @@ code = "tr"
 
 [hotkey]
 modifier = "cmd"
-shift = true
+option = true
+shift = false
 key = "T"
 enabled = true
 
 [hotkey.selection]
 modifier = "cmd"
-shift = true
+option = true
+shift = false
 key = "Y"
 enabled = true
 copy_delay_ms = 80
+
+[hotkey.history]
+modifier = "cmd"
+option = true
+shift = false
+key = "H"
+enabled = true
 
 [history]
 enabled = true

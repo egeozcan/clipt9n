@@ -116,6 +116,8 @@ pub struct HotkeyConfig {
     /// "cmd" → Cmd on macOS, Ctrl on Linux/Windows. "ctrl" → Ctrl on every OS.
     /// "alt" / "super" allowed but unmapped (passthrough).
     pub modifier: String,
+    /// Adds Option/Alt to the configured base modifier.
+    pub option: bool,
     pub shift: bool,
     /// Key name accepted by `global-hotkey::hotkey::Code`. Single uppercase letter
     /// like "T" maps to `Code::KeyT`.
@@ -134,7 +136,8 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             modifier: "cmd".into(),
-            shift: true,
+            option: true,
+            shift: false,
             key: "T".into(),
             enabled: true,
             history: HistoryHotkeyConfig::default(),
@@ -147,6 +150,7 @@ impl Default for HotkeyConfig {
 #[serde(default)]
 pub struct HistoryHotkeyConfig {
     pub modifier: String,
+    pub option: bool,
     pub shift: bool,
     pub key: String,
     pub enabled: bool,
@@ -156,7 +160,8 @@ impl Default for HistoryHotkeyConfig {
     fn default() -> Self {
         Self {
             modifier: "cmd".into(),
-            shift: true,
+            option: true,
+            shift: false,
             key: "H".into(),
             enabled: true,
         }
@@ -167,6 +172,7 @@ impl Default for HistoryHotkeyConfig {
 #[serde(default)]
 pub struct SelectionHotkeyConfig {
     pub modifier: String,
+    pub option: bool,
     pub shift: bool,
     pub key: String,
     pub enabled: bool,
@@ -177,7 +183,8 @@ impl Default for SelectionHotkeyConfig {
     fn default() -> Self {
         Self {
             modifier: "cmd".into(),
-            shift: true,
+            option: true,
+            shift: false,
             key: "Y".into(),
             enabled: true,
             copy_delay_ms: 80,
@@ -421,7 +428,7 @@ impl Modifier {
 }
 
 impl Config {
-    /// Render the configured hotkey for UI display (e.g., "Cmd+Shift+T").
+    /// Render the configured hotkey for UI display (e.g., "Cmd+Option+T").
     /// Returns "(disabled)" if `[hotkey].enabled = false`.
     pub fn hotkey_display(&self) -> String {
         if !self.hotkey.enabled {
@@ -430,11 +437,15 @@ impl Config {
         let modifier = Modifier::parse(&self.hotkey.modifier)
             .map(Modifier::display)
             .unwrap_or("?");
-        if self.hotkey.shift {
-            format!("{modifier}+Shift+{}", self.hotkey.key)
-        } else {
-            format!("{modifier}+{}", self.hotkey.key)
+        let mut parts = vec![modifier.to_string()];
+        if self.hotkey.option {
+            parts.push("Option".to_string());
         }
+        if self.hotkey.shift {
+            parts.push("Shift".to_string());
+        }
+        parts.push(self.hotkey.key.clone());
+        parts.join("+")
     }
 }
 
@@ -507,10 +518,11 @@ code = "fr"
     }
 
     #[test]
-    fn default_hotkey_is_cmd_shift_t() {
+    fn default_hotkey_is_cmd_option_t() {
         let cfg = Config::default();
         assert_eq!(cfg.hotkey.modifier, "cmd");
-        assert!(cfg.hotkey.shift);
+        assert!(!cfg.hotkey.shift);
+        assert!(cfg.hotkey.option);
         assert_eq!(cfg.hotkey.key, "T");
         assert!(cfg.hotkey.enabled);
     }
@@ -567,14 +579,15 @@ enabled = true
     fn hotkey_display_uses_logical_name() {
         let cfg = Config::default();
         // The displayed string is logical, not OS-mapped (it's a UI affordance, not a key event).
-        // On every OS, a default config shows "Cmd+Shift+T" because that's how the user wrote it.
-        assert_eq!(cfg.hotkey_display(), "Cmd+Shift+T");
+        // On every OS, a default config shows "Cmd+Option+T" because that's how the user wrote it.
+        assert_eq!(cfg.hotkey_display(), "Cmd+Option+T");
     }
 
     #[test]
     fn hotkey_display_no_shift() {
         let mut cfg = Config::default();
         cfg.hotkey.shift = false;
+        cfg.hotkey.option = false;
         cfg.hotkey.modifier = "ctrl".into();
         cfg.hotkey.key = "Y".into();
         assert_eq!(cfg.hotkey_display(), "Ctrl+Y");
@@ -699,10 +712,11 @@ confirm_clear = false
     }
 
     #[test]
-    fn default_history_hotkey_is_cmd_shift_h() {
+    fn default_history_hotkey_is_cmd_option_h() {
         let cfg = Config::default();
         assert_eq!(cfg.hotkey.history.modifier, "cmd");
-        assert!(cfg.hotkey.history.shift);
+        assert!(!cfg.hotkey.history.shift);
+        assert!(cfg.hotkey.history.option);
         assert_eq!(cfg.hotkey.history.key, "H");
         assert!(cfg.hotkey.history.enabled);
     }
@@ -746,10 +760,11 @@ enabled = true
     }
 
     #[test]
-    fn default_selection_hotkey_is_cmd_shift_y() {
+    fn default_selection_hotkey_is_cmd_option_y() {
         let cfg = Config::default();
         assert_eq!(cfg.hotkey.selection.modifier, "cmd");
-        assert!(cfg.hotkey.selection.shift);
+        assert!(!cfg.hotkey.selection.shift);
+        assert!(cfg.hotkey.selection.option);
         assert_eq!(cfg.hotkey.selection.key, "Y");
         assert!(cfg.hotkey.selection.enabled);
         assert_eq!(cfg.hotkey.selection.copy_delay_ms, 80);

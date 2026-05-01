@@ -144,6 +144,9 @@ fn main() -> anyhow::Result<()> {
     if cfg.hotkey.shift {
         prompt_mods |= Modifiers::SHIFT;
     }
+    if cfg.hotkey.option {
+        prompt_mods |= Modifiers::ALT;
+    }
     let prompt_key_code = letter_to_code(&cfg.hotkey.key)
         .ok_or_else(|| anyhow::anyhow!("unsupported hotkey key: {}", cfg.hotkey.key))?;
     let prompt_hotkey = HotKey::new(Some(prompt_mods), prompt_key_code);
@@ -181,6 +184,9 @@ fn main() -> anyhow::Result<()> {
         };
         if cfg.hotkey.selection.shift {
             mods |= Modifiers::SHIFT;
+        }
+        if cfg.hotkey.selection.option {
+            mods |= Modifiers::ALT;
         }
         match letter_to_code(&cfg.hotkey.selection.key) {
             Some(code) => {
@@ -228,6 +234,9 @@ fn main() -> anyhow::Result<()> {
         };
         if cfg.hotkey.history.shift {
             mods |= Modifiers::SHIFT;
+        }
+        if cfg.hotkey.history.option {
+            mods |= Modifiers::ALT;
         }
         match letter_to_code(&cfg.hotkey.history.key) {
             Some(code) => {

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 fn entry_model() -> TrayHideModel {
     TrayHideModel {
-        hotkey_display: "⌘⇧T".into(),
+        hotkey_display: "Cmd+Option+T".into(),
     }
 }
 

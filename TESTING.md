@@ -64,7 +64,7 @@ Mark each row with `OS / date / result`. Rows mirror the M7 README smoke matrix.
 | macOS | Glossary malformed | Tray pill amber; app still translates | [ ] |
 | macOS | Hotkey already in use | Tray pill amber; tray menu remains the entry point | [ ] |
 | macOS | Wizard Save-and-start | Next translation uses new key with no restart | [ ] |
-| macOS | History encryption round-trip | Insert → Cmd+Shift+H → row decrypts | [ ] |
+| macOS | History encryption round-trip | Insert → Cmd+Option+H → row decrypts | [ ] |
 | macOS | History viewer search | Search field filters rows after decrypt | [ ] |
 | macOS | History corruption recovery | Random bytes in history.db → app starts with history disabled | [ ] |
 | Linux | Tray icon in supported DE (GNOME/KDE) | Visible via StatusNotifierItem | [ ] |
