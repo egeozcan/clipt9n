@@ -124,6 +124,10 @@ pub struct HotkeyConfig {
     /// Second hotkey for the history viewer (M5). Independent of the
     /// prompt hotkey above. Set `enabled = false` to skip registration.
     pub history: HistoryHotkeyConfig,
+    /// Dedicated hotkey for translating the current selected text. Unlike
+    /// the prompt hotkey, this copies the selection first and does not fall
+    /// back to existing clipboard contents.
+    pub selection: SelectionHotkeyConfig,
 }
 
 impl Default for HotkeyConfig {
@@ -134,6 +138,7 @@ impl Default for HotkeyConfig {
             key: "T".into(),
             enabled: true,
             history: HistoryHotkeyConfig::default(),
+            selection: SelectionHotkeyConfig::default(),
         }
     }
 }
@@ -154,6 +159,28 @@ impl Default for HistoryHotkeyConfig {
             shift: true,
             key: "H".into(),
             enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SelectionHotkeyConfig {
+    pub modifier: String,
+    pub shift: bool,
+    pub key: String,
+    pub enabled: bool,
+    pub copy_delay_ms: u64,
+}
+
+impl Default for SelectionHotkeyConfig {
+    fn default() -> Self {
+        Self {
+            modifier: "cmd".into(),
+            shift: true,
+            key: "Y".into(),
+            enabled: true,
+            copy_delay_ms: 80,
         }
     }
 }
@@ -719,6 +746,39 @@ enabled = true
     }
 
     #[test]
+    fn default_selection_hotkey_is_cmd_shift_y() {
+        let cfg = Config::default();
+        assert_eq!(cfg.hotkey.selection.modifier, "cmd");
+        assert!(cfg.hotkey.selection.shift);
+        assert_eq!(cfg.hotkey.selection.key, "Y");
+        assert!(cfg.hotkey.selection.enabled);
+        assert_eq!(cfg.hotkey.selection.copy_delay_ms, 80);
+    }
+
+    #[test]
+    fn loads_selection_hotkey_override() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[hotkey.selection]
+modifier = "ctrl"
+shift = false
+key = "K"
+enabled = false
+copy_delay_ms = 150
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.hotkey.selection.modifier, "ctrl");
+        assert!(!cfg.hotkey.selection.shift);
+        assert_eq!(cfg.hotkey.selection.key, "K");
+        assert!(!cfg.hotkey.selection.enabled);
+        assert_eq!(cfg.hotkey.selection.copy_delay_ms, 150);
+    }
+
+    #[test]
     fn invalid_glossary_matching_is_config_error() {
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "[glossary]\nmatching = \"regex\"\n").unwrap();
@@ -776,6 +836,7 @@ enabled = true
         cfg.provider.kind = "gemini".into();
         cfg.provider.api_key.source = "keychain".into();
         cfg.hotkey.history.enabled = false;
+        cfg.hotkey.selection.key = "K".into();
         cfg.glossary.matching = "substring".into();
         cfg.history.store_text = false;
         let f = NamedTempFile::new().unwrap();
@@ -784,6 +845,7 @@ enabled = true
         assert_eq!(loaded.provider.kind, "gemini");
         assert_eq!(loaded.provider.api_key.source, "keychain");
         assert!(!loaded.hotkey.history.enabled);
+        assert_eq!(loaded.hotkey.selection.key, "K");
         assert_eq!(loaded.glossary.matching, "substring");
         assert!(!loaded.history.store_text);
     }

@@ -12,4 +12,24 @@ impl Platform for WindowsPlatform {
             .map(|_| ())
             .map_err(|e| crate::error::TranslateError::Internal(format!("start: {e}")))
     }
+
+    fn copy_selection_to_clipboard(&self) -> Result<(), crate::error::TranslateError> {
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$wshell = New-Object -ComObject wscript.shell; $wshell.SendKeys('^c')",
+            ])
+            .status()
+            .map_err(|e| crate::error::TranslateError::Internal(format!("powershell: {e}")))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(crate::error::TranslateError::Internal(format!(
+                        "powershell exited with status {status}"
+                    )))
+                }
+            })
+    }
 }

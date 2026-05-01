@@ -58,6 +58,7 @@ pub const ID_TRANSLATE: &str = "clipt9n.translate";
 pub const ID_HISTORY: &str = "clipt9n.history";
 pub const ID_GLOSSARY_OPEN: &str = "clipt9n.glossary.open";
 pub const ID_GLOSSARY_RELOAD: &str = "clipt9n.glossary.reload";
+pub const ID_ACCESSIBILITY_SETTINGS: &str = "clipt9n.accessibility.settings";
 pub const ID_RERUN_WIZARD: &str = "clipt9n.wizard";
 pub const ID_HIDE: &str = "clipt9n.hide";
 pub const ID_QUIT: &str = "clipt9n.quit";
@@ -192,6 +193,13 @@ impl TrayHandle {
         .map_err(menu_err)?;
         menu.append(&PredefinedMenuItem::separator())
             .map_err(menu_err)?;
+        menu.append(&MenuItem::with_id(
+            ID_ACCESSIBILITY_SETTINGS,
+            "Open Accessibility settings",
+            true,
+            None,
+        ))
+        .map_err(menu_err)?;
         menu.append(&MenuItem::with_id(
             ID_RERUN_WIZARD,
             "Re-run setup wizard",
@@ -386,6 +394,7 @@ mod tests {
             ID_HISTORY,
             ID_GLOSSARY_OPEN,
             ID_GLOSSARY_RELOAD,
+            ID_ACCESSIBILITY_SETTINGS,
             ID_RERUN_WIZARD,
             ID_HIDE,
             ID_QUIT,
@@ -393,6 +402,6 @@ mod tests {
         let mut sorted: Vec<&str> = ids.into_iter().collect();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), 7, "menu IDs must be unique");
+        assert_eq!(sorted.len(), ids.len(), "menu IDs must be unique");
     }
 }

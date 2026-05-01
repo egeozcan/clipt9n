@@ -4,6 +4,8 @@ clipt9n is a small clipboard translation app for people who translate and rewrit
 
 Copy some text, press `Cmd+Shift+T`, choose what you want, and clipt9n replaces your clipboard with the translated or rewritten result. It lives in the menu bar, keeps a local history, supports glossaries, and works with several AI providers.
 
+You can also select text in another app and press `Cmd+Shift+Y` to use that selection as the source text. clipt9n still copies only the result to your clipboard; it does not paste or replace text for you.
+
 ![clipt9n prompt window](docs/images/prompt.png)
 
 ## What You Can Do With It
@@ -186,6 +188,13 @@ modifier = "cmd"
 shift = true
 key = "T"
 enabled = true
+
+[hotkey.selection]
+modifier = "cmd"
+shift = true
+key = "Y"
+enabled = true
+copy_delay_ms = 80
 
 [history]
 enabled = true

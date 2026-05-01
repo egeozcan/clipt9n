@@ -101,6 +101,12 @@ fn main() -> anyhow::Result<()> {
         Ok(()) => false,
         Err(e) => {
             tracing::warn!(error = %e, "accessibility permission missing; running with tray warning state");
+            if let Err(open_err) = plat.open_accessibility_settings() {
+                tracing::warn!(
+                    error = %open_err,
+                    "failed to open accessibility settings"
+                );
+            }
             true
         }
     };
@@ -123,9 +129,9 @@ fn main() -> anyhow::Result<()> {
     // as persist_setup_completion's live-rebuild path (M7 Task 10).
     let provider = clipt9n::llm::factory::build_provider(&cfg, api_key)?;
 
-    // Hotkey registration. Two registered: the prompt hotkey (always)
-    // and the history hotkey (M5; suppressible via [hotkey.history]
-    // enabled = false).
+    // Hotkey registration. Three possible registrations: the prompt hotkey
+    // (always constructed, optionally registered), selected-text hotkey, and
+    // the history hotkey.
     let manager = GlobalHotKeyManager::new()?;
 
     // Prompt hotkey — same as M2.
@@ -154,6 +160,53 @@ fn main() -> anyhow::Result<()> {
     } else {
         false
     };
+
+    // Selection hotkey — copies the current selection and opens the same
+    // action prompt using that text. Failure is non-fatal; the clipboard
+    // prompt hotkey and tray menu remain available.
+    let (selection_hotkey_id, selection_hotkey_in_use) = if cfg.hotkey.selection.enabled {
+        let mod_kind = match Modifier::parse(&cfg.hotkey.selection.modifier) {
+            Some(m) => m,
+            None => {
+                tracing::warn!(
+                    modifier = %cfg.hotkey.selection.modifier,
+                    "unknown selection hotkey modifier; selected-text hotkey disabled"
+                );
+                Modifier::Cmd
+            }
+        };
+        let mut mods = match mod_kind.resolve_native() {
+            NativeModifier::Ctrl => Modifiers::CONTROL,
+            NativeModifier::Alt => Modifiers::ALT,
+            NativeModifier::Meta => Modifiers::META,
+        };
+        if cfg.hotkey.selection.shift {
+            mods |= Modifiers::SHIFT;
+        }
+        match letter_to_code(&cfg.hotkey.selection.key) {
+            Some(code) => {
+                let hk = HotKey::new(Some(mods), code);
+                let id = hk.id();
+                match manager.register(hk) {
+                    Ok(()) => (Some(id), false),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "selected-text hotkey registration failed");
+                        (None, true)
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    key = %cfg.hotkey.selection.key,
+                    "unsupported selection hotkey key; selected-text hotkey disabled"
+                );
+                (None, false)
+            }
+        }
+    } else {
+        (None, false)
+    };
+    let hotkey_in_use = hotkey_in_use || selection_hotkey_in_use;
 
     // History hotkey — M5 addition. Failure to register (e.g., already
     // claimed by another app) is non-fatal; we log warn and the user
@@ -320,6 +373,7 @@ fn main() -> anyhow::Result<()> {
                 hotkey_rx,
                 prompt_hotkey_id,
                 history_hotkey_id,
+                selection_hotkey_id,
                 accessibility_revoked,
                 hotkey_in_use,
             );

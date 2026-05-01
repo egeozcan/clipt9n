@@ -55,6 +55,31 @@ pub trait Platform {
     /// sufficient.
     fn activate_app(&self) {}
 
+    /// Open the OS settings page where the user can grant global hotkey /
+    /// accessibility permission. macOS opens the Accessibility privacy pane;
+    /// other platforms return an actionable unsupported error.
+    fn open_accessibility_settings(&self) -> Result<(), TranslateError> {
+        Err(TranslateError::Internal(
+            "accessibility settings are not available on this platform".into(),
+        ))
+    }
+
+    /// Ask the foreground app to copy its current selection to the system
+    /// clipboard. This intentionally performs only the copy gesture; callers
+    /// decide whether and how to restore prior clipboard contents.
+    fn copy_selection_to_clipboard(&self) -> Result<(), TranslateError> {
+        Err(TranslateError::Internal(
+            "selected-text capture is not implemented on this platform".into(),
+        ))
+    }
+
+    /// Platform clipboard generation, when available. macOS exposes
+    /// NSPasteboard.changeCount, which lets selection capture distinguish
+    /// "copy produced the same text" from "copy did nothing".
+    fn clipboard_change_count(&self) -> Option<i64> {
+        None
+    }
+
     /// Configure OS notification delivery for the app. macOS needs the
     /// bundle identifier registered with `notify-rust`; other platforms
     /// use the default notification backend behavior.

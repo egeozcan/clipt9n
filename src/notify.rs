@@ -24,6 +24,11 @@ pub fn translation_failed(err: &TranslateError) -> Result<(), TranslateError> {
     show("Translation failed", &err.to_string(), 4000)
 }
 
+/// Show a selected-text capture failure toast.
+pub fn selection_capture_failed(err: &TranslateError) -> Result<(), TranslateError> {
+    show("No selected text copied", &err.to_string(), 3000)
+}
+
 fn show(summary: &str, body: &str, timeout_ms: u32) -> Result<(), TranslateError> {
     ensure_notification_application()?;
     notify_rust::Notification::new()

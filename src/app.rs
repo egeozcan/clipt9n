@@ -200,6 +200,10 @@ pub struct ClipApp {
     /// `global-hotkey` ID for the history hotkey. `None` if the user
     /// disabled it via `[hotkey.history] enabled = false`.
     history_hotkey_id: Option<u32>,
+    /// `global-hotkey` ID for the selected-text hotkey. `None` if the user
+    /// disabled it via `[hotkey.selection] enabled = false` or registration
+    /// failed.
+    selection_hotkey_id: Option<u32>,
 
     app_state: AppState,
     prompt_model: prompt::PromptModel,
@@ -263,6 +267,7 @@ impl ClipApp {
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
         prompt_hotkey_id: u32,
         history_hotkey_id: Option<u32>,
+        selection_hotkey_id: Option<u32>,
         accessibility_revoked: bool,
         hotkey_in_use: bool,
     ) -> Self {
@@ -317,6 +322,7 @@ impl ClipApp {
             hotkey_in_use,
             prompt_hotkey_id,
             history_hotkey_id,
+            selection_hotkey_id,
             app_state: AppState::Idle,
             has_been_focused: false,
             initial_focus_pending: false,
@@ -338,6 +344,50 @@ impl ClipApp {
 
     fn show_window(&mut self, ctx: &egui::Context) {
         self.prompt_model.clipboard_text = self.snapshot_clipboard();
+        self.show_window_with_current_prompt_text(ctx);
+    }
+
+    fn show_window_from_selection(&mut self, ctx: &egui::Context) {
+        match self.snapshot_selected_text() {
+            Ok(text) => {
+                self.prompt_model.clipboard_text = text;
+                self.show_window_with_current_prompt_text(ctx);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "selected text capture failed");
+                if let Err(notify_err) = crate::notify::selection_capture_failed(&e) {
+                    tracing::warn!(error = %notify_err, "notification failed");
+                }
+            }
+        }
+    }
+
+    fn snapshot_selected_text(&self) -> Result<String, TranslateError> {
+        let mut cb = ArboardClipboard::new()?;
+        let before = cb.read_text().unwrap_or_default();
+        let platform = crate::platform::current();
+        let before_change_count = platform.clipboard_change_count();
+        platform.copy_selection_to_clipboard()?;
+        std::thread::sleep(Duration::from_millis(
+            self.cfg.hotkey.selection.copy_delay_ms,
+        ));
+        let after = cb.read_text()?;
+        let after_change_count = platform.clipboard_change_count();
+        let copy_changed = match (before_change_count, after_change_count) {
+            (Some(before), Some(after)) => Some(after != before),
+            _ => None,
+        };
+        let selected = selected_text_after_copy(&before, &after, copy_changed)
+            .ok_or(TranslateError::EmptyOrNonTextClipboard)?;
+        if !before.is_empty() {
+            if let Err(e) = cb.write_text(&before) {
+                tracing::warn!(error = %e, "failed to restore clipboard after selected-text capture");
+            }
+        }
+        Ok(selected)
+    }
+
+    fn show_window_with_current_prompt_text(&mut self, ctx: &egui::Context) {
         self.prompt_model.last_slot = self.state.last_slot;
 
         // Compute pair-agnostic glossary hits for the chip strip preview.
@@ -597,6 +647,10 @@ impl ClipApp {
                 .history_hotkey_id
                 .map(|id| event.id == id)
                 .unwrap_or(false);
+            let is_selection = self
+                .selection_hotkey_id
+                .map(|id| event.id == id)
+                .unwrap_or(false);
             if is_prompt {
                 if matches!(self.app_state, AppState::Idle) {
                     self.show_window(ctx);
@@ -606,6 +660,12 @@ impl ClipApp {
             } else if is_history {
                 if matches!(self.app_state, AppState::Idle) {
                     self.summon_history(ctx);
+                } else {
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+            } else if is_selection {
+                if matches!(self.app_state, AppState::Idle) {
+                    self.show_window_from_selection(ctx);
                 } else {
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                 }
@@ -692,6 +752,7 @@ impl ClipApp {
             crate::tray::ID_HISTORY => self.summon_history(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
+            crate::tray::ID_ACCESSIBILITY_SETTINGS => self.dispatch_open_accessibility_settings(),
             crate::tray::ID_RERUN_WIZARD => self.dispatch_rerun_wizard(ctx),
             crate::tray::ID_HIDE => self.dispatch_hide_tray_request(ctx),
             crate::tray::ID_QUIT => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -731,6 +792,13 @@ impl ClipApp {
         };
         if let Err(e) = tx.send(()) {
             tracing::warn!(error = %e, "tray: reload glossary send failed");
+        }
+    }
+
+    fn dispatch_open_accessibility_settings(&self) {
+        match crate::platform::current().open_accessibility_settings() {
+            Ok(()) => tracing::info!("tray: opened accessibility settings"),
+            Err(e) => tracing::warn!(error = %e, "tray: open accessibility settings failed"),
         }
     }
 
@@ -1884,6 +1952,23 @@ pub(crate) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
     source.chars().count() > cfg.ui.confirm_size_threshold
 }
 
+pub(crate) fn selected_text_after_copy(
+    before: &str,
+    after: &str,
+    copy_changed: Option<bool>,
+) -> Option<String> {
+    if after.trim().is_empty() {
+        return None;
+    }
+
+    let copied_selection = copy_changed.unwrap_or(after != before);
+    if copied_selection {
+        Some(after.to_string())
+    } else {
+        None
+    }
+}
+
 pub(crate) fn next_gen(current: u64) -> u64 {
     current.wrapping_add(1)
 }
@@ -2081,6 +2166,34 @@ mod tests {
         assert!(requires_size_confirm(&big, &cfg));
         let small = "x".repeat(50);
         assert!(!requires_size_confirm(&small, &cfg));
+    }
+
+    #[test]
+    fn selected_text_after_copy_accepts_changed_text() {
+        assert_eq!(
+            selected_text_after_copy("clipboard", "selected text", None),
+            Some("selected text".to_string())
+        );
+    }
+
+    #[test]
+    fn selected_text_after_copy_rejects_empty_or_unchanged_clipboard() {
+        assert_eq!(
+            selected_text_after_copy("clipboard", "clipboard", None),
+            None
+        );
+        assert_eq!(
+            selected_text_after_copy("clipboard", "   \n", Some(true)),
+            None
+        );
+    }
+
+    #[test]
+    fn selected_text_after_copy_accepts_same_text_when_pasteboard_changed() {
+        assert_eq!(
+            selected_text_after_copy("same text", "same text", Some(true)),
+            Some("same text".to_string())
+        );
     }
 
     #[test]
