@@ -183,6 +183,41 @@ pub fn migrate_keyfile_to_keychain(
     Ok(true)
 }
 
+/// Read a 32-byte binary history secret from the OS keychain.
+///
+/// Returns `Ok(None)` when the keychain entry does not exist. Other
+/// keychain errors are surfaced so callers can choose whether to fall
+/// back to the legacy keyfile path.
+pub fn history_secret_from_keychain(
+    service: &str,
+    account: &str,
+) -> Result<Option<Zeroizing<[u8; 32]>>, TranslateError> {
+    let entry = keyring::Entry::new(service, account).map_err(|e| {
+        TranslateError::SetupWizard(format!(
+            "keychain entry construction failed for service={service} account={account}: {e}"
+        ))
+    })?;
+    match entry.get_secret() {
+        Ok(bytes) => history_secret_from_bytes(&bytes).map(Some),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(TranslateError::SetupWizard(format!(
+            "keychain read for history key failed: {e}"
+        ))),
+    }
+}
+
+fn history_secret_from_bytes(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, TranslateError> {
+    if bytes.len() != 32 {
+        return Err(TranslateError::History(format!(
+            "history keychain secret has wrong size: expected 32 bytes, got {}",
+            bytes.len()
+        )));
+    }
+    let mut secret = Zeroizing::new([0u8; 32]);
+    secret.copy_from_slice(bytes);
+    Ok(secret)
+}
+
 /// Construct the `Secrets` impl matching `cfg.provider.api_key.source`.
 /// "keychain" → KeychainSecrets; "file" → FileSecrets at the
 /// configured path; anything else → EnvSecrets.
@@ -360,6 +395,15 @@ mod tests {
         // We don't assert the value — just that the call doesn't
         // panic. The behavioral test is in Task 11's manual smoke.
         let _ = s.keychain_available();
+    }
+
+    #[test]
+    fn history_secret_bytes_must_be_exactly_32_bytes() {
+        let ok = history_secret_from_bytes(&[7u8; 32]).unwrap();
+        assert_eq!(ok.as_slice(), &[7u8; 32]);
+
+        let err = history_secret_from_bytes(&[7u8; 31]).unwrap_err();
+        assert!(matches!(err, TranslateError::History(_)));
     }
 
     // KeychainSecrets read-write integration — opt-in via

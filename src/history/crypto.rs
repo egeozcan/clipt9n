@@ -121,6 +121,27 @@ pub fn load_and_derive(keyfile_path: &Path) -> Result<Zeroizing<[u8; 32]>, Trans
     derive_key(&secret)
 }
 
+/// Load the migrated history secret from the OS keychain when present,
+/// falling back to the legacy keyfile path used by M5.
+pub fn load_and_derive_with_keychain_fallback(
+    keyfile_path: &Path,
+    service: &str,
+    account: &str,
+) -> Result<Zeroizing<[u8; 32]>, TranslateError> {
+    match crate::secrets::history_secret_from_keychain(service, account) {
+        Ok(Some(secret)) => derive_key(&secret),
+        Ok(None) => load_and_derive(keyfile_path),
+        Err(e @ TranslateError::History(_)) => Err(e),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "history keychain read failed; falling back to legacy keyfile"
+            );
+            load_and_derive(keyfile_path)
+        }
+    }
+}
+
 /// Compute a default keyfile path: `<config_dir>/.history-key`.
 /// Exposed because `lib.rs::run` and `main.rs` both compute it; keeping
 /// the construction in one place avoids drift.

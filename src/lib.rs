@@ -21,7 +21,7 @@ use directories::ProjectDirs;
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::config::Config;
 use crate::error::TranslateError;
-use crate::secrets::{EnvSecrets, Secrets};
+use crate::secrets::Secrets;
 use crate::translator::{Action, Translator};
 
 /// CLI arguments. Exactly one of `--translate-to`, `--fix-grammar`,
@@ -100,7 +100,7 @@ pub async fn run() -> Result<(), TranslateError> {
         .ok_or_else(|| TranslateError::Config("could not determine config directory".into()))?;
     let cfg = Config::load(&cfg_path)?;
 
-    let secrets: Box<dyn Secrets> = Box::new(EnvSecrets::new(cfg.provider.api_key.env_var.clone()));
+    let secrets: Box<dyn Secrets> = crate::secrets::resolve(&cfg.provider.api_key);
 
     let key = secrets.get_api_key()?;
     let provider = crate::llm::factory::build_provider(&cfg, key)?;
@@ -130,9 +130,13 @@ pub async fn run() -> Result<(), TranslateError> {
     if cfg.history.enabled {
         let history_path = config_dir.join("history.db");
         let keyfile_path = crate::history::crypto::default_keyfile_path(&config_dir);
-        if let Err(e) = crate::history::crypto::load_and_derive(&keyfile_path)
-            .and_then(|key| crate::history::store::History::open(&history_path, key))
-            .map(|_| ())
+        if let Err(e) = crate::history::crypto::load_and_derive_with_keychain_fallback(
+            &keyfile_path,
+            &cfg.provider.api_key.service,
+            "history-key",
+        )
+        .and_then(|key| crate::history::store::History::open(&history_path, key))
+        .map(|_| ())
         {
             tracing::warn!(error = %e, "CLI history open failed (non-fatal)");
         }

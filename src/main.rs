@@ -23,13 +23,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     // GUI mode.
-    let cfg_path = ProjectDirs::from("", "", "clipboard-translator")
-        .map(|d| d.config_dir().join("config.toml"))
-        .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
+    let (cfg_path, state_path) = gui_paths(&cli)?;
     let cfg = Config::load(&cfg_path)?;
-    let state_path = ProjectDirs::from("", "", "clipboard-translator")
-        .map(|d| d.config_dir().join("state.toml"))
-        .ok_or_else(|| anyhow::anyhow!("could not determine state path"))?;
     let config_dir = cfg_path
         .parent()
         .map(|p| p.to_path_buf())
@@ -65,7 +60,11 @@ fn main() -> anyhow::Result<()> {
         Option<std::sync::Arc<clipt9n::history::store::History>>,
         bool,
     ) = if cfg.history.enabled {
-        match clipt9n::history::crypto::load_and_derive(&keyfile_path) {
+        match clipt9n::history::crypto::load_and_derive_with_keychain_fallback(
+            &keyfile_path,
+            &cfg.provider.api_key.service,
+            "history-key",
+        ) {
             Ok(key) => match clipt9n::history::store::History::open(&history_path, key) {
                 Ok(h) => (Some(std::sync::Arc::new(h)), false),
                 Err(e) => {
@@ -473,6 +472,24 @@ fn letter_to_code(key: &str) -> Option<Code> {
     }
 }
 
+fn gui_paths(cli: &Cli) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    if let Some(cfg_path) = cli.config_path.clone() {
+        let state_path = cfg_path
+            .parent()
+            .map(|p| p.join("state.toml"))
+            .ok_or_else(|| anyhow::anyhow!("config path has no parent dir"))?;
+        return Ok((cfg_path, state_path));
+    }
+
+    let cfg_path = ProjectDirs::from("", "", "clipboard-translator")
+        .map(|d| d.config_dir().join("config.toml"))
+        .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
+    let state_path = ProjectDirs::from("", "", "clipboard-translator")
+        .map(|d| d.config_dir().join("state.toml"))
+        .ok_or_else(|| anyhow::anyhow!("could not determine state path"))?;
+    Ok((cfg_path, state_path))
+}
+
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
     let _ = fmt()
@@ -481,4 +498,30 @@ fn init_tracing() {
         )
         .with_target(false)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gui_paths_use_explicit_config_parent_for_state() {
+        let cfg_path = std::path::PathBuf::from("/tmp/clipt9n-profile/config.toml");
+        let cli = Cli {
+            translate_to: None,
+            fix_grammar: false,
+            rewrite: false,
+            custom: None,
+            show_tray: false,
+            config_path: Some(cfg_path.clone()),
+        };
+
+        let (resolved_cfg, state_path) = gui_paths(&cli).unwrap();
+
+        assert_eq!(resolved_cfg, cfg_path);
+        assert_eq!(
+            state_path,
+            std::path::PathBuf::from("/tmp/clipt9n-profile/state.toml")
+        );
+    }
 }
