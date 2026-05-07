@@ -86,6 +86,20 @@ pub trait Platform {
     fn configure_notifications(&self) -> Result<(), TranslateError> {
         Ok(())
     }
+
+    /// Return the PID (process identifier) of the currently frontmost
+    /// (focused) application. Used so clipt9n can restore focus to the
+    /// app the user was in before summoning the prompt window. Returns
+    /// `None` on platforms where this isn't available or when the query
+    /// fails.
+    fn frontmost_app_pid(&self) -> Option<i32> {
+        None
+    }
+
+    /// Activate (bring to foreground) the application with the given PID.
+    /// Used after translation completes so the user lands back in their
+    /// previous app automatically. No-op on unsupported platforms.
+    fn activate_pid(&self, _pid: i32) {}
 }
 
 #[cfg(target_os = "macos")]

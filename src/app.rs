@@ -226,6 +226,12 @@ pub struct ClipApp {
     /// once at construction; the translating overlay reads this to decide
     /// between animated and static rendering.
     reduced_motion: bool,
+
+    /// PID of the application that was frontmost before clipt9n showed its
+    /// window. Captured in `show_window` / `show_window_from_selection`;
+    /// restored in `dismiss_to_idle` so the user lands back in their
+    /// previous app after the translation completes or is cancelled.
+    previous_app_pid: Option<i32>,
 }
 
 #[derive(Debug)]
@@ -328,7 +334,15 @@ impl ClipApp {
             initial_focus_pending: false,
             dispatch_gen: 0,
             reduced_motion,
+            previous_app_pid: None,
         }
+    }
+
+    /// Capture the PID of the currently frontmost application. Called
+    /// before showing the prompt window so `dismiss_to_idle` can
+    /// restore focus to the user's previous app.
+    fn capture_previous_app(&mut self) {
+        self.previous_app_pid = crate::platform::current().frontmost_app_pid();
     }
 
     /// Read the system clipboard (text only). Returns the text or empty
@@ -344,6 +358,7 @@ impl ClipApp {
 
     fn show_window(&mut self, ctx: &egui::Context) {
         self.prompt_model.clipboard_text = self.snapshot_clipboard();
+        self.capture_previous_app();
         self.show_window_with_current_prompt_text(ctx);
     }
 
@@ -351,6 +366,7 @@ impl ClipApp {
         match self.snapshot_selected_text() {
             Ok(text) => {
                 self.prompt_model.clipboard_text = text;
+                self.capture_previous_app();
                 self.show_window_with_current_prompt_text(ctx);
             }
             Err(e) => {
@@ -587,7 +603,7 @@ impl ClipApp {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!(error = %e, "clipboard open failed");
-                        self.app_state = AppState::Idle;
+                        self.dismiss_to_idle(ctx);
                         return;
                     }
                 };
@@ -636,7 +652,7 @@ impl ClipApp {
                 }
             }
         }
-        self.app_state = AppState::Idle;
+        self.dismiss_to_idle(ctx);
     }
 
     fn drain_channels(&mut self, ctx: &egui::Context) {
@@ -1046,6 +1062,12 @@ impl ClipApp {
     fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
         self.app_state = AppState::Idle;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        // Restore focus to the application the user was in before
+        // clipt9n summoned its window (e.g. after a translation
+        // completes or the user cancels).
+        if let Some(pid) = self.previous_app_pid.take() {
+            crate::platform::current().activate_pid(pid);
+        }
     }
 
     fn update_showing(&mut self, ctx: &egui::Context) {
@@ -1800,8 +1822,12 @@ impl eframe::App for ClipApp {
         // transition to Idle leaves `current_gen = None` in
         // `handle_translation_done`, so any in-flight outcome is detected
         // as stale (`Some(outcome.gen) != None`) and dropped silently.
+        //
+        // Clear `previous_app_pid` before dismissing — the user deliberately
+        // clicked away to another app, so we must not yank them back.
         let focused = ctx.input(|i| i.focused);
         if update_focus_loss_latch(focused, &mut self.has_been_focused) {
+            self.previous_app_pid = None;
             self.dismiss_to_idle(ctx);
             return;
         }

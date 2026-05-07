@@ -133,6 +133,14 @@ impl Platform for MacOsPlatform {
         notify_rust::set_application(notification_bundle_identifier())
             .map_err(|e| TranslateError::Config(format!("notification failed: {e}")))
     }
+
+    fn frontmost_app_pid(&self) -> Option<i32> {
+        unsafe { frontmost_application_pid() }
+    }
+
+    fn activate_pid(&self, pid: i32) {
+        unsafe { activate_running_application(pid) };
+    }
 }
 
 const NOTIFICATION_BUNDLE_ID: &str = "dev.egecan.clipt9n";
@@ -262,6 +270,59 @@ fn post_cmd_c() -> Result<(), TranslateError> {
     }
 
     Ok(())
+}
+
+/// Return the PID of the frontmost (focused) application via
+/// `[[NSWorkspace sharedWorkspace] frontmostApplication]`.
+unsafe fn frontmost_application_pid() -> Option<i32> {
+    let cls: Class = objc_getClass(c"NSWorkspace".as_ptr());
+    if cls.is_null() {
+        return None;
+    }
+    let shared_sel: Sel = sel_registerName(c"sharedWorkspace".as_ptr());
+    let shared: extern "C" fn(Class, Sel) -> Id = std::mem::transmute(objc_msgSend as *const ());
+    let workspace = shared(cls, shared_sel);
+    if workspace.is_null() {
+        return None;
+    }
+    let frontmost_sel: Sel = sel_registerName(c"frontmostApplication".as_ptr());
+    let frontmost: extern "C" fn(Id, Sel) -> Id = std::mem::transmute(objc_msgSend as *const ());
+    let app = frontmost(workspace, frontmost_sel);
+    if app.is_null() {
+        return None;
+    }
+    let pid_sel: Sel = sel_registerName(c"processIdentifier".as_ptr());
+    let pid_fn: extern "C" fn(Id, Sel) -> c_long = std::mem::transmute(objc_msgSend as *const ());
+    let pid = pid_fn(app, pid_sel) as i32;
+    if pid <= 0 {
+        return None;
+    }
+    Some(pid)
+}
+
+/// Activate the application with the given PID using
+/// `[NSRunningApplication runningApplicationWithProcessIdentifier:]
+///  activateWithOptions: NSApplicationActivateIgnoringOtherApps]`.
+///
+/// Safety: must be called on the main thread.
+unsafe fn activate_running_application(pid: i32) {
+    let cls: Class = objc_getClass(c"NSRunningApplication".as_ptr());
+    if cls.is_null() {
+        return;
+    }
+    let running_sel: Sel =
+        sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr());
+    let running: extern "C" fn(Class, Sel, c_long) -> Id =
+        std::mem::transmute(objc_msgSend as *const ());
+    let app = running(cls, running_sel, pid as c_long);
+    if app.is_null() {
+        return;
+    }
+    // NSApplicationActivateIgnoringOtherApps = 1
+    let activate_sel: Sel = sel_registerName(c"activateWithOptions:".as_ptr());
+    let activate: extern "C" fn(Id, Sel, c_long) =
+        std::mem::transmute(objc_msgSend as *const ());
+    activate(app, activate_sel, 1);
 }
 
 fn accessibility_probe_result(is_trusted: bool) -> Result<(), TranslateError> {
