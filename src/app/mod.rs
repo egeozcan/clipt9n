@@ -3,6 +3,9 @@
 //! prompt-window state machine. All UI is paint-only (`src/ui/prompt.rs`);
 //! input handling lives here.
 
+mod pure;
+mod translation;
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -20,7 +23,7 @@ use crate::llm::LlmProvider;
 use crate::platform::Platform;
 use crate::secrets::Secrets;
 use crate::state::State;
-use crate::translator::{Action, Translator};
+use crate::translator::Action;
 #[allow(unused_imports)]
 use crate::ui::{custom_prompt as prompt_custom, prompt, size_confirm, theme, translating};
 
@@ -130,8 +133,8 @@ pub struct ClipApp {
 
     runtime: Runtime,
     hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
-    result_tx: mpsc::Sender<TranslationOutcome>,
-    result_rx: mpsc::Receiver<TranslationOutcome>,
+    result_tx: mpsc::Sender<translation::TranslationOutcome>,
+    result_rx: mpsc::Receiver<translation::TranslationOutcome>,
 
     /// SIGHUP / glossary-reload signal receiver. A unit value is sent
     /// each time a reload is requested (Task 10 wires the sender).
@@ -236,28 +239,6 @@ pub struct ClipApp {
     /// restored in `dismiss_to_idle` so the user lands back in their
     /// previous app after the translation completes or is cancelled.
     previous_app_pid: Option<i32>,
-}
-
-#[derive(Debug)]
-struct TranslationOutcome {
-    result: Result<String, TranslateError>,
-    action_label: String,
-    slot: u8,
-    /// Dispatch-generation that produced this outcome. If `App.dispatch_gen`
-    /// has advanced since dispatch, this outcome is stale (user cancelled).
-    gen: u64,
-    /// ISO-2 source language detected at dispatch time (carries into
-    /// the history row's `source_lang` column on success). `None` if
-    /// `whatlang` confidence was below the threshold.
-    detected_source_lang: Option<String>,
-    /// The source text we fed to the translator. The history insert
-    /// path uses this to compute `char_count` and (when
-    /// `[history] store_text = true`) to encrypt as the source column.
-    source_text: String,
-    /// Action that produced this outcome — used to fill the history
-    /// row's `action` and `target_lang` columns. Cloned at dispatch
-    /// time so the worker doesn't hold a `&Action` reference.
-    action: Action,
 }
 
 impl ClipApp {
@@ -398,7 +379,7 @@ impl ClipApp {
             (Some(before), Some(after)) => Some(after != before),
             _ => None,
         };
-        let selected = selected_text_after_copy(&before, &after, copy_changed)
+        let selected = pure::selected_text_after_copy(&before, &after, copy_changed)
             .ok_or(TranslateError::EmptyOrNonTextClipboard)?;
         if !before.is_empty() {
             if let Err(e) = cb.write_text(&before) {
@@ -434,7 +415,7 @@ impl ClipApp {
             .collect();
         drop(g); // release the read lock before mutating other state.
 
-        reset_focus_loss_latch(&mut self.has_been_focused);
+        pure::reset_focus_loss_latch(&mut self.has_been_focused);
         self.initial_focus_pending = true;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -442,7 +423,7 @@ impl ClipApp {
     }
 
     fn dispatch(&mut self, ctx: &egui::Context, slot: u8) {
-        let Some(intent) = decide_intent(slot, &self.cfg) else {
+        let Some(intent) = pure::decide_intent(slot, &self.cfg) else {
             tracing::info!(slot, "invalid slot ignored");
             return;
         };
@@ -454,14 +435,14 @@ impl ClipApp {
             tracing::warn!(error = %e, "state.toml save failed");
         }
         match intent {
-            Intent::Translate {
+            pure::Intent::Translate {
                 action,
                 action_label,
                 overlay_label,
             } => {
                 self.dispatch_translate(ctx, slot, action, action_label, overlay_label);
             }
-            Intent::EnterCustom => {
+            pure::Intent::EnterCustom => {
                 self.app_state = AppState::EnteringCustom {
                     model: prompt_custom::CustomPromptModel {
                         clipboard_text: self.prompt_model.clipboard_text.clone(),
@@ -472,203 +453,6 @@ impl ClipApp {
                 tracing::info!(slot, "entering custom prompt mode");
             }
         }
-    }
-
-    /// Single fork point for "we know what to translate; should we ask the
-    /// user to confirm first?". Either transitions to ConfirmingSize or
-    /// calls start_translation directly.
-    fn dispatch_translate(
-        &mut self,
-        ctx: &egui::Context,
-        slot: u8,
-        action: Action,
-        action_label: String,
-        overlay_label: String,
-    ) {
-        // Rate limit: enforce a minimum interval between consecutive
-        // translations to prevent rapid-fire dispatch bursts (e.g.,
-        // alternating hotkey presses and dismissals).
-        const MIN_TRANSLATION_INTERVAL: Duration = Duration::from_millis(500);
-        if let Some(last) = self.last_translation_at {
-            if last.elapsed() < MIN_TRANSLATION_INTERVAL {
-                return;
-            }
-        }
-        self.last_translation_at = Some(std::time::Instant::now());
-
-        if requires_size_confirm(&self.prompt_model.clipboard_text, &self.cfg) {
-            let preview = size_confirm::format_preview(&self.prompt_model.clipboard_text);
-            let char_count = self.prompt_model.clipboard_text.chars().count();
-            self.app_state = AppState::ConfirmingSize {
-                pending_action: action,
-                action_label,
-                overlay_label,
-                char_count,
-                preview,
-            };
-            return;
-        }
-        self.start_translation(ctx, slot, action, action_label, overlay_label);
-    }
-
-    fn start_translation(
-        &mut self,
-        ctx: &egui::Context,
-        slot: u8,
-        action: Action,
-        action_label: String,
-        overlay_label: String,
-    ) {
-        self.dispatch_gen = next_gen(self.dispatch_gen);
-        let gen = self.dispatch_gen;
-        let cfg = self.cfg.clone();
-        let provider = self
-            .provider
-            .as_ref()
-            .expect(
-                "provider must be Some; None is unreachable from start_translation \
-                 (hotkey + tray ID_TRANSLATE both gate on AppState::Idle, which \
-                 implies the wizard completed successfully and provider was rebuilt)",
-            )
-            .clone();
-        let tx = self.result_tx.clone();
-        let source_text = self.prompt_model.clipboard_text.clone();
-
-        // Note: `state.last_slot` was recorded by the caller (`dispatch()`
-        // for slot keys 1–6, or implicitly slot=6 for the custom-prompt
-        // submit path). Don't double-write here.
-
-        self.app_state = AppState::Translating {
-            gen,
-            action_label: action_label.clone(),
-            overlay_label,
-            started_at: std::time::Instant::now(),
-        };
-        ctx.request_repaint();
-
-        let ctx_for_repaint = ctx.clone();
-        // Worker: runs the translation. May panic (e.g., a malformed-UTF-8
-        // bug in post-processing). On panic, the JoinHandle returns Err and
-        // the watcher below converts it into a TranslationOutcome with an
-        // Internal error — guaranteeing `tx.send` always fires exactly once,
-        // so the overlay never gets stuck.
-        let label_for_panic = action_label.clone();
-        let templates = self.templates.clone();
-        let glossary = self.glossary.clone();
-        let detected_source = self.prompt_model.detected_lang.clone();
-        let action_for_outcome = action.clone();
-        let source_text_for_outcome = source_text.clone();
-        let worker = self.runtime.spawn(async move {
-            // Take a read snapshot of the glossary at dispatch time. If a
-            // SIGHUP-driven reload arrives mid-translation, the running
-            // worker uses the snapshot it captured here; the next dispatch
-            // sees the new entries.
-            let g_snapshot = glossary.read().expect("glossary RwLock poisoned").clone();
-            let translator = Translator::new(&cfg, provider.as_ref(), &templates, &g_snapshot);
-            let result = translator.execute(&action, &source_text).await;
-            TranslationOutcome {
-                result,
-                action_label,
-                slot,
-                gen,
-                detected_source_lang: detected_source,
-                source_text: source_text_for_outcome,
-                action: action_for_outcome,
-            }
-        });
-        self.runtime.spawn(async move {
-            let outcome = match worker.await {
-                Ok(o) => o,
-                Err(join_err) => {
-                    tracing::error!(error = %join_err, "translation worker panicked");
-                    TranslationOutcome {
-                        result: Err(TranslateError::Internal(format!(
-                            "translation worker crashed: {join_err}"
-                        ))),
-                        action_label: label_for_panic,
-                        slot,
-                        gen,
-                        detected_source_lang: None,
-                        source_text: String::new(),
-                        action: Action::FixGrammar, // placeholder — never read on Err
-                    }
-                }
-            };
-            let _ = tx.send(outcome);
-            ctx_for_repaint.request_repaint();
-        });
-    }
-
-    fn handle_translation_done(&mut self, outcome: TranslationOutcome, ctx: &egui::Context) {
-        // Stale outcome from a cancelled translation; drop silently.
-        let current_gen = match &self.app_state {
-            AppState::Translating { gen, .. } => Some(*gen),
-            _ => None,
-        };
-        if Some(outcome.gen) != current_gen {
-            tracing::debug!(
-                outcome_gen = outcome.gen,
-                current_gen = ?current_gen,
-                "dropping stale translation outcome"
-            );
-            return;
-        }
-        match outcome.result {
-            Ok(ref translated) => {
-                let mut cb = match ArboardClipboard::new() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!(error = %e, "clipboard open failed");
-                        self.dismiss_to_idle(ctx);
-                        return;
-                    }
-                };
-                if let Err(e) = cb.write_text(translated) {
-                    tracing::error!(error = %e, "clipboard write failed");
-                } else {
-                    if let Err(e) =
-                        crate::notify::translation_copied(&outcome.action_label, translated)
-                    {
-                        tracing::warn!(error = %e, "notification failed");
-                    }
-                    // History insert: best-effort, AFTER clipboard write
-                    // succeeds, NEVER blocks the user's primary outcome.
-                    self.schedule_history_insert(&outcome, translated);
-                }
-                tracing::info!(
-                    slot = outcome.slot,
-                    action = %outcome.action_label,
-                    "translation complete"
-                );
-            }
-            Err(crate::error::TranslateError::Provider { status: 401, .. }) => {
-                tracing::warn!("translation 401 — API key invalid; opening setup wizard");
-                // Best-effort flip the tray pill to KeychainStaleKey.
-                // `refresh_tray_status()` runs later in the same update()
-                // frame; once we transition to SetupWizard below it sees
-                // `SetupWizard` and overwrites back to NoApiKey, so this
-                // flip is effectively a same-frame breadcrumb for the OS
-                // tray's event log rather than a user-visible state.
-                if let Some(tray) = self.tray.as_mut() {
-                    if let Err(e) = tray.set_status(crate::tray::TrayStatus::Warn(
-                        crate::tray::WarnReason::KeychainStaleKey,
-                    )) {
-                        tracing::warn!(error = %e, "tray status flip on 401 failed");
-                    }
-                }
-                self.dispatch_rerun_wizard(ctx);
-                // Return early — dispatch_rerun_wizard sets app_state to
-                // SetupWizard; we must not overwrite it with Idle below.
-                return;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "translation failed");
-                if let Err(notify_err) = crate::notify::translation_failed(&e) {
-                    tracing::warn!(error = %notify_err, "notification failed");
-                }
-            }
-        }
-        self.dismiss_to_idle(ctx);
     }
 
     fn drain_channels(&mut self, ctx: &egui::Context) {
@@ -842,7 +626,7 @@ impl ClipApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             crate::ui::tray_modal::TRAY_HIDE_MODAL_SIZE,
         ));
-        reset_focus_loss_latch(&mut self.has_been_focused);
+        pure::reset_focus_loss_latch(&mut self.has_been_focused);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.app_state = AppState::ConfirmingTrayHide { model };
@@ -869,7 +653,7 @@ impl ClipApp {
         // the window has no Dock icon to click, so the tray menu's
         // "Re-run setup wizard" item is the only re-focus path.
         if matches!(self.app_state, AppState::SetupWizard { .. }) {
-            reset_focus_loss_latch(&mut self.has_been_focused);
+            pure::reset_focus_loss_latch(&mut self.has_been_focused);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             crate::platform::current().activate_app();
@@ -895,7 +679,7 @@ impl ClipApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
         ));
-        reset_focus_loss_latch(&mut self.has_been_focused);
+        pure::reset_focus_loss_latch(&mut self.has_been_focused);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         crate::platform::current().activate_app();
@@ -1019,62 +803,6 @@ impl ClipApp {
     /// panics are caught by the watcher and similarly logged. The user
     /// never sees a toast — the clipboard write is the primary outcome
     /// and has already happened by the time we get here.
-    fn schedule_history_insert(&self, outcome: &TranslationOutcome, translated: &str) {
-        // Short-circuit if history is disabled (config or corruption).
-        let Some(history) = self.history.clone() else {
-            return;
-        };
-        if self
-            .history_disabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return;
-        }
-        let history_disabled = self.history_disabled.clone();
-        let max_entries = self.cfg.history.max_entries;
-        let store_text = self.cfg.history.store_text;
-        let source_text = outcome.source_text.clone();
-        let result_text = translated.to_string();
-        let action = outcome.action.clone();
-        let detected = outcome.detected_source_lang.clone();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        let entry = crate::history::store::NewEntry {
-            created_at: now,
-            action: action_kind_str(&action).to_string(),
-            source_lang: detected,
-            target_lang: target_lang_for(&action),
-            char_count: source_text.chars().count() as i64,
-            source: if store_text { Some(source_text) } else { None },
-            result: if store_text { Some(result_text) } else { None },
-        };
-
-        let inner = self.runtime.spawn(async move {
-            // history is Arc<History> (already unwrapped from the Option
-            // above). insert_with_cap takes &self.
-            if let Err(e) = history.insert_with_cap(entry, max_entries) {
-                tracing::warn!(error = %e, "history insert failed; row dropped");
-                // Don't disable globally — a transient SQLite error
-                // (e.g., disk full) shouldn't permanently take down
-                // history. Corruption-class errors set the flag at
-                // open time, not at insert time.
-                let _ = history_disabled; // suppress unused warning
-            }
-        });
-        // Watcher: catch a panic in the inner task and log it.
-        self.runtime.spawn(async move {
-            if let Err(join_err) = inner.await {
-                tracing::warn!(
-                    error = %join_err,
-                    "history insert panicked; row dropped"
-                );
-            }
-        });
-    }
-
     fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
         self.app_state = AppState::Idle;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -1154,8 +882,8 @@ impl ClipApp {
         if submit && prompt_custom::submit_enabled(&model.instruction) {
             let instruction = model.instruction.trim().to_string();
             let action = Action::Custom { instruction };
-            let action_label = action_label_for(&action, &self.cfg);
-            let overlay_label = overlay_label_for(&action);
+            let action_label = pure::action_label_for(&action, &self.cfg);
+            let overlay_label = pure::overlay_label_for(&action);
             self.dispatch_translate(ctx, 6, action, action_label, overlay_label);
             return;
         }
@@ -1241,7 +969,7 @@ impl ClipApp {
 
         if click == Some(translating::TranslatingOutcome::Cancel) || cancelled_by_key {
             // Bump gen so the in-flight outcome is dropped on arrival.
-            self.dispatch_gen = next_gen(self.dispatch_gen);
+            self.dispatch_gen = pure::next_gen(self.dispatch_gen);
             tracing::info!(
                 cancelled_gen = gen,
                 new_gen = self.dispatch_gen,
@@ -1344,7 +1072,7 @@ impl ClipApp {
 
         // Resize viewport for history viewer.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(680.0, 540.0)));
-        reset_focus_loss_latch(&mut self.has_been_focused);
+        pure::reset_focus_loss_latch(&mut self.has_been_focused);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = AppState::ShowingHistory { model };
@@ -1826,7 +1554,7 @@ impl eframe::App for ClipApp {
         // Clear `previous_app_pid` before dismissing — the user deliberately
         // clicked away to another app, so we must not yank them back.
         let focused = ctx.input(|i| i.focused);
-        if update_focus_loss_latch(focused, &mut self.has_been_focused) {
+        if pure::update_focus_loss_latch(focused, &mut self.has_been_focused) {
             self.previous_app_pid = None;
             self.dismiss_to_idle(ctx);
             return;
@@ -1907,435 +1635,5 @@ async fn run_connectivity_check(
             status: status.as_u16(),
             message: status.canonical_reason().unwrap_or("provider error").into(),
         })
-    }
-}
-
-// -----------------------------------------------------------------------
-// Pure helpers (testable in isolation; no egui Context required)
-// -----------------------------------------------------------------------
-
-/// What the user implicitly asked for by picking a slot. The state machine
-/// in `update()` switches on this to decide whether to enter custom-prompt
-/// mode, show the size-confirm modal, or dispatch immediately.
-#[derive(Debug, Clone)]
-pub(crate) enum Intent {
-    /// Run the action against the current clipboard.
-    Translate {
-        action: Action,
-        action_label: String,
-        overlay_label: String,
-    },
-    /// Slot 6 — open the custom prompt window first, the action is built
-    /// from user input.
-    EnterCustom,
-}
-
-pub(crate) fn decide_intent(slot: u8, cfg: &Config) -> Option<Intent> {
-    match slot {
-        1 => Some(translate_intent(
-            Action::Translate {
-                code: cfg.languages.slot_1.code.clone(),
-            },
-            &cfg.languages.slot_1.label,
-        )),
-        2 => Some(translate_intent(
-            Action::Translate {
-                code: cfg.languages.slot_2.code.clone(),
-            },
-            &cfg.languages.slot_2.label,
-        )),
-        3 => Some(translate_intent(
-            Action::Translate {
-                code: cfg.languages.slot_3.code.clone(),
-            },
-            &cfg.languages.slot_3.label,
-        )),
-        4 => Some(Intent::Translate {
-            action: Action::FixGrammar,
-            action_label: "Fix grammar".into(),
-            overlay_label: "Fixing grammar…".into(),
-        }),
-        5 => Some(Intent::Translate {
-            action: Action::Rewrite,
-            action_label: "Rewrite for clarity".into(),
-            overlay_label: "Rewriting for clarity…".into(),
-        }),
-        6 => Some(Intent::EnterCustom),
-        _ => None,
-    }
-}
-
-fn translate_intent(action: Action, lang_label: &str) -> Intent {
-    Intent::Translate {
-        action,
-        action_label: format!("Translate to {lang_label}"),
-        overlay_label: format!("Translating to {lang_label}…"),
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
-    source.chars().count() > cfg.ui.confirm_size_threshold
-}
-
-pub(crate) fn selected_text_after_copy(
-    before: &str,
-    after: &str,
-    copy_changed: Option<bool>,
-) -> Option<String> {
-    if after.trim().is_empty() {
-        return None;
-    }
-
-    let copied_selection = copy_changed.unwrap_or(after != before);
-    if copied_selection {
-        Some(after.to_string())
-    } else {
-        None
-    }
-}
-
-pub(crate) fn next_gen(current: u64) -> u64 {
-    current.wrapping_add(1)
-}
-
-fn reset_focus_loss_latch(has_been_focused: &mut bool) {
-    *has_been_focused = false;
-}
-
-fn update_focus_loss_latch(focused: bool, has_been_focused: &mut bool) -> bool {
-    if focused {
-        *has_been_focused = true;
-        false
-    } else {
-        *has_been_focused
-    }
-}
-
-/// Return the overlay label for a non-`Translate` action.
-///
-/// # Panics
-///
-/// Panics if called with `Action::Translate` — that variant's label is
-/// constructed at slot-resolution time inside `decide_intent`, so callers
-/// must never pass it here.
-#[allow(dead_code)]
-pub(crate) fn overlay_label_for(action: &Action) -> String {
-    match action {
-        Action::Translate { .. } => unreachable!(
-            "Translate overlay labels are built at slot resolution; \
-             callers must not pass Action::Translate here without a label"
-        ),
-        Action::FixGrammar => "Fixing grammar…".into(),
-        Action::Rewrite => "Rewriting for clarity…".into(),
-        Action::Custom { .. } => "Running custom prompt…".into(),
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn action_label_for(action: &Action, cfg: &Config) -> String {
-    match action {
-        Action::Translate { code } => match cfg.label_for_code(code) {
-            Ok(label) => format!("Translate to {label}"),
-            Err(_) => format!("Translate to {code}"),
-        },
-        Action::FixGrammar => "Fix grammar".into(),
-        Action::Rewrite => "Rewrite for clarity".into(),
-        Action::Custom { .. } => "Custom prompt".into(),
-    }
-}
-
-/// Map an `Action` to the string we persist in `entries.action`. Must
-/// match the `'translate' | 'fix_grammar' | 'rewrite' | 'custom'`
-/// alphabet from spec §7.
-fn action_kind_str(action: &Action) -> &'static str {
-    match action {
-        Action::Translate { .. } => "translate",
-        Action::FixGrammar => "fix_grammar",
-        Action::Rewrite => "rewrite",
-        Action::Custom { .. } => "custom",
-    }
-}
-
-/// Target language for the history row. `None` for fix_grammar /
-/// rewrite / custom (which stay in source language); `Some(code)` for
-/// translate.
-fn target_lang_for(action: &Action) -> Option<String> {
-    match action {
-        Action::Translate { code } => Some(code.clone()),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cfg_with_threshold(threshold: usize) -> Config {
-        let mut c = Config::default();
-        c.ui.confirm_size_threshold = threshold;
-        c
-    }
-
-    #[test]
-    fn slot_1_resolves_to_translate_intent() {
-        let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(1, &cfg).expect("slot 1 is valid");
-        let Intent::Translate {
-            action,
-            action_label,
-            overlay_label,
-        } = intent
-        else {
-            panic!("expected Intent::Translate");
-        };
-        let Action::Translate { code } = action else {
-            panic!("expected Action::Translate");
-        };
-        assert_eq!(code, "en");
-        assert_eq!(action_label, "Translate to English");
-        assert_eq!(overlay_label, "Translating to English…");
-    }
-
-    #[test]
-    fn slot_2_resolves_to_translate_intent() {
-        let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(2, &cfg).expect("slot 2 is valid");
-        let Intent::Translate {
-            action,
-            action_label,
-            overlay_label,
-        } = intent
-        else {
-            panic!("expected Intent::Translate");
-        };
-        let Action::Translate { code } = action else {
-            panic!("expected Action::Translate");
-        };
-        assert_eq!(code, "de");
-        assert_eq!(action_label, "Translate to Deutsch");
-        assert_eq!(overlay_label, "Translating to Deutsch…");
-    }
-
-    #[test]
-    fn slot_3_resolves_to_translate_intent() {
-        let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(3, &cfg).expect("slot 3 is valid");
-        let Intent::Translate {
-            action,
-            action_label,
-            overlay_label,
-        } = intent
-        else {
-            panic!("expected Intent::Translate");
-        };
-        let Action::Translate { code } = action else {
-            panic!("expected Action::Translate");
-        };
-        assert_eq!(code, "tr");
-        assert_eq!(action_label, "Translate to Türkçe");
-        assert_eq!(overlay_label, "Translating to Türkçe…");
-    }
-
-    #[test]
-    fn slot_4_resolves_to_fix_grammar_intent() {
-        let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(4, &cfg).expect("slot 4 is valid");
-        let Intent::Translate {
-            action,
-            action_label,
-            overlay_label,
-        } = intent
-        else {
-            panic!("expected Intent::Translate");
-        };
-        assert!(matches!(action, Action::FixGrammar));
-        assert_eq!(action_label, "Fix grammar");
-        assert_eq!(overlay_label, "Fixing grammar…");
-    }
-
-    #[test]
-    fn slot_5_resolves_to_rewrite_intent() {
-        let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(5, &cfg).expect("slot 5 is valid");
-        let Intent::Translate {
-            action,
-            action_label,
-            overlay_label,
-        } = intent
-        else {
-            panic!("expected Intent::Translate");
-        };
-        assert!(matches!(action, Action::Rewrite));
-        assert_eq!(action_label, "Rewrite for clarity");
-        assert_eq!(overlay_label, "Rewriting for clarity…");
-    }
-
-    #[test]
-    fn slot_6_resolves_to_enter_custom() {
-        let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(6, &cfg).expect("slot 6 is valid");
-        assert!(matches!(intent, Intent::EnterCustom));
-    }
-
-    #[test]
-    fn invalid_slot_returns_none() {
-        let cfg = cfg_with_threshold(2000);
-        assert!(decide_intent(0, &cfg).is_none());
-        assert!(decide_intent(7, &cfg).is_none());
-    }
-
-    #[test]
-    fn requires_size_confirm_above_threshold() {
-        let cfg = cfg_with_threshold(100);
-        let big = "x".repeat(150);
-        assert!(requires_size_confirm(&big, &cfg));
-        let small = "x".repeat(50);
-        assert!(!requires_size_confirm(&small, &cfg));
-    }
-
-    #[test]
-    fn selected_text_after_copy_accepts_changed_text() {
-        assert_eq!(
-            selected_text_after_copy("clipboard", "selected text", None),
-            Some("selected text".to_string())
-        );
-    }
-
-    #[test]
-    fn selected_text_after_copy_rejects_empty_or_unchanged_clipboard() {
-        assert_eq!(
-            selected_text_after_copy("clipboard", "clipboard", None),
-            None
-        );
-        assert_eq!(
-            selected_text_after_copy("clipboard", "   \n", Some(true)),
-            None
-        );
-    }
-
-    #[test]
-    fn selected_text_after_copy_accepts_same_text_when_pasteboard_changed() {
-        assert_eq!(
-            selected_text_after_copy("same text", "same text", Some(true)),
-            Some("same text".to_string())
-        );
-    }
-
-    #[test]
-    fn dispatch_gen_starts_at_zero_and_monotonically_increases() {
-        // Just verify the field exists with the expected starting value.
-        // We can't construct ClipApp here (requires CreationContext), so
-        // this is a doc-style invariant test on a free helper.
-        assert_eq!(next_gen(0), 1);
-        assert_eq!(next_gen(42), 43);
-        assert_eq!(next_gen(u64::MAX - 1), u64::MAX);
-    }
-
-    #[test]
-    fn overlay_label_for_translate() {
-        assert_eq!(overlay_label_for(&Action::FixGrammar), "Fixing grammar…");
-        assert_eq!(
-            overlay_label_for(&Action::Rewrite),
-            "Rewriting for clarity…"
-        );
-        assert_eq!(
-            overlay_label_for(&Action::Custom {
-                instruction: "x".into()
-            }),
-            "Running custom prompt…"
-        );
-    }
-
-    #[test]
-    fn action_label_for_translate_uses_label() {
-        let cfg = Config::default();
-        assert_eq!(
-            action_label_for(&Action::Translate { code: "de".into() }, &cfg),
-            "Translate to Deutsch"
-        );
-        assert_eq!(action_label_for(&Action::FixGrammar, &cfg), "Fix grammar");
-        assert_eq!(
-            action_label_for(&Action::Rewrite, &cfg),
-            "Rewrite for clarity"
-        );
-        assert_eq!(
-            action_label_for(
-                &Action::Custom {
-                    instruction: "anything".into()
-                },
-                &cfg
-            ),
-            "Custom prompt"
-        );
-    }
-
-    #[test]
-    fn dispatch_translate_paths_diverge_on_threshold() {
-        // We can't construct a ClipApp here, but we can directly verify
-        // the requires_size_confirm boundary used by dispatch_translate.
-        let mut cfg = Config::default();
-        cfg.ui.confirm_size_threshold = 10;
-
-        assert!(!requires_size_confirm("short", &cfg));
-        assert!(requires_size_confirm(
-            "this is definitely longer than ten characters",
-            &cfg
-        ));
-    }
-
-    #[test]
-    fn cancellation_increments_gen_so_outcome_is_stale() {
-        // Simulates: dispatch at gen=N, user cancels (bump to N+1), outcome
-        // arrives tagged gen=N — must be considered stale.
-        let mut current = 5_u64;
-        let dispatched_gen = current;
-        current = next_gen(current);
-        // Outcome from the dispatched generation:
-        let outcome_gen = dispatched_gen;
-        // Stale check (mirrors handle_translation_done):
-        assert_ne!(current, outcome_gen);
-    }
-
-    #[test]
-    fn reset_focus_latch_prevents_immediate_dismiss_after_resummon() {
-        let mut has_been_focused = true;
-
-        reset_focus_loss_latch(&mut has_been_focused);
-
-        assert!(!update_focus_loss_latch(false, &mut has_been_focused));
-        assert!(!has_been_focused);
-    }
-
-    #[test]
-    fn action_kind_str_maps_per_spec() {
-        assert_eq!(
-            action_kind_str(&Action::Translate { code: "de".into() }),
-            "translate"
-        );
-        assert_eq!(action_kind_str(&Action::FixGrammar), "fix_grammar");
-        assert_eq!(action_kind_str(&Action::Rewrite), "rewrite");
-        assert_eq!(
-            action_kind_str(&Action::Custom {
-                instruction: "x".into()
-            }),
-            "custom"
-        );
-    }
-
-    #[test]
-    fn target_lang_for_only_set_on_translate() {
-        assert_eq!(
-            target_lang_for(&Action::Translate { code: "de".into() }),
-            Some("de".to_string())
-        );
-        assert_eq!(target_lang_for(&Action::FixGrammar), None);
-        assert_eq!(target_lang_for(&Action::Rewrite), None);
-        assert_eq!(
-            target_lang_for(&Action::Custom {
-                instruction: "x".into()
-            }),
-            None
-        );
     }
 }
