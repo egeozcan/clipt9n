@@ -41,7 +41,6 @@ pub enum InitialState {
 
 /// Top-level UI state machine.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum AppState {
     /// Window hidden. Hotkey will transition to `Showing`.
     Idle,

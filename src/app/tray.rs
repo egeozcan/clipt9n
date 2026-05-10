@@ -69,7 +69,7 @@ impl super::ClipApp {
     /// amber `KeychainStaleKey` flip overwritten before render. The wizard
     /// auto-opening IS the user-visible signal; the pill flip is a
     /// best-effort breadcrumb for the OS tray's event log.
-    pub(crate) fn compute_tray_status(&self) -> crate::tray::TrayStatus {
+    pub(super) fn compute_tray_status(&self) -> crate::tray::TrayStatus {
         // Highest priority: missing API key (the wizard would be open
         // anyway, but tray status mirrors the underlying state).
         if matches!(self.app_state, AppState::SetupWizard { .. }) {

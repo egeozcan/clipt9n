@@ -8,7 +8,7 @@ use crate::translator::Action;
 /// in `update()` switches on this to decide whether to enter custom-prompt
 /// mode, show the size-confirm modal, or dispatch immediately.
 #[derive(Debug, Clone)]
-pub(crate) enum Intent {
+pub(super) enum Intent {
     /// Run the action against the current clipboard.
     Translate {
         action: Action,
@@ -20,7 +20,7 @@ pub(crate) enum Intent {
     EnterCustom,
 }
 
-pub(crate) fn decide_intent(slot: u8, cfg: &Config) -> Option<Intent> {
+pub(super) fn decide_intent(slot: u8, cfg: &Config) -> Option<Intent> {
     match slot {
         1 => Some(translate_intent(
             Action::Translate {
@@ -63,12 +63,11 @@ fn translate_intent(action: Action, lang_label: &str) -> Intent {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
+pub(super) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
     source.chars().count() > cfg.ui.confirm_size_threshold
 }
 
-pub(crate) fn selected_text_after_copy(
+pub(super) fn selected_text_after_copy(
     before: &str,
     after: &str,
     copy_changed: Option<bool>,
@@ -85,15 +84,15 @@ pub(crate) fn selected_text_after_copy(
     }
 }
 
-pub(crate) fn next_gen(current: u64) -> u64 {
+pub(super) fn next_gen(current: u64) -> u64 {
     current.wrapping_add(1)
 }
 
-pub(crate) fn reset_focus_loss_latch(has_been_focused: &mut bool) {
+pub(super) fn reset_focus_loss_latch(has_been_focused: &mut bool) {
     *has_been_focused = false;
 }
 
-pub(crate) fn update_focus_loss_latch(focused: bool, has_been_focused: &mut bool) -> bool {
+pub(super) fn update_focus_loss_latch(focused: bool, has_been_focused: &mut bool) -> bool {
     if focused {
         *has_been_focused = true;
         false
@@ -109,8 +108,7 @@ pub(crate) fn update_focus_loss_latch(focused: bool, has_been_focused: &mut bool
 /// Panics if called with `Action::Translate` — that variant's label is
 /// constructed at slot-resolution time inside `decide_intent`, so callers
 /// must never pass it here.
-#[allow(dead_code)]
-pub(crate) fn overlay_label_for(action: &Action) -> String {
+pub(super) fn overlay_label_for(action: &Action) -> String {
     match action {
         Action::Translate { .. } => unreachable!(
             "Translate overlay labels are built at slot resolution; \
@@ -122,8 +120,7 @@ pub(crate) fn overlay_label_for(action: &Action) -> String {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn action_label_for(action: &Action, cfg: &Config) -> String {
+pub(super) fn action_label_for(action: &Action, cfg: &Config) -> String {
     match action {
         Action::Translate { code } => match cfg.label_for_code(code) {
             Ok(label) => format!("Translate to {label}"),
@@ -138,7 +135,7 @@ pub(crate) fn action_label_for(action: &Action, cfg: &Config) -> String {
 /// Map an `Action` to the string we persist in `entries.action`. Must
 /// match the `'translate' | 'fix_grammar' | 'rewrite' | 'custom'`
 /// alphabet from spec §7.
-pub(crate) fn action_kind_str(action: &Action) -> &'static str {
+pub(super) fn action_kind_str(action: &Action) -> &'static str {
     match action {
         Action::Translate { .. } => "translate",
         Action::FixGrammar => "fix_grammar",
@@ -150,7 +147,7 @@ pub(crate) fn action_kind_str(action: &Action) -> &'static str {
 /// Target language for the history row. `None` for fix_grammar /
 /// rewrite / custom (which stay in source language); `Some(code)` for
 /// translate.
-pub(crate) fn target_lang_for(action: &Action) -> Option<String> {
+pub(super) fn target_lang_for(action: &Action) -> Option<String> {
     match action {
         Action::Translate { code } => Some(code.clone()),
         _ => None,

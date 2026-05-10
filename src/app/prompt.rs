@@ -55,11 +55,7 @@ impl super::ClipApp {
         };
         let selected = pure::selected_text_after_copy(&before, &after, copy_changed)
             .ok_or(TranslateError::EmptyOrNonTextClipboard)?;
-        if !before.is_empty() {
-            if let Err(e) = cb.write_text(&before) {
-                tracing::warn!(error = %e, "failed to restore clipboard after selected-text capture");
-            }
-        }
+        restore_clipboard(&before, &mut cb);
         Ok(selected)
     }
 
@@ -310,5 +306,46 @@ impl super::ClipApp {
             }
             None
         })
+    }
+}
+
+/// Restore the clipboard to its previous value after a selected-text
+/// capture. Called by `snapshot_selected_text` after the copy-selection
+/// keystroke; ensures the user's clipboard isn't disturbed by capture.
+pub(super) fn restore_clipboard(before: &str, cb: &mut dyn crate::clipboard::Clipboard) {
+    if !before.is_empty() {
+        if let Err(e) = cb.write_text(before) {
+            tracing::warn!(error = %e, "failed to restore clipboard after selected-text capture");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restore_clipboard;
+    use crate::clipboard::MockClipboard;
+
+    #[test]
+    fn restore_writes_back_non_empty_before() {
+        let mut cb = MockClipboard::with_text("current clipboard");
+        restore_clipboard("saved original", &mut cb);
+        assert_eq!(cb.written, Some("saved original".to_string()));
+    }
+
+    #[test]
+    fn restore_skips_write_when_before_is_empty() {
+        let mut cb = MockClipboard::with_text("current clipboard");
+        restore_clipboard("", &mut cb);
+        assert_eq!(cb.written, None, "empty before should not write");
+    }
+
+    #[test]
+    fn restore_skips_write_when_before_is_whitespace_only() {
+        let mut cb = MockClipboard::with_text("current clipboard");
+        // before is whitespace-only; the !before.is_empty() guard fires.
+        // Per the contract, whitespace-only "before" values are still
+        // restored — the clipboard had text and the user might want it back.
+        restore_clipboard("  \t\n  ", &mut cb);
+        assert_eq!(cb.written, Some("  \t\n  ".to_string()));
     }
 }

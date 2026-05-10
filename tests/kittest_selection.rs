@@ -199,5 +199,6 @@ fn glossary_chips_render_after_selection_capture() {
     // source/target terms as separate Label nodes with an arrow separator.
     let _ = harness.get_by_label("GLOSSARY WILL INJECT:");
     let _ = harness.get_by_label("Welt");
+    let _ = harness.get_by_label("→");
     let _ = harness.get_by_label("world");
 }
