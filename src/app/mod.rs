@@ -1,12 +1,15 @@
 //! `ClipApp` is the eframe application: it owns the tokio runtime, the
 //! channels to/from the hotkey thread and the translation worker, and the
 //! prompt-window state machine. All UI is paint-only (`src/ui/prompt.rs`);
-//! input handling lives here.
+//! input handling lives in the sub-modules.
 
 mod pure;
 mod translation;
 mod history;
 mod setup;
+mod prompt;
+mod channels;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -14,7 +17,7 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use eframe::CreationContext;
-use egui::{Key, ViewportCommand};
+use egui::ViewportCommand;
 use global_hotkey::GlobalHotKeyEvent;
 use tokio::runtime::Runtime;
 
@@ -26,8 +29,7 @@ use crate::platform::Platform;
 use crate::secrets::Secrets;
 use crate::state::State;
 use crate::translator::Action;
-#[allow(unused_imports)]
-use crate::ui::{custom_prompt as prompt_custom, prompt, size_confirm, theme, translating};
+use crate::ui::{custom_prompt as prompt_custom, theme};
 
 /// Initial state override passed by `main.rs` to ClipApp at construction.
 /// Used to land the app in the setup wizard on first launch instead of
@@ -211,7 +213,7 @@ pub struct ClipApp {
     selection_hotkey_id: Option<u32>,
 
     app_state: AppState,
-    prompt_model: prompt::PromptModel,
+    prompt_model: crate::ui::prompt::PromptModel,
 
     /// Set to true once the viewport has gained focus after a `show_window`.
     has_been_focused: bool,
@@ -282,7 +284,7 @@ impl ClipApp {
         let reduced_motion = crate::platform::current().reduced_motion();
 
         Self {
-            prompt_model: prompt::PromptModel {
+            prompt_model: crate::ui::prompt::PromptModel {
                 clipboard_text: String::new(),
                 detected_lang: None,
                 last_slot: state.last_slot,
@@ -344,86 +346,9 @@ impl ClipApp {
         cb.read_text().unwrap_or_default()
     }
 
-    fn show_window(&mut self, ctx: &egui::Context) {
-        self.prompt_model.clipboard_text = self.snapshot_clipboard();
-        self.capture_previous_app();
-        self.show_window_with_current_prompt_text(ctx);
-    }
-
-    fn show_window_from_selection(&mut self, ctx: &egui::Context) {
-        match self.snapshot_selected_text() {
-            Ok(text) => {
-                self.prompt_model.clipboard_text = text;
-                self.capture_previous_app();
-                self.show_window_with_current_prompt_text(ctx);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "selected text capture failed");
-                if let Err(notify_err) = crate::notify::selection_capture_failed(&e) {
-                    tracing::warn!(error = %notify_err, "notification failed");
-                }
-            }
-        }
-    }
-
-    fn snapshot_selected_text(&self) -> Result<String, TranslateError> {
-        let mut cb = ArboardClipboard::new()?;
-        let before = cb.read_text().unwrap_or_default();
-        let platform = crate::platform::current();
-        let before_change_count = platform.clipboard_change_count();
-        platform.copy_selection_to_clipboard()?;
-        std::thread::sleep(Duration::from_millis(
-            self.cfg.hotkey.selection.copy_delay_ms,
-        ));
-        let after = cb.read_text()?;
-        let after_change_count = platform.clipboard_change_count();
-        let copy_changed = match (before_change_count, after_change_count) {
-            (Some(before), Some(after)) => Some(after != before),
-            _ => None,
-        };
-        let selected = pure::selected_text_after_copy(&before, &after, copy_changed)
-            .ok_or(TranslateError::EmptyOrNonTextClipboard)?;
-        if !before.is_empty() {
-            if let Err(e) = cb.write_text(&before) {
-                tracing::warn!(error = %e, "failed to restore clipboard after selected-text capture");
-            }
-        }
-        Ok(selected)
-    }
-
-    fn show_window_with_current_prompt_text(&mut self, ctx: &egui::Context) {
-        self.prompt_model.last_slot = self.state.last_slot;
-
-        // Compute pair-agnostic glossary hits for the chip strip preview.
-        // The translator applies pair scoping correctly at execute time;
-        // this preview is informational only.
-        let detected_iso3 = crate::glossary::detect_source_lang(&self.prompt_model.clipboard_text);
-        let source_iso2 = detected_iso3
-            .as_deref()
-            .and_then(crate::glossary::iso3_to_iso2);
-        self.prompt_model.detected_lang = source_iso2.map(String::from);
-        let g = self.glossary.read().expect("glossary RwLock poisoned");
-        self.prompt_model.glossary_hits = g
-            .preview_entries(
-                &self.prompt_model.clipboard_text,
-                source_iso2,
-                &self.cfg.glossary,
-            )
-            .into_iter()
-            .map(|e| prompt::GlossaryHit {
-                source: e.source.clone(),
-                target: e.target.clone(),
-            })
-            .collect();
-        drop(g); // release the read lock before mutating other state.
-
-        pure::reset_focus_loss_latch(&mut self.has_been_focused);
-        self.initial_focus_pending = true;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(ViewportCommand::Focus);
-        self.app_state = AppState::Showing;
-    }
-
+    /// Route a slot-pick to the correct intent. Pure logic (slot→action
+    /// mapping) lives in `pure::decide_intent`; this method handles the
+    /// state-machine transition and persistence side-effects.
     fn dispatch(&mut self, ctx: &egui::Context, slot: u8) {
         let Some(intent) = pure::decide_intent(slot, &self.cfg) else {
             tracing::info!(slot, "invalid slot ignored");
@@ -457,129 +382,6 @@ impl ClipApp {
         }
     }
 
-    fn drain_channels(&mut self, ctx: &egui::Context) {
-        // Hotkey events
-        while let Ok(event) = self.hotkey_rx.try_recv() {
-            let is_prompt = event.id == self.prompt_hotkey_id;
-            let is_history = self
-                .history_hotkey_id
-                .map(|id| event.id == id)
-                .unwrap_or(false);
-            let is_selection = self
-                .selection_hotkey_id
-                .map(|id| event.id == id)
-                .unwrap_or(false);
-            if is_prompt {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.show_window(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
-                }
-            } else if is_history {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.summon_history(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
-                }
-            } else if is_selection {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.show_window_from_selection(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
-                }
-            } else {
-                tracing::debug!(
-                    event_id = event.id,
-                    "ignoring hotkey event from unregistered ID"
-                );
-            }
-        }
-        // Translation results
-        while let Ok(outcome) = self.result_rx.try_recv() {
-            self.handle_translation_done(outcome, ctx);
-        }
-        // Glossary reload requests (SIGHUP, tray menu in M7)
-        let mut reload_requested = false;
-        while self.glossary_reload_rx.try_recv().is_ok() {
-            reload_requested = true;
-        }
-        if reload_requested {
-            self.reload_glossary();
-        }
-    }
-
-    fn reload_glossary(&mut self) {
-        // Sync I/O on the egui update thread is acceptable here because
-        // glossary files are small (typically <10KB) and the reload is
-        // user-driven (SIGHUP / future tray menu), not periodic.
-        match crate::glossary::Glossary::load(&self.glossary_path) {
-            Ok(g) => {
-                let entry_count = g.len();
-                let is_non_empty = !g.is_empty();
-                *self.glossary.write().expect("glossary RwLock poisoned") = g;
-                tracing::info!(
-                    path = %self.glossary_path.display(),
-                    entries = entry_count,
-                    "glossary reloaded"
-                );
-                // Clear the malformed flag if the reload produced a
-                // valid, non-empty glossary.
-                if is_non_empty {
-                    self.set_glossary_malformed(false);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    path = %self.glossary_path.display(),
-                    "glossary reload failed; keeping previous entries"
-                );
-            }
-        }
-    }
-
-    /// Drain pending tray menu events and dispatch. Called once per
-    /// frame from `update()`. The static `MenuEvent` channel is drained
-    /// unconditionally — events queued from a previous tray that's
-    /// since been dropped would otherwise accumulate forever and fire
-    /// stale on a future re-attach (Task 7's --show-tray recovery
-    /// path). Dispatch is gated on `self.tray.is_some()`.
-    fn drain_tray_events(&mut self, ctx: &egui::Context) {
-        // Drain the global static MenuEvent channel unconditionally —
-        // events queued from a previous tray that's since been dropped
-        // would otherwise accumulate forever and fire stale on a future
-        // re-attach (Task 7's --show-tray recovery path).
-        let Some(id) = crate::tray::TrayHandle::try_drain_menu_event() else {
-            return;
-        };
-        if self.tray.is_none() {
-            // Tray not active; silently discard.
-            return;
-        }
-        match id.as_str() {
-            crate::tray::ID_TRANSLATE => {
-                // Same gate as the hotkey path: only show the prompt from
-                // Idle. Otherwise, the user is mid-wizard / mid-history /
-                // mid-translate; bring focus to whatever's open.
-                if matches!(self.app_state, AppState::Idle) {
-                    self.show_window(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
-                }
-            }
-            crate::tray::ID_HISTORY => self.summon_history(ctx),
-            crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
-            crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
-            crate::tray::ID_ACCESSIBILITY_SETTINGS => self.dispatch_open_accessibility_settings(),
-            crate::tray::ID_RERUN_WIZARD => self.dispatch_rerun_wizard(ctx),
-            crate::tray::ID_HIDE => self.dispatch_hide_tray_request(ctx),
-            crate::tray::ID_QUIT => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            other => {
-                tracing::debug!(id = %other, "tray menu event (handler not yet wired)");
-            }
-        }
-    }
-
     /// Install the SIGHUP-driven glossary-reload listener against the
     /// app's tokio runtime. Stashes a sender clone so the tray menu's
     /// "Reload glossary" item can trigger reloads via `dispatch_reload_glossary`.
@@ -596,190 +398,11 @@ impl ClipApp {
         self.tray = Some(tray);
     }
 
-    fn dispatch_open_glossary(&self) {
-        match crate::platform::current().open_path(&self.glossary_path) {
-            Ok(()) => tracing::info!(path = %self.glossary_path.display(), "tray: opened glossary"),
-            Err(e) => tracing::warn!(error = %e, "tray: open glossary failed"),
-        }
-    }
-
-    fn dispatch_reload_glossary(&self) {
-        let Some(tx) = self.glossary_reload_tx.as_ref() else {
-            tracing::warn!("tray: reload glossary requested but no reload channel");
-            return;
-        };
-        if let Err(e) = tx.send(()) {
-            tracing::warn!(error = %e, "tray: reload glossary send failed");
-        }
-    }
-
-    fn dispatch_open_accessibility_settings(&self) {
-        match crate::platform::current().open_accessibility_settings() {
-            Ok(()) => tracing::info!("tray: opened accessibility settings"),
-            Err(e) => tracing::warn!(error = %e, "tray: open accessibility settings failed"),
-        }
-    }
-
-    fn dispatch_hide_tray_request(&mut self, ctx: &egui::Context) {
-        // Get the active hotkey display string. Falls back to a
-        // generic placeholder if the helper isn't available.
-        let hotkey_display = self.cfg.hotkey_display();
-        let model = crate::ui::tray_modal::TrayHideModel { hotkey_display };
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            crate::ui::tray_modal::TRAY_HIDE_MODAL_SIZE,
-        ));
-        pure::reset_focus_loss_latch(&mut self.has_been_focused);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        self.app_state = AppState::ConfirmingTrayHide { model };
-    }
-
-    fn dispatch_rerun_wizard(&mut self, ctx: &egui::Context) {
-        tracing::info!(
-            current_state = match &self.app_state {
-                AppState::Idle => "idle",
-                AppState::Showing => "showing",
-                AppState::EnteringCustom { .. } => "entering_custom",
-                AppState::ConfirmingSize { .. } => "confirming_size",
-                AppState::Translating { .. } => "translating",
-                AppState::ShowingHistory { .. } => "showing_history",
-                AppState::SetupWizard { .. } => "setup_wizard",
-                AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
-            },
-            "dispatch_rerun_wizard"
-        );
-        // Already in the wizard? Don't reseed the model (would lose
-        // the in-flight key); just bring the window back to the
-        // foreground so the user can resume editing after they
-        // tabbed away. With NSApplicationActivationPolicyAccessory
-        // the window has no Dock icon to click, so the tray menu's
-        // "Re-run setup wizard" item is the only re-focus path.
-        if matches!(self.app_state, AppState::SetupWizard { .. }) {
-            pure::reset_focus_loss_latch(&mut self.has_been_focused);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            crate::platform::current().activate_app();
-            return;
-        }
-        // Probe the platform directly — same reason as main.rs's
-        // first-launch path: an EnvSecrets-backed `self.secrets`
-        // always reports `false` regardless of whether the OS
-        // keychain is actually reachable.
-        let keychain_available = crate::secrets::keychain_probe(&self.cfg.provider.api_key.service);
-        let storage = if keychain_available {
-            crate::ui::setup::Storage::Keychain
-        } else {
-            crate::ui::setup::Storage::Env
-        };
-        let model = crate::ui::setup::SetupWizardModel {
-            provider: self.cfg.provider.kind.clone(),
-            keychain_available,
-            storage,
-            test_translation: keychain_available, // env-only mode skips the live test
-            ..Default::default()
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
-        ));
-        pure::reset_focus_loss_latch(&mut self.has_been_focused);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        crate::platform::current().activate_app();
-        self.app_state = AppState::SetupWizard { model };
-    }
-
-    fn update_confirming_tray_hide(
-        &mut self,
-        ctx: &egui::Context,
-        model: crate::ui::tray_modal::TrayHideModel,
-    ) {
-        let outcome = crate::ui::tray_modal::draw(ctx, &model);
-        match outcome {
-            Some(crate::ui::tray_modal::TrayHideOutcome::Cancel) => {
-                self.dismiss_tray_modal_to_idle(ctx);
-            }
-            Some(crate::ui::tray_modal::TrayHideOutcome::Confirm) => {
-                // Persist state, drop the tray, dismiss to idle.
-                self.state.tray.visible = false;
-                if let Err(e) = self.state.save(&self.state_path) {
-                    tracing::warn!(error = %e, "failed to persist tray.visible=false");
-                }
-                self.tray = None; // Drop = remove from menu bar
-                tracing::info!(
-                    "tray hidden via user confirmation; relaunch with --show-tray to restore"
-                );
-                self.dismiss_tray_modal_to_idle(ctx);
-            }
-            None => {
-                // Modal still open — re-store the state for next frame.
-                self.app_state = AppState::ConfirmingTrayHide { model };
-            }
-        }
-    }
-
     /// Set the malformed flag. Called once at startup from main.rs if
     /// `Glossary::load` returned `Err` (and main.rs fell back to empty).
     pub fn set_glossary_malformed(&self, malformed: bool) {
         self.glossary_malformed
             .store(malformed, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Compute the appropriate `TrayStatus` for the current app state.
-    /// Called every frame from `update()`; the per-frame cost is one
-    /// match plus a cheap atomic load.
-    ///
-    /// Priority (highest first): NoApiKey > Warn(KeychainStaleKey) >
-    /// Warn(AccessibilityPermissionRevoked) > Warn(HotkeyInUse) >
-    /// Warn(GlossaryMalformed) > Ready.
-    ///
-    /// Note: Warn(KeychainStaleKey) is intentionally NOT returned here.
-    /// The 401-stale-key surface lives in `handle_translation_done`'s
-    /// 401 arm, which directly calls `tray.set_status(KeychainStaleKey)`
-    /// then transitions to `AppState::SetupWizard`. The transition fires
-    /// `refresh_tray_status` later in the same frame, which sees
-    /// `SetupWizard` and overwrites the pill back to `NoApiKey` — so the
-    /// user effectively goes straight from `Ready` to `NoApiKey` with the
-    /// amber `KeychainStaleKey` flip overwritten before render. The wizard
-    /// auto-opening IS the user-visible signal; the pill flip is a
-    /// best-effort breadcrumb for the OS tray's event log.
-    pub(crate) fn compute_tray_status(&self) -> crate::tray::TrayStatus {
-        // Highest priority: missing API key (the wizard would be open
-        // anyway, but tray status mirrors the underlying state).
-        if matches!(self.app_state, AppState::SetupWizard { .. }) {
-            return crate::tray::TrayStatus::NoApiKey;
-        }
-        if self.accessibility_revoked {
-            return crate::tray::TrayStatus::Warn(
-                crate::tray::WarnReason::AccessibilityPermissionRevoked,
-            );
-        }
-        if self.hotkey_in_use {
-            return crate::tray::TrayStatus::Warn(crate::tray::WarnReason::HotkeyInUse);
-        }
-        if self.glossary_was_malformed_at_startup() {
-            return crate::tray::TrayStatus::Warn(crate::tray::WarnReason::GlossaryMalformed);
-        }
-        crate::tray::TrayStatus::Ready
-    }
-
-    /// Whether the M4 startup glossary load fell back to empty due to
-    /// a parse error. M4 logs a warn but doesn't surface to the UI;
-    /// M7 bridges that into the tray status. Backed by a cached
-    /// AtomicBool set once at startup (and cleared by a successful
-    /// non-empty SIGHUP reload).
-    fn glossary_was_malformed_at_startup(&self) -> bool {
-        self.glossary_malformed
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Push the current status to the tray. No-op if no tray.
-    fn refresh_tray_status(&mut self) {
-        let status = self.compute_tray_status();
-        if let Some(tray) = self.tray.as_mut() {
-            if let Err(e) = tray.set_status(status) {
-                tracing::warn!(error = %e, "tray status refresh failed");
-            }
-        }
     }
 
     /// Whether the app is currently displaying the setup wizard.
@@ -800,11 +423,8 @@ impl ClipApp {
         self
     }
 
-    /// Best-effort: persist a successful translation to the history
-    /// store. Runs on the tokio runtime. Failures are logged at warn;
-    /// panics are caught by the watcher and similarly logged. The user
-    /// never sees a toast — the clipboard write is the primary outcome
-    /// and has already happened by the time we get here.
+    /// Dismiss the current overlay and return to `Idle` (window hidden).
+    /// Restores focus to the user's previous application.
     fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
         self.app_state = AppState::Idle;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -814,231 +434,6 @@ impl ClipApp {
         if let Some(pid) = self.previous_app_pid.take() {
             crate::platform::current().activate_pid(pid);
         }
-    }
-
-    fn update_showing(&mut self, ctx: &egui::Context) {
-        // prompt_model was snapshotted at show_window(); we re-draw it each
-        // frame against the same snapshot so the user sees a stable view
-        // until they dismiss or pick a slot.
-        //
-        // On the first frame after summon, request_focus on the slot the
-        // user last picked (or slot 1 by default). With focus pre-set,
-        // Enter on that row directly fires Pick(n) via egui's built-in
-        // Sense::click handling — no separate "RepeatLast" key shortcut
-        // needed; the focused row IS the repeat target.
-        let focus_target = if self.initial_focus_pending {
-            self.initial_focus_pending = false;
-            Some(self.state.last_slot.unwrap_or(1))
-        } else {
-            None
-        };
-        let click = prompt::draw(ctx, &self.cfg, &self.prompt_model, focus_target);
-        let key = self.handle_keys_showing(ctx);
-        let outcome = click.or(key);
-        match outcome {
-            Some(prompt::PromptOutcome::Pick(n)) => {
-                // dispatch() may transition to any of the new states; restore
-                // Showing only if dispatch didn't transition.
-                self.app_state = AppState::Showing;
-                self.dispatch(ctx, n);
-            }
-            Some(prompt::PromptOutcome::Cancel) => {
-                self.dismiss_to_idle(ctx);
-            }
-            None => {
-                self.app_state = AppState::Showing;
-            }
-        }
-    }
-
-    fn update_entering_custom(
-        &mut self,
-        ctx: &egui::Context,
-        mut model: prompt_custom::CustomPromptModel,
-    ) {
-        // Refresh clipboard text in case the user pasted something else
-        // between summoning and entering custom mode. Cheap.
-        if model.clipboard_text != self.prompt_model.clipboard_text {
-            model.clipboard_text = self.prompt_model.clipboard_text.clone();
-        }
-
-        let click = prompt_custom::draw(ctx, &mut model);
-        let key_outcome = self.handle_keys_entering_custom(ctx, &model);
-
-        // Apply preset click before dispatch so the user sees the chip's
-        // text in the textarea even if they then press Esc.
-        if let Some(prompt_custom::CustomPromptOutcome::PresetPicked(i)) = click {
-            model.instruction = prompt_custom::PRESETS[i].into();
-            self.app_state = AppState::EnteringCustom { model };
-            return;
-        }
-
-        let submit = matches!(click, Some(prompt_custom::CustomPromptOutcome::Submit))
-            || key_outcome == Some(CustomKey::Submit);
-        let cancel = key_outcome == Some(CustomKey::Cancel);
-
-        if cancel {
-            self.dismiss_to_idle(ctx);
-            return;
-        }
-        if submit && prompt_custom::submit_enabled(&model.instruction) {
-            let instruction = model.instruction.trim().to_string();
-            let action = Action::Custom { instruction };
-            let action_label = pure::action_label_for(&action, &self.cfg);
-            let overlay_label = pure::overlay_label_for(&action);
-            self.dispatch_translate(ctx, 6, action, action_label, overlay_label);
-            return;
-        }
-        // Otherwise stay in EnteringCustom with the (possibly mutated) model.
-        self.app_state = AppState::EnteringCustom { model };
-    }
-
-    fn update_confirming_size(
-        &mut self,
-        ctx: &egui::Context,
-        pending_action: Action,
-        action_label: String,
-        overlay_label: String,
-        char_count: usize,
-        preview: String,
-    ) {
-        let model = size_confirm::SizeConfirmModel {
-            char_count,
-            preview: preview.clone(),
-            action_label: action_label.clone(),
-        };
-        // Click takes priority over key: when a button is Tab-focused and
-        // the user presses Enter, egui's button click handler fires the
-        // focused button's outcome; only fall back to global Esc/Enter
-        // shortcuts when no button consumed the keystroke.
-        let click = size_confirm::draw(ctx, &model);
-        let key = ctx.input(|i| {
-            if i.key_pressed(Key::Escape) {
-                Some(size_confirm::SizeConfirmOutcome::Cancel)
-            } else if i.key_pressed(Key::Enter) {
-                Some(size_confirm::SizeConfirmOutcome::Confirm)
-            } else {
-                None
-            }
-        });
-        let outcome = click.or(key);
-        match outcome {
-            Some(size_confirm::SizeConfirmOutcome::Confirm) => {
-                // Use the persisted `last_slot` to identify which slot owned
-                // this dispatch. Custom prompts use slot 6.
-                let slot = match &pending_action {
-                    Action::Custom { .. } => 6,
-                    _ => self.state.last_slot.unwrap_or(0),
-                };
-                self.start_translation(ctx, slot, pending_action, action_label, overlay_label);
-            }
-            Some(size_confirm::SizeConfirmOutcome::Cancel) => {
-                self.dismiss_to_idle(ctx);
-            }
-            None => {
-                self.app_state = AppState::ConfirmingSize {
-                    pending_action,
-                    action_label,
-                    overlay_label,
-                    char_count,
-                    preview,
-                };
-            }
-        }
-    }
-
-    fn update_translating(
-        &mut self,
-        ctx: &egui::Context,
-        gen: u64,
-        action_label: String,
-        overlay_label: String,
-        started_at: std::time::Instant,
-    ) {
-        // Tighter repaint cadence so the bar animates smoothly.
-        if !self.reduced_motion {
-            ctx.request_repaint_after(Duration::from_millis(translating::TICK_MS));
-        }
-
-        let model = translating::TranslatingModel {
-            overlay_label: overlay_label.clone(),
-            provider_model: self.cfg.provider.model.clone(),
-            elapsed: started_at.elapsed(),
-            reduced_motion: self.reduced_motion,
-        };
-        let click = translating::draw(ctx, &model);
-        let cancelled_by_key = ctx.input(|i| i.key_pressed(Key::Escape));
-
-        if click == Some(translating::TranslatingOutcome::Cancel) || cancelled_by_key {
-            // Bump gen so the in-flight outcome is dropped on arrival.
-            self.dispatch_gen = pure::next_gen(self.dispatch_gen);
-            tracing::info!(
-                cancelled_gen = gen,
-                new_gen = self.dispatch_gen,
-                "user cancelled translation"
-            );
-            self.dismiss_to_idle(ctx);
-            return;
-        }
-
-        // No event — restore the state.
-        self.app_state = AppState::Translating {
-            gen,
-            action_label,
-            overlay_label,
-            started_at,
-        };
-    }
-
-    fn handle_keys_showing(&self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {
-        ctx.input(|i| {
-            if i.key_pressed(Key::Escape) {
-                return Some(prompt::PromptOutcome::Cancel);
-            }
-            // No global Enter handler: a slot row is always focused after
-            // show_window (initial_focus_pending), and egui's Sense::click
-            // handling fires the focused row's clicked() on Enter. The
-            // 1-6 number keys remain as direct shortcuts.
-            for (key, n) in [
-                (Key::Num1, 1u8),
-                (Key::Num2, 2),
-                (Key::Num3, 3),
-                (Key::Num4, 4),
-                (Key::Num5, 5),
-                (Key::Num6, 6),
-            ] {
-                if i.key_pressed(key) && !self.prompt_model.clipboard_text.is_empty() {
-                    return Some(prompt::PromptOutcome::Pick(n));
-                }
-            }
-            None
-        })
-    }
-
-    fn handle_keys_entering_custom(
-        &self,
-        ctx: &egui::Context,
-        _model: &prompt_custom::CustomPromptModel,
-    ) -> Option<CustomKey> {
-        ctx.input(|i| {
-            if i.key_pressed(Key::Escape) {
-                return Some(CustomKey::Cancel);
-            }
-            // Cmd+Enter (macOS) or Ctrl+Enter (Linux/Windows) submits.
-            if i.key_pressed(Key::Enter) && (i.modifiers.command || i.modifiers.ctrl) {
-                return Some(CustomKey::Submit);
-            }
-            None
-        })
-    }
-
-
-    fn dismiss_tray_modal_to_idle(&mut self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            crate::ui::prompt_default_inner_size(&self.cfg.ui),
-        ));
-        self.app_state = AppState::Idle;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
     fn copy_to_clipboard(&self, text: &str) -> Result<(), TranslateError> {
@@ -1119,4 +514,3 @@ impl eframe::App for ClipApp {
         self.refresh_tray_status();
     }
 }
-
