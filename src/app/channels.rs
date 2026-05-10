@@ -69,7 +69,7 @@ impl super::ClipApp {
             Ok(g) => {
                 let entry_count = g.len();
                 let is_non_empty = !g.is_empty();
-                *self.glossary.write().expect("glossary RwLock poisoned") = g;
+                *crate::glossary::Glossary::write_shared(&self.glossary) = g;
                 tracing::info!(
                     path = %self.glossary_path.display(),
                     entries = entry_count,

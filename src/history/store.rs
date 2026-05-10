@@ -126,14 +126,29 @@ impl History {
         Ok(())
     }
 
+    /// Lock the connection, running `f` inside the guard. If the mutex
+    /// is poisoned, log an error and recover via `into_inner` — the
+    /// underlying `Connection` is still usable.
+    fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, TranslateError>,
+    ) -> Result<T, TranslateError> {
+        match self.conn.lock() {
+            Ok(guard) => f(&guard),
+            Err(poisoned) => {
+                tracing::error!("history mutex poisoned; attempting recovery");
+                f(&poisoned.into_inner())
+            }
+        }
+    }
+
     /// Number of rows currently stored. Test helper; viewer uses
     /// `query` length instead.
     pub fn count(&self) -> Result<i64, TranslateError> {
-        let conn = self.conn.lock().expect("history mutex poisoned");
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
-            .map_err(|e| TranslateError::History(format!("count: {e}")))?;
-        Ok(count)
+        self.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+                .map_err(|e| TranslateError::History(format!("count: {e}")))
+        })
     }
 
     /// Encrypt the source/result fields and persist the row. Returns
@@ -142,26 +157,27 @@ impl History {
     pub fn insert(&self, entry: NewEntry) -> Result<i64, TranslateError> {
         let (source_ct, source_nonce) = encrypt_optional(&self.key, entry.source.as_deref())?;
         let (result_ct, result_nonce) = encrypt_optional(&self.key, entry.result.as_deref())?;
-        let conn = self.conn.lock().expect("history mutex poisoned");
-        conn.execute(
-            "INSERT INTO entries
-             (created_at, action, source_lang, target_lang, char_count,
-              source_ciphertext, source_nonce, result_ciphertext, result_nonce)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                entry.created_at,
-                entry.action,
-                entry.source_lang,
-                entry.target_lang,
-                entry.char_count,
-                source_ct,
-                source_nonce.as_ref().map(|n| &n[..]),
-                result_ct,
-                result_nonce.as_ref().map(|n| &n[..]),
-            ],
-        )
-        .map_err(|e| TranslateError::History(format!("insert: {e}")))?;
-        Ok(conn.last_insert_rowid())
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO entries
+                 (created_at, action, source_lang, target_lang, char_count,
+                  source_ciphertext, source_nonce, result_ciphertext, result_nonce)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    entry.created_at,
+                    entry.action,
+                    entry.source_lang,
+                    entry.target_lang,
+                    entry.char_count,
+                    source_ct,
+                    source_nonce.as_ref().map(|n| &n[..]),
+                    result_ct,
+                    result_nonce.as_ref().map(|n| &n[..]),
+                ],
+            )
+            .map_err(|e| TranslateError::History(format!("insert: {e}")))?;
+            Ok(conn.last_insert_rowid())
+        })
     }
 
     /// Insert with retention cap. After insert, prune by `created_at`
@@ -174,19 +190,21 @@ impl History {
         max_entries: usize,
     ) -> Result<i64, TranslateError> {
         let id = self.insert(entry)?;
-        let conn = self.conn.lock().expect("history mutex poisoned");
-        // SQLite supports DELETE with subquery; this prunes any entries
-        // beyond the newest `max_entries`.
-        conn.execute(
-            "DELETE FROM entries
-             WHERE id NOT IN (
-                 SELECT id FROM entries
-                 ORDER BY created_at DESC
-                 LIMIT ?1
-             )",
-            rusqlite::params![max_entries as i64],
-        )
-        .map_err(|e| TranslateError::History(format!("prune: {e}")))?;
+        self.with_conn(|conn| {
+            // SQLite supports DELETE with subquery; this prunes any entries
+            // beyond the newest `max_entries`.
+            conn.execute(
+                "DELETE FROM entries
+                 WHERE id NOT IN (
+                     SELECT id FROM entries
+                     ORDER BY created_at DESC
+                     LIMIT ?1
+                 )",
+                rusqlite::params![max_entries as i64],
+            )
+            .map_err(|e| TranslateError::History(format!("prune: {e}")))?;
+            Ok(())
+        })?;
         Ok(id)
     }
 
@@ -198,36 +216,39 @@ impl History {
         filter: &QueryFilter,
         limit: usize,
     ) -> Result<Vec<HistoryEntry>, TranslateError> {
-        let conn = self.conn.lock().expect("history mutex poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, created_at, action, source_lang, target_lang, char_count,
-                        source_ciphertext, source_nonce, result_ciphertext, result_nonce
-                 FROM entries
-                 ORDER BY created_at DESC
-                 LIMIT ?1",
-            )
-            .map_err(|e| TranslateError::History(format!("prepare: {e}")))?;
-        let rows = stmt
-            .query_map([limit as i64], |row| {
-                Ok(RawRow {
-                    id: row.get(0)?,
-                    created_at: row.get(1)?,
-                    action: row.get(2)?,
-                    source_lang: row.get(3)?,
-                    target_lang: row.get(4)?,
-                    char_count: row.get(5)?,
-                    source_ct: row.get(6)?,
-                    source_nonce: row.get(7)?,
-                    result_ct: row.get(8)?,
-                    result_nonce: row.get(9)?,
+        let rows = self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, created_at, action, source_lang, target_lang, char_count,
+                            source_ciphertext, source_nonce, result_ciphertext, result_nonce
+                     FROM entries
+                     ORDER BY created_at DESC
+                     LIMIT ?1",
+                )
+                .map_err(|e| TranslateError::History(format!("prepare: {e}")))?;
+            let rows: Vec<RawRow> = stmt
+                .query_map([limit as i64], |row| {
+                    Ok(RawRow {
+                        id: row.get(0)?,
+                        created_at: row.get(1)?,
+                        action: row.get(2)?,
+                        source_lang: row.get(3)?,
+                        target_lang: row.get(4)?,
+                        char_count: row.get(5)?,
+                        source_ct: row.get(6)?,
+                        source_nonce: row.get(7)?,
+                        result_ct: row.get(8)?,
+                        result_nonce: row.get(9)?,
+                    })
                 })
-            })
-            .map_err(|e| TranslateError::History(format!("query: {e}")))?;
+                .map_err(|e| TranslateError::History(format!("query: {e}")))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| TranslateError::History(format!("query row: {e}")))?;
+            Ok(rows)
+        })?;
 
         let mut out = Vec::new();
         for raw in rows {
-            let raw = raw.map_err(|e| TranslateError::History(format!("row: {e}")))?;
             let source = match decrypt_optional(&self.key, &raw.source_ct, &raw.source_nonce) {
                 Ok(opt) => opt,
                 Err(e) => {
@@ -260,19 +281,21 @@ impl History {
     }
 
     pub fn delete(&self, id: i64) -> Result<(), TranslateError> {
-        let conn = self.conn.lock().expect("history mutex poisoned");
-        conn.execute("DELETE FROM entries WHERE id = ?1", [id])
-            .map_err(|e| TranslateError::History(format!("delete: {e}")))?;
-        Ok(())
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM entries WHERE id = ?1", [id])
+                .map_err(|e| TranslateError::History(format!("delete: {e}")))?;
+            Ok(())
+        })
     }
 
     /// Wipe every row. Spec §7: "Clear all deletes all rows but leaves
     /// the encryption key in place." The keyfile is untouched.
     pub fn clear_all(&self) -> Result<(), TranslateError> {
-        let conn = self.conn.lock().expect("history mutex poisoned");
-        conn.execute("DELETE FROM entries", [])
-            .map_err(|e| TranslateError::History(format!("clear_all: {e}")))?;
-        Ok(())
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM entries", [])
+                .map_err(|e| TranslateError::History(format!("clear_all: {e}")))?;
+            Ok(())
+        })
     }
 }
 
@@ -553,7 +576,7 @@ mod tests {
     fn query_skips_half_null_ciphertext_rows() {
         let h = History::in_memory(test_key()).unwrap();
         {
-            let conn = h.conn.lock().expect("history mutex poisoned");
+            let conn = h.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 "INSERT INTO entries
                  (created_at, action, source_lang, target_lang, char_count,
@@ -683,5 +706,32 @@ mod tests {
                 originals[original_idx].as_str()
             );
         }
+    }
+
+    #[test]
+    fn poison_recovery_still_serves_operations() {
+        // Simulate a poisoned mutex: insert a row, poison the lock,
+        // then verify count still works via with_conn's recovery path.
+        let h = std::sync::Arc::new(History::in_memory(test_key()).unwrap());
+        h.insert(fixture_entry("translate", "before", "poison")).unwrap();
+        assert_eq!(h.count().unwrap(), 1);
+
+        // Poison the mutex by panicking while holding the lock.
+        let h2 = std::sync::Arc::clone(&h);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = h2.conn.lock().unwrap();
+            panic!("simulated panic inside lock");
+        }));
+        assert!(result.is_err(), "panic should have poisoned the mutex");
+
+        // After poison, with_conn should recover and still serve queries.
+        assert_eq!(h.count().unwrap(), 1);
+        let rows = h.query(&QueryFilter::default(), 100).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source.as_ref().unwrap().as_str(), "before");
+
+        // Insert after poison should also work.
+        h.insert(fixture_entry("translate", "after", "poison")).unwrap();
+        assert_eq!(h.count().unwrap(), 2);
     }
 }

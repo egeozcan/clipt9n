@@ -122,7 +122,7 @@ impl super::ClipApp {
             // SIGHUP-driven reload arrives mid-translation, the running
             // worker uses the snapshot it captured here; the next dispatch
             // sees the new entries.
-            let g_snapshot = glossary.read().expect("glossary RwLock poisoned").clone();
+            let g_snapshot = crate::glossary::Glossary::read_shared(&glossary).clone();
             let translator = Translator::new(&cfg, provider.as_ref(), &templates, &g_snapshot);
             let result = translator.execute(&action, &source_text).await;
             TranslationOutcome {

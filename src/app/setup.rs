@@ -152,7 +152,7 @@ impl super::ClipApp {
             };
             let action = crate::translator::Action::Translate { code: "de".into() };
             let attempt = || async {
-                let g_snapshot = glossary.read().expect("glossary RwLock poisoned").clone();
+                let g_snapshot = crate::glossary::Glossary::read_shared(&glossary).clone();
                 let translator = crate::translator::Translator::new(
                     &cfg,
                     provider.as_ref(),

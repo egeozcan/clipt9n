@@ -74,7 +74,7 @@ impl super::ClipApp {
             .as_deref()
             .and_then(crate::glossary::iso3_to_iso2);
         self.prompt_model.detected_lang = source_iso2.map(String::from);
-        let g = self.glossary.read().expect("glossary RwLock poisoned");
+        let g = crate::glossary::Glossary::read_shared(&self.glossary);
         self.prompt_model.glossary_hits = g
             .preview_entries(
                 &self.prompt_model.clipboard_text,

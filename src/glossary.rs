@@ -9,6 +9,7 @@
 //! `matching_entries(...)` (Task 4).
 
 use std::path::Path;
+use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -441,6 +442,35 @@ impl Glossary {
             .iter()
             .filter(|e| matcher.matches(&e.source))
             .collect()
+    }
+
+    /// Acquire a shared (read) lock on the glossary `RwLock`. If the
+    /// lock is poisoned, log an error and recover via `into_inner` —
+    /// the inner `Glossary` is still usable, though possibly stale.
+    pub fn read_shared(
+        inner: &std::sync::RwLock<Glossary>,
+    ) -> RwLockReadGuard<'_, Glossary> {
+        match inner.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!("glossary RwLock poisoned; recovering with possibly-stale data");
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    /// Acquire an exclusive (write) lock on the glossary `RwLock`.
+    /// Poison recovery mirrors `read_shared`.
+    pub fn write_shared(
+        inner: &std::sync::RwLock<Glossary>,
+    ) -> RwLockWriteGuard<'_, Glossary> {
+        match inner.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!("glossary RwLock poisoned on write; recovering with possibly-stale data");
+                poisoned.into_inner()
+            }
+        }
     }
 }
 
@@ -1079,5 +1109,43 @@ source = "no-target-here"
         let refs: Vec<&GlossaryEntry> = entries.iter().collect();
         let out = format_block(&refs);
         assert!(out.contains("\"say \"hi\"\" → \"say \"hello\"\""));
+    }
+
+    #[test]
+    fn poison_recovery_read_shared_after_intentional_panic() {
+        // Poison the RwLock, then verify read_shared recovers.
+        let lock = std::sync::RwLock::new(Glossary::empty());
+        // Populate with one entry.
+        lock.write().unwrap().entries_mut().push(GlossaryEntry {
+            source: "test".into(),
+            target: "test".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        assert_eq!(Glossary::read_shared(&lock).len(), 1);
+
+        // Poison by panicking while holding the write lock.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.write().unwrap();
+            panic!("simulated panic inside glossary write lock");
+        }));
+        assert!(result.is_err(), "panic should have poisoned the lock");
+
+        // read_shared should recover and still return the entry.
+        let guard = Glossary::read_shared(&lock);
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard.entries()[0].source, "test");
+        drop(guard);
+
+        // write_shared should also recover.
+        let mut w = Glossary::write_shared(&lock);
+        w.entries_mut().push(GlossaryEntry {
+            source: "after-poison".into(),
+            target: "after-poison".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        drop(w);
+        assert_eq!(Glossary::read_shared(&lock).len(), 2);
     }
 }
