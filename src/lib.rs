@@ -103,7 +103,7 @@ pub async fn run() -> Result<(), TranslateError> {
     let secrets: Box<dyn Secrets> = crate::secrets::resolve(&cfg.provider.api_key);
 
     let key = secrets.get_api_key()?;
-    let provider = crate::llm::factory::build_provider(&cfg, key)?;
+    let provider = crate::llm::factory::build_provider(&cfg, key, None)?;
 
     // Build templates (strict — abort on malformed override) and glossary
     // (graceful — log warn + fall back to empty on malformed).

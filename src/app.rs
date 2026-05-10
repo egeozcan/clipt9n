@@ -222,6 +222,10 @@ pub struct ClipApp {
     /// (used for cancellation).
     dispatch_gen: u64,
 
+    /// Timestamp of the most recent translation dispatch. Used to enforce
+    /// a minimum interval between consecutive translations (rate limiting).
+    last_translation_at: Option<std::time::Instant>,
+
     /// Whether the user has reduced motion enabled at OS level. Queried
     /// once at construction; the translating overlay reads this to decide
     /// between animated and static rendering.
@@ -333,6 +337,7 @@ impl ClipApp {
             has_been_focused: false,
             initial_focus_pending: false,
             dispatch_gen: 0,
+            last_translation_at: None,
             reduced_motion,
             previous_app_pid: None,
         }
@@ -480,6 +485,17 @@ impl ClipApp {
         action_label: String,
         overlay_label: String,
     ) {
+        // Rate limit: enforce a minimum interval between consecutive
+        // translations to prevent rapid-fire dispatch bursts (e.g.,
+        // alternating hotkey presses and dismissals).
+        const MIN_TRANSLATION_INTERVAL: Duration = Duration::from_millis(500);
+        if let Some(last) = self.last_translation_at {
+            if last.elapsed() < MIN_TRANSLATION_INTERVAL {
+                return;
+            }
+        }
+        self.last_translation_at = Some(std::time::Instant::now());
+
         if requires_size_confirm(&self.prompt_model.clipboard_text, &self.cfg) {
             let preview = size_confirm::format_preview(&self.prompt_model.clipboard_text);
             let char_count = self.prompt_model.clipboard_text.chars().count();
@@ -1603,33 +1619,17 @@ impl ClipApp {
         let tx = self.setup_check_tx.clone();
         let runtime = self.runtime.handle().clone();
         runtime.spawn(async move {
-            let timeout = std::time::Duration::from_secs(cfg.provider.timeout_seconds);
-            let base_url = crate::ui::setup::default_base_url(&provider_kind);
-            // NOTE: This intentionally bypasses crate::llm::factory::build_provider
-            // because the wizard wants the per-provider default base URL (from
-            // setup::default_base_url) rather than cfg.provider.base_url — the user
-            // might be configuring a fresh provider whose base_url hasn't been
-            // persisted yet. A follow-up may extend the factory with an
-            // Option<&str> base-URL override; until then this stays hand-rolled.
-            let provider_result: Result<
-                std::sync::Arc<dyn crate::llm::LlmProvider>,
-                TranslateError,
-            > = match provider_kind.as_str() {
-                "anthropic" => crate::llm::anthropic::AnthropicProvider::new(
-                    base_url,
-                    key.clone(),
-                    &cfg.provider.model,
-                    timeout,
-                )
-                .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn crate::llm::LlmProvider>),
-                _ => crate::llm::openai::OpenAiCompatibleProvider::new(
-                    base_url,
-                    key.clone(),
-                    &cfg.provider.model,
-                    timeout,
-                )
-                .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn crate::llm::LlmProvider>),
-            };
+            let base_url_override = crate::ui::setup::default_base_url(&provider_kind);
+            // Build a config with the wizard's selected provider kind so the
+            // factory routes to the right provider type. The base URL override
+            // ensures we use the per-provider default (from
+            // setup::default_base_url), not cfg.provider.base_url, because the
+            // user might be configuring a fresh provider whose base_url hasn't
+            // been persisted yet.
+            let mut check_cfg = cfg.clone();
+            check_cfg.provider.kind = provider_kind.clone();
+            let provider_result =
+                crate::llm::factory::build_provider(&check_cfg, key.clone(), Some(base_url_override));
             let provider = match provider_result {
                 Ok(p) => p,
                 Err(e) => {
@@ -1762,7 +1762,7 @@ impl ClipApp {
         // here, the constraint is config-shape (e.g., a malformed URL).
         // Wipe self.provider so the next translation surfaces the
         // failure rather than using the stale provider.
-        match crate::llm::factory::build_provider(&self.cfg, model.key.clone()) {
+        match crate::llm::factory::build_provider(&self.cfg, model.key.clone(), None) {
             Ok(new_provider) => {
                 self.provider = Some(new_provider);
                 tracing::info!("setup wizard: provider rebuilt with new key");

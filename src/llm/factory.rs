@@ -6,15 +6,10 @@
 //!   - `main.rs` at startup,
 //!   - `lib.rs::run` for the CLI mode,
 //!   - `app.rs::persist_setup_completion` for the live provider
-//!     rebuild after the wizard's Save-and-start (M7 Task 10).
-//!
-//! NOT (yet) used by `app.rs::spawn_sample_translation_check` because
-//! that path uses the per-provider default base URL (from
-//! `setup::default_base_url`), not `cfg.provider.base_url`. Migrating
-//! that call site would require either a config-clone or an
-//! `Option<&str>` base-URL override parameter on this fn — left as a
-//! follow-up since the wizard's Verify check is structurally distinct
-//! from the runtime construction.
+//!     rebuild after the wizard's Save-and-start (M7 Task 10),
+//!   - `app.rs::spawn_sample_translation_check` for the wizard's
+//!     Verify step (passes per-provider default base URL via
+//!     `base_url_override`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,17 +28,19 @@ use crate::llm::LlmProvider;
 pub fn build_provider(
     cfg: &Config,
     key: Zeroizing<String>,
+    base_url_override: Option<&str>,
 ) -> Result<Arc<dyn LlmProvider>, TranslateError> {
     let timeout = Duration::from_secs(cfg.provider.timeout_seconds);
+    let base_url = base_url_override.unwrap_or(&cfg.provider.base_url);
     let provider: Arc<dyn LlmProvider> = match cfg.provider.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
-            &cfg.provider.base_url,
+            base_url,
             key,
             &cfg.provider.model,
             timeout,
         )?),
         "openai" | "gemini" | "ollama" => Arc::new(OpenAiCompatibleProvider::new(
-            &cfg.provider.base_url,
+            base_url,
             key,
             &cfg.provider.model,
             timeout,
@@ -66,7 +63,7 @@ mod tests {
     fn anthropic_provider_constructs() {
         let cfg = Config::default(); // default provider.kind = "anthropic"
         let key = Zeroizing::new("sk-test-12345".to_string());
-        let p = build_provider(&cfg, key).expect("provider should build");
+        let p = build_provider(&cfg, key, None).expect("provider should build");
         // Type-level smoke: we got an Arc<dyn LlmProvider> back. No
         // network is touched here.
         assert_eq!(Arc::strong_count(&p), 1);
@@ -78,7 +75,7 @@ mod tests {
             let mut cfg = Config::default();
             cfg.provider.kind = kind.into();
             let key = Zeroizing::new("sk-test".to_string());
-            let p = build_provider(&cfg, key).expect("should build for openai-compat kinds");
+            let p = build_provider(&cfg, key, None).expect("should build for openai-compat kinds");
             assert_eq!(Arc::strong_count(&p), 1);
         }
     }
@@ -88,7 +85,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.provider.kind = "magic-llm".into();
         let key = Zeroizing::new("ignored".to_string());
-        match build_provider(&cfg, key) {
+        match build_provider(&cfg, key, None) {
             Ok(_) => panic!("expected Err, got Ok"),
             Err(TranslateError::Config(msg)) => assert!(msg.contains("magic-llm")),
             Err(other) => panic!("expected Config error, got {other:?}"),

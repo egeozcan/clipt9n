@@ -126,7 +126,7 @@ fn main() -> anyhow::Result<()> {
 
     // Build the runtime provider via the factory. Same source of truth
     // as persist_setup_completion's live-rebuild path (M7 Task 10).
-    let provider = clipt9n::llm::factory::build_provider(&cfg, api_key)?;
+    let provider = clipt9n::llm::factory::build_provider(&cfg, api_key, None)?;
 
     // Hotkey registration. Three possible registrations: the prompt hotkey
     // (always constructed, optionally registered), selected-text hotkey, and
