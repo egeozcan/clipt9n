@@ -2,6 +2,7 @@
 //! "Translation copied" toast.
 
 use crate::{error::TranslateError, platform::Platform};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 const RESULT_PREVIEW_MAX_CHARS: usize = 120;
@@ -65,15 +66,25 @@ fn notification_preview(text: &str) -> String {
     }
 }
 
+/// Once-per-session warning flag. Set to true when `configure_notifications`
+/// fails so the warn log fires exactly once, not on every notification attempt.
+static NOTIFICATION_WARNED: AtomicBool = AtomicBool::new(false);
+
 fn ensure_notification_application() -> Result<(), TranslateError> {
-    NOTIFICATION_APPLICATION_RESULT
-        .get_or_init(|| {
-            crate::platform::current()
-                .configure_notifications()
-                .map_err(|e| e.to_string())
-        })
-        .clone()
-        .map_err(notification_error)
+    let result = NOTIFICATION_APPLICATION_RESULT.get_or_init(|| {
+        crate::platform::current()
+            .configure_notifications()
+            .map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if !NOTIFICATION_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(error = %e, "notifications unavailable for this session");
+            }
+            Err(notification_error(e.clone()))
+        }
+    }
 }
 
 #[cfg(test)]

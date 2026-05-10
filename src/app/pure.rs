@@ -313,6 +313,16 @@ mod tests {
     }
 
     #[test]
+    fn selected_text_after_copy_rejects_when_pasteboard_flag_says_unchanged() {
+        // Text changed but the pasteboard-change-count signal explicitly
+        // says no copy occurred (Some(false)). The signal wins.
+        assert_eq!(
+            selected_text_after_copy("old text", "different text", Some(false)),
+            None
+        );
+    }
+
+    #[test]
     fn dispatch_gen_starts_at_zero_and_monotonically_increases() {
         // Just verify the field exists with the expected starting value.
         // We can't construct ClipApp here (requires CreationContext), so
