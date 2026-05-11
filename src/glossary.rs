@@ -447,9 +447,7 @@ impl Glossary {
     /// Acquire a shared (read) lock on the glossary `RwLock`. If the
     /// lock is poisoned, log an error and recover via `into_inner` —
     /// the inner `Glossary` is still usable, though possibly stale.
-    pub fn read_shared(
-        inner: &std::sync::RwLock<Glossary>,
-    ) -> RwLockReadGuard<'_, Glossary> {
+    pub fn read_shared(inner: &std::sync::RwLock<Glossary>) -> RwLockReadGuard<'_, Glossary> {
         match inner.read() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -461,13 +459,13 @@ impl Glossary {
 
     /// Acquire an exclusive (write) lock on the glossary `RwLock`.
     /// Poison recovery mirrors `read_shared`.
-    pub fn write_shared(
-        inner: &std::sync::RwLock<Glossary>,
-    ) -> RwLockWriteGuard<'_, Glossary> {
+    pub fn write_shared(inner: &std::sync::RwLock<Glossary>) -> RwLockWriteGuard<'_, Glossary> {
         match inner.write() {
             Ok(guard) => guard,
             Err(poisoned) => {
-                tracing::error!("glossary RwLock poisoned on write; recovering with possibly-stale data");
+                tracing::error!(
+                    "glossary RwLock poisoned on write; recovering with possibly-stale data"
+                );
                 poisoned.into_inner()
             }
         }

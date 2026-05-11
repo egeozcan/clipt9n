@@ -713,7 +713,8 @@ mod tests {
         // Simulate a poisoned mutex: insert a row, poison the lock,
         // then verify count still works via with_conn's recovery path.
         let h = std::sync::Arc::new(History::in_memory(test_key()).unwrap());
-        h.insert(fixture_entry("translate", "before", "poison")).unwrap();
+        h.insert(fixture_entry("translate", "before", "poison"))
+            .unwrap();
         assert_eq!(h.count().unwrap(), 1);
 
         // Poison the mutex by panicking while holding the lock.
@@ -731,7 +732,8 @@ mod tests {
         assert_eq!(rows[0].source.as_ref().unwrap().as_str(), "before");
 
         // Insert after poison should also work.
-        h.insert(fixture_entry("translate", "after", "poison")).unwrap();
+        h.insert(fixture_entry("translate", "after", "poison"))
+            .unwrap();
         assert_eq!(h.count().unwrap(), 2);
     }
 }

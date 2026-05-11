@@ -56,7 +56,8 @@ impl super::ClipApp {
         self.last_translation_at = Some(std::time::Instant::now());
 
         if pure::requires_size_confirm(&self.prompt_model.clipboard_text, &self.cfg) {
-            let preview = crate::ui::size_confirm::format_preview(&self.prompt_model.clipboard_text);
+            let preview =
+                crate::ui::size_confirm::format_preview(&self.prompt_model.clipboard_text);
             let char_count = self.prompt_model.clipboard_text.chars().count();
             self.app_state = super::AppState::ConfirmingSize {
                 pending_action: action,

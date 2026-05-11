@@ -310,8 +310,7 @@ unsafe fn activate_running_application(pid: i32) {
     if cls.is_null() {
         return;
     }
-    let running_sel: Sel =
-        sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr());
+    let running_sel: Sel = sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr());
     let running: extern "C" fn(Class, Sel, c_long) -> Id =
         std::mem::transmute(objc_msgSend as *const ());
     let app = running(cls, running_sel, pid as c_long);
@@ -320,8 +319,7 @@ unsafe fn activate_running_application(pid: i32) {
     }
     // NSApplicationActivateIgnoringOtherApps = 1
     let activate_sel: Sel = sel_registerName(c"activateWithOptions:".as_ptr());
-    let activate: extern "C" fn(Id, Sel, c_long) =
-        std::mem::transmute(objc_msgSend as *const ());
+    let activate: extern "C" fn(Id, Sel, c_long) = std::mem::transmute(objc_msgSend as *const ());
     activate(app, activate_sel, 1);
 }
 

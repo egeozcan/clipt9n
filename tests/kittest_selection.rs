@@ -125,11 +125,7 @@ fn clicking_slot_after_selection_capture_fires_pick() {
     // Find slot 4 (Fix grammar) — it renders as a clickable row.
     // Use raw pixel events on the inner Label, same pattern as
     // kittest_prompt.rs for the M4 regression.
-    let label_node = harness.get(
-        by().role(Role::Label)
-            .label("Fix grammar")
-            .include_labels(),
-    );
+    let label_node = harness.get(by().role(Role::Label).label("Fix grammar").include_labels());
     let bounds = label_node
         .raw_bounds()
         .expect("'Fix grammar' label must have raw_bounds after layout");

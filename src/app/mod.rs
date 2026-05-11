@@ -3,12 +3,12 @@
 //! prompt-window state machine. All UI is paint-only (`src/ui/prompt.rs`);
 //! input handling lives in the sub-modules.
 
-mod pure;
-mod translation;
-mod history;
-mod setup;
-mod prompt;
 mod channels;
+mod history;
+mod prompt;
+mod pure;
+mod setup;
+mod translation;
 mod tray;
 
 use std::path::PathBuf;

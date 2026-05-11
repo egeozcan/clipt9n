@@ -205,9 +205,9 @@ impl super::ClipApp {
     }
 
     fn dismiss_history_to_idle(&mut self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            prompt_default_inner_size(&self.cfg.ui),
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(prompt_default_inner_size(
+            &self.cfg.ui,
+        )));
         self.app_state = super::AppState::Idle;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
