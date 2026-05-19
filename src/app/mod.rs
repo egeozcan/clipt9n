@@ -523,7 +523,14 @@ impl eframe::App for ClipApp {
                 started_at,
                 preview_mode,
             } => {
-                self.update_translating(ctx, gen, action_label, overlay_label, started_at, preview_mode);
+                self.update_translating(
+                    ctx,
+                    gen,
+                    action_label,
+                    overlay_label,
+                    started_at,
+                    preview_mode,
+                );
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),

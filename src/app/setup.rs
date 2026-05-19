@@ -196,8 +196,7 @@ impl super::ClipApp {
         self.cfg.provider.kind = model.provider.clone();
         // Auto-select sensible defaults when switching providers.
         if self.cfg.provider.kind != prev_kind {
-            self.cfg.provider.model =
-                crate::ui::setup::default_model(&model.provider).to_string();
+            self.cfg.provider.model = crate::ui::setup::default_model(&model.provider).to_string();
             self.cfg.provider.base_url =
                 crate::ui::setup::default_base_url(&model.provider).to_string();
         }

@@ -214,7 +214,14 @@ impl super::ClipApp {
                     _ => self.state.last_slot.unwrap_or(0),
                 };
                 let preview_mode = std::mem::take(&mut self.pending_preview);
-                self.start_translation(ctx, slot, pending_action, action_label, overlay_label, preview_mode);
+                self.start_translation(
+                    ctx,
+                    slot,
+                    pending_action,
+                    action_label,
+                    overlay_label,
+                    preview_mode,
+                );
             }
             Some(size_confirm::SizeConfirmOutcome::Cancel) => {
                 self.dismiss_to_idle(ctx);
@@ -276,6 +283,7 @@ impl super::ClipApp {
         };
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn update_showing_result(
         &mut self,
         ctx: &egui::Context,
@@ -307,9 +315,7 @@ impl super::ClipApp {
                 if let Err(e) = self.copy_to_clipboard(&result_text) {
                     tracing::error!(error = %e, "clipboard write from result preview failed");
                 } else {
-                    if let Err(e) =
-                        crate::notify::translation_copied(&action_label, &result_text)
-                    {
+                    if let Err(e) = crate::notify::translation_copied(&action_label, &result_text) {
                         tracing::warn!(error = %e, "notification failed");
                     }
                     // History insert (best-effort, same pattern as

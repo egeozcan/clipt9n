@@ -148,12 +148,7 @@ pub fn draw(ctx: &egui::Context, model: &ResultModel) -> Option<ResultOutcome> {
 
 /// Estimate the height needed to render `text` in a monospace layout
 /// with wrapping at `max_width`. Returns the total pixel height.
-fn compute_text_height(
-    text: &str,
-    max_width: f32,
-    _line_height: f32,
-    ui: &mut egui::Ui,
-) -> f32 {
+fn compute_text_height(text: &str, max_width: f32, _line_height: f32, ui: &mut egui::Ui) -> f32 {
     let galley = ui.painter().layout(
         text.to_string(),
         egui::FontId::monospace(12.5),
@@ -202,8 +197,9 @@ fn copy_button(ui: &mut egui::Ui) -> egui::Response {
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Copy to clipboard"));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Copy to clipboard")
+    });
     response
 }
 

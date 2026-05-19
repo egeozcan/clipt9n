@@ -205,380 +205,382 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
 
     frame.show(ctx, |ui| {
         ui.set_max_width(540.0); // 580px outer - 2 × 20px margin
-        // Wrap entire wizard in a ScrollArea so long content (e.g.
-        // provider error messages) doesn't get clipped by the fixed
-        // viewport height.
+                                 // Wrap entire wizard in a ScrollArea so long content (e.g.
+                                 // provider error messages) doesn't get clipped by the fixed
+                                 // viewport height.
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                // Header.
+                ui.label(
+                    RichText::new("Welcome to clipt9n")
+                        .color(theme::INK)
+                        .strong()
+                        .size(15.0),
+                );
+                ui.label(
+                    RichText::new("first-run · setup")
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(11.0),
+                );
+                ui.add_space(14.0);
 
-        // Header.
-        ui.label(
-            RichText::new("Welcome to clipt9n")
-                .color(theme::INK)
-                .strong()
-                .size(15.0),
-        );
-        ui.label(
-            RichText::new("first-run · setup")
-                .color(theme::INK_3)
-                .monospace()
-                .size(11.0),
-        );
-        ui.add_space(14.0);
+                // Step 1: provider grid.
+                ui.label(
+                    RichText::new("STEP 1 OF 3 · PROVIDER")
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(10.0)
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Pick your translation provider.")
+                        .color(theme::INK)
+                        .strong()
+                        .size(13.5),
+                );
+                ui.add_space(8.0);
 
-        // Step 1: provider grid.
-        ui.label(
-            RichText::new("STEP 1 OF 3 · PROVIDER")
-                .color(theme::INK_3)
-                .monospace()
-                .size(10.0)
-                .strong(),
-        );
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("Pick your translation provider.")
-                .color(theme::INK)
-                .strong()
-                .size(13.5),
-        );
-        ui.add_space(8.0);
-
-        let provs = providers();
-        ui.columns(2, |cols| {
-            for (i, (id, label, _env_var)) in provs.iter().enumerate() {
-                let col = &mut cols[i % 2];
-                let active = model.provider == *id;
-                let bg = if active {
-                    Color32::from_rgba_unmultiplied(200, 255, 94, 16)
-                } else {
-                    theme::PANEL_2
-                };
-                let stroke = if active {
-                    Stroke::new(1.0, theme::ACCENT)
-                } else {
-                    Stroke::new(1.0, theme::LINE_SOFT)
-                };
-                let resp = egui::Frame::new()
-                    .fill(bg)
-                    .stroke(stroke)
-                    .corner_radius(6.0)
-                    .inner_margin(9.0)
-                    .show(col, |ui| {
-                        ui.horizontal(|ui| {
-                            let dot_color = if active { theme::ACCENT } else { theme::INK_3 };
-                            ui.label(RichText::new("●").color(dot_color).size(10.0));
-                            ui.add_space(8.0);
-                            ui.label(RichText::new(*label).color(theme::INK).size(12.5));
-                            if *id == "anthropic" {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new("recommended")
-                                        .color(theme::ACCENT)
-                                        .monospace()
-                                        .size(10.0),
-                                );
-                            }
-                            if *id == "ollama" {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new("offline")
-                                        .color(Color32::from_rgb(0x9a, 0xd6, 0xff))
-                                        .monospace()
-                                        .size(10.0),
-                                );
-                            }
+                let provs = providers();
+                ui.columns(2, |cols| {
+                    for (i, (id, label, _env_var)) in provs.iter().enumerate() {
+                        let col = &mut cols[i % 2];
+                        let active = model.provider == *id;
+                        let bg = if active {
+                            Color32::from_rgba_unmultiplied(200, 255, 94, 16)
+                        } else {
+                            theme::PANEL_2
+                        };
+                        let stroke = if active {
+                            Stroke::new(1.0, theme::ACCENT)
+                        } else {
+                            Stroke::new(1.0, theme::LINE_SOFT)
+                        };
+                        let resp = egui::Frame::new()
+                            .fill(bg)
+                            .stroke(stroke)
+                            .corner_radius(6.0)
+                            .inner_margin(9.0)
+                            .show(col, |ui| {
+                                ui.horizontal(|ui| {
+                                    let dot_color =
+                                        if active { theme::ACCENT } else { theme::INK_3 };
+                                    ui.label(RichText::new("●").color(dot_color).size(10.0));
+                                    ui.add_space(8.0);
+                                    ui.label(RichText::new(*label).color(theme::INK).size(12.5));
+                                    if *id == "anthropic" {
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new("recommended")
+                                                .color(theme::ACCENT)
+                                                .monospace()
+                                                .size(10.0),
+                                        );
+                                    }
+                                    if *id == "ollama" {
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new("offline")
+                                                .color(Color32::from_rgb(0x9a, 0xd6, 0xff))
+                                                .monospace()
+                                                .size(10.0),
+                                        );
+                                    }
+                                });
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        // AccessKit: expose the card as Role::Button with the provider
+                        // name as its label so screen readers and kittest can find each
+                        // card by name. The Frame+interact pattern does not auto-derive
+                        // a button role, so we provide the WidgetInfo explicitly.
+                        let card_label = label.to_string();
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &card_label)
                         });
-                    })
-                    .response
-                    .interact(egui::Sense::click());
-                // AccessKit: expose the card as Role::Button with the provider
-                // name as its label so screen readers and kittest can find each
-                // card by name. The Frame+interact pattern does not auto-derive
-                // a button role, so we provide the WidgetInfo explicitly.
-                let card_label = label.to_string();
-                resp.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &card_label)
+                        if resp.clicked() {
+                            model.provider = (*id).to_string();
+                            if matches!(model.phase, WizardPhase::Error) {
+                                // jsx: `if (phase !== "entry") setPhase("entry")`
+                                model.phase = WizardPhase::Entry;
+                                model.err_msg.clear();
+                            }
+                        }
+                    }
                 });
-                if resp.clicked() {
-                    model.provider = (*id).to_string();
-                    if matches!(model.phase, WizardPhase::Error) {
-                        // jsx: `if (phase !== "entry") setPhase("entry")`
+                ui.add_space(8.0);
+                if ui
+                    .link("Get your API key from the provider dashboard")
+                    .clicked()
+                {
+                    outcome = Some(SetupOutcome::OpenProviderKeyUrl(provider_key_url(
+                        &model.provider,
+                    )));
+                }
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Step 2: key entry.
+                ui.label(
+                    RichText::new("STEP 2 · KEY")
+                        .color(theme::INK_3)
+                        .monospace()
+                        .size(10.0)
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    // The TextEdit needs to mutate the underlying String. We
+                    // get a `&mut String` from `Deref<Target=String>` —
+                    // egui's TextEdit accepts that.
+                    let key_str: &mut String = &mut model.key;
+                    let edit = TextEdit::singleline(key_str)
+                        .password(!model.show_key)
+                        .hint_text("sk-ant-…")
+                        .desired_width(ui.available_width() - 80.0);
+                    let resp = ui.add(edit);
+                    if resp.changed() && matches!(model.phase, WizardPhase::Error) {
                         model.phase = WizardPhase::Entry;
                         model.err_msg.clear();
                     }
-                }
-            }
-        });
-        ui.add_space(8.0);
-        if ui
-            .link("Get your API key from the provider dashboard")
-            .clicked()
-        {
-            outcome = Some(SetupOutcome::OpenProviderKeyUrl(provider_key_url(
-                &model.provider,
-            )));
-        }
-        ui.add_space(14.0);
-        ui.separator();
-        ui.add_space(10.0);
+                    ui.add_space(4.0);
+                    let toggle_label = if model.show_key { "hide" } else { "show" };
+                    let hover_text = if model.show_key {
+                        "Hide key (mask as password)"
+                    } else {
+                        "Show key (reveal as plain text)"
+                    };
+                    // AccessKit: use the descriptive hover_text as the widget label so
+                    // screen readers announce the button's purpose ("Show key (reveal as
+                    // plain text)" / "Hide key (mask as password)") rather than the
+                    // short visible toggle token. The visible button text stays "show"/
+                    // "hide" for sighted users; the AccessKit label and the tooltip
+                    // both surface the descriptive form.
+                    // `on_hover_text` takes self, so we check clicked() before calling it.
+                    let toggle_resp = ui.button(RichText::new(toggle_label).monospace().size(11.0));
+                    toggle_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hover_text)
+                    });
+                    let key_toggled = toggle_resp.clicked();
+                    toggle_resp.on_hover_text(hover_text);
+                    if key_toggled {
+                        model.show_key = !model.show_key;
+                    }
+                });
 
-        // Step 2: key entry.
-        ui.label(
-            RichText::new("STEP 2 · KEY")
-                .color(theme::INK_3)
-                .monospace()
-                .size(10.0)
-                .strong(),
-        );
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            // The TextEdit needs to mutate the underlying String. We
-            // get a `&mut String` from `Deref<Target=String>` —
-            // egui's TextEdit accepts that.
-            let key_str: &mut String = &mut model.key;
-            let edit = TextEdit::singleline(key_str)
-                .password(!model.show_key)
-                .hint_text("sk-ant-…")
-                .desired_width(ui.available_width() - 80.0);
-            let resp = ui.add(edit);
-            if resp.changed() && matches!(model.phase, WizardPhase::Error) {
-                model.phase = WizardPhase::Entry;
-                model.err_msg.clear();
-            }
-            ui.add_space(4.0);
-            let toggle_label = if model.show_key { "hide" } else { "show" };
-            let hover_text = if model.show_key {
-                "Hide key (mask as password)"
-            } else {
-                "Show key (reveal as plain text)"
-            };
-            // AccessKit: use the descriptive hover_text as the widget label so
-            // screen readers announce the button's purpose ("Show key (reveal as
-            // plain text)" / "Hide key (mask as password)") rather than the
-            // short visible toggle token. The visible button text stays "show"/
-            // "hide" for sighted users; the AccessKit label and the tooltip
-            // both surface the descriptive form.
-            // `on_hover_text` takes self, so we check clicked() before calling it.
-            let toggle_resp = ui.button(RichText::new(toggle_label).monospace().size(11.0));
-            toggle_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hover_text)
-            });
-            let key_toggled = toggle_resp.clicked();
-            toggle_resp.on_hover_text(hover_text);
-            if key_toggled {
-                model.show_key = !model.show_key;
-            }
-        });
-
-        // Storage radio.
-        ui.add_space(8.0);
-        let (_, _, env_var) = provider_meta(&model.provider);
-        ui.columns(2, |cols| {
-            // Keychain option (only shown if available).
-            if model.keychain_available {
-                let active = matches!(model.storage, Storage::Keychain);
-                let stroke = if active {
-                    Stroke::new(1.0, theme::ACCENT)
-                } else {
-                    Stroke::new(1.0, theme::LINE_SOFT)
-                };
-                let resp = egui::Frame::new()
-                    .fill(theme::PANEL_2)
-                    .stroke(stroke)
-                    .corner_radius(6.0)
-                    .inner_margin(8.0)
-                    .show(&mut cols[0], |ui| {
-                        ui.label(
-                            RichText::new("System Keychain")
-                                .color(theme::INK)
-                                .size(12.5)
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Bound to clipt9n; other apps prompted on read.")
+                // Storage radio.
+                ui.add_space(8.0);
+                let (_, _, env_var) = provider_meta(&model.provider);
+                ui.columns(2, |cols| {
+                    // Keychain option (only shown if available).
+                    if model.keychain_available {
+                        let active = matches!(model.storage, Storage::Keychain);
+                        let stroke = if active {
+                            Stroke::new(1.0, theme::ACCENT)
+                        } else {
+                            Stroke::new(1.0, theme::LINE_SOFT)
+                        };
+                        let resp = egui::Frame::new()
+                            .fill(theme::PANEL_2)
+                            .stroke(stroke)
+                            .corner_radius(6.0)
+                            .inner_margin(8.0)
+                            .show(&mut cols[0], |ui| {
+                                ui.label(
+                                    RichText::new("System Keychain")
+                                        .color(theme::INK)
+                                        .size(12.5)
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new("Bound to clipt9n; other apps prompted on read.")
+                                        .color(theme::INK_3)
+                                        .size(11.0),
+                                );
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        if resp.clicked() {
+                            model.storage = Storage::Keychain;
+                        }
+                    } else {
+                        cols[0].label(
+                            RichText::new("(Keychain unavailable on this system)")
                                 .color(theme::INK_3)
-                                .size(11.0),
+                                .size(11.5),
                         );
-                    })
-                    .response
-                    .interact(egui::Sense::click());
-                if resp.clicked() {
-                    model.storage = Storage::Keychain;
-                }
-            } else {
-                cols[0].label(
-                    RichText::new("(Keychain unavailable on this system)")
+                    }
+                    // Env option (always shown).
+                    let active = matches!(model.storage, Storage::Env);
+                    let stroke = if active {
+                        Stroke::new(1.0, theme::ACCENT)
+                    } else {
+                        Stroke::new(1.0, theme::LINE_SOFT)
+                    };
+                    let resp = egui::Frame::new()
+                        .fill(theme::PANEL_2)
+                        .stroke(stroke)
+                        .corner_radius(6.0)
+                        .inner_margin(8.0)
+                        .show(&mut cols[1], |ui| {
+                            ui.label(
+                                RichText::new("Environment variable")
+                                    .color(theme::INK)
+                                    .size(12.5)
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new(format!("${env_var}"))
+                                    .color(theme::INK_3)
+                                    .monospace()
+                                    .size(11.0),
+                            );
+                        })
+                        .response
+                        .interact(egui::Sense::click());
+                    if resp.clicked() {
+                        model.storage = Storage::Env;
+                    }
+                });
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Step 3: verify.
+                ui.label(
+                    RichText::new("STEP 3 · VERIFY")
                         .color(theme::INK_3)
-                        .size(11.5),
+                        .monospace()
+                        .size(10.0)
+                        .strong(),
                 );
-            }
-            // Env option (always shown).
-            let active = matches!(model.storage, Storage::Env);
-            let stroke = if active {
-                Stroke::new(1.0, theme::ACCENT)
-            } else {
-                Stroke::new(1.0, theme::LINE_SOFT)
-            };
-            let resp = egui::Frame::new()
-                .fill(theme::PANEL_2)
-                .stroke(stroke)
-                .corner_radius(6.0)
-                .inner_margin(8.0)
-                .show(&mut cols[1], |ui| {
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    let mut t = model.test_translation;
+                    ui.checkbox(&mut t, "");
+                    model.test_translation = t;
                     ui.label(
-                        RichText::new("Environment variable")
-                            .color(theme::INK)
-                            .size(12.5)
-                            .strong(),
+                        RichText::new("Test with a real translation")
+                            .color(theme::INK_2)
+                            .size(12.5),
                     );
                     ui.label(
-                        RichText::new(format!("${env_var}"))
+                        RichText::new(" (~$0.0001 in tokens, recommended)")
                             .color(theme::INK_3)
-                            .monospace()
-                            .size(11.0),
+                            .size(11.5),
                     );
-                })
-                .response
-                .interact(egui::Sense::click());
-            if resp.clicked() {
-                model.storage = Storage::Env;
-            }
-        });
+                });
 
-        ui.add_space(14.0);
-        ui.separator();
-        ui.add_space(10.0);
+                ui.add_space(6.0);
+                // Check rows, painted in a panel.
+                egui::Frame::new()
+                    .fill(theme::PANEL_2)
+                    .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                    .corner_radius(6.0)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        draw_check_row(ui, "Connectivity (auth)", "GET /v1/models", model.check1);
+                        if model.test_translation {
+                            draw_check_row(
+                                ui,
+                                "Sample translation",
+                                "\"Hello, world.\" → \"Hallo, Welt.\"",
+                                model.check2,
+                            );
+                        }
+                    });
 
-        // Step 3: verify.
-        ui.label(
-            RichText::new("STEP 3 · VERIFY")
-                .color(theme::INK_3)
-                .monospace()
-                .size(10.0)
-                .strong(),
-        );
-        ui.add_space(6.0);
-
-        ui.horizontal(|ui| {
-            let mut t = model.test_translation;
-            ui.checkbox(&mut t, "");
-            model.test_translation = t;
-            ui.label(
-                RichText::new("Test with a real translation")
-                    .color(theme::INK_2)
-                    .size(12.5),
-            );
-            ui.label(
-                RichText::new(" (~$0.0001 in tokens, recommended)")
-                    .color(theme::INK_3)
-                    .size(11.5),
-            );
-        });
-
-        ui.add_space(6.0);
-        // Check rows, painted in a panel.
-        egui::Frame::new()
-            .fill(theme::PANEL_2)
-            .stroke(Stroke::new(1.0, theme::LINE_SOFT))
-            .corner_radius(6.0)
-            .inner_margin(12.0)
-            .show(ui, |ui| {
-                draw_check_row(ui, "Connectivity (auth)", "GET /v1/models", model.check1);
-                if model.test_translation {
-                    draw_check_row(
-                        ui,
-                        "Sample translation",
-                        "\"Hello, world.\" → \"Hallo, Welt.\"",
-                        model.check2,
-                    );
-                }
-            });
-
-        // Error box.
-        if matches!(model.phase, WizardPhase::Error) && !model.err_msg.is_empty() {
-            ui.add_space(8.0);
-            egui::Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(255, 118, 118, 20))
-                .stroke(Stroke::new(
-                    1.0,
-                    Color32::from_rgba_unmultiplied(255, 118, 118, 64),
-                ))
-                .corner_radius(6.0)
-                .inner_margin(10.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("!")
-                                .color(theme::BAD)
-                                .strong()
-                                .monospace()
-                                .size(13.0),
-                        );
-                        ui.add_space(6.0);
-                        ui.vertical(|ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&model.err_msg)
+                // Error box.
+                if matches!(model.phase, WizardPhase::Error) && !model.err_msg.is_empty() {
+                    ui.add_space(8.0);
+                    egui::Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(255, 118, 118, 20))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(255, 118, 118, 64),
+                        ))
+                        .corner_radius(6.0)
+                        .inner_margin(10.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("!")
                                         .color(theme::BAD)
                                         .strong()
                                         .monospace()
-                                        .size(12.5),
-                                )
-                                .wrap(),
-                            );
-                            ui.label(
+                                        .size(13.0),
+                                );
+                                ui.add_space(6.0);
+                                ui.vertical(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&model.err_msg)
+                                                .color(theme::BAD)
+                                                .strong()
+                                                .monospace()
+                                                .size(12.5),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.label(
                                 RichText::new(
                                     "Try a different key, or open config.toml to switch provider.",
                                 )
                                 .color(theme::INK_2)
                                 .size(11.0),
                             );
-                            if ui
-                                .button(RichText::new("Open config").monospace().size(11.0))
-                                .clicked()
-                            {
-                                outcome = Some(SetupOutcome::OpenConfig);
-                            }
+                                    if ui
+                                        .button(RichText::new("Open config").monospace().size(11.0))
+                                        .clicked()
+                                    {
+                                        outcome = Some(SetupOutcome::OpenConfig);
+                                    }
+                                });
+                            });
                         });
-                    });
-                });
-        }
+                }
 
-        // Footer.
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                outcome = Some(SetupOutcome::Cancel);
-            }
-            ui.allocate_space(egui::Vec2::new(ui.available_width() - 180.0, 0.0));
-            if matches!(model.phase, WizardPhase::Done) {
-                let btn = egui::Button::new(
-                    RichText::new("Save and start ✓")
-                        .color(theme::ACCENT_INK)
-                        .strong(),
-                )
-                .fill(theme::GOOD);
-                if ui.add(btn).clicked() {
-                    outcome = Some(SetupOutcome::SaveAndStart);
-                }
-            } else {
-                let label = match model.phase {
-                    WizardPhase::Verifying => "Verifying…",
-                    _ => "Verify →",
-                };
-                let btn = egui::Button::new(RichText::new(label).color(theme::ACCENT_INK).strong())
-                    .fill(if verify_enabled(model) {
-                        theme::ACCENT
+                // Footer.
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        outcome = Some(SetupOutcome::Cancel);
+                    }
+                    ui.allocate_space(egui::Vec2::new(ui.available_width() - 180.0, 0.0));
+                    if matches!(model.phase, WizardPhase::Done) {
+                        let btn = egui::Button::new(
+                            RichText::new("Save and start ✓")
+                                .color(theme::ACCENT_INK)
+                                .strong(),
+                        )
+                        .fill(theme::GOOD);
+                        if ui.add(btn).clicked() {
+                            outcome = Some(SetupOutcome::SaveAndStart);
+                        }
                     } else {
-                        theme::PANEL_3
-                    });
-                let resp = ui.add_enabled(verify_enabled(model), btn);
-                if resp.clicked() {
-                    outcome = Some(SetupOutcome::Verify);
-                }
-            }
-        });
+                        let label = match model.phase {
+                            WizardPhase::Verifying => "Verifying…",
+                            _ => "Verify →",
+                        };
+                        let btn = egui::Button::new(
+                            RichText::new(label).color(theme::ACCENT_INK).strong(),
+                        )
+                        .fill(if verify_enabled(model) {
+                            theme::ACCENT
+                        } else {
+                            theme::PANEL_3
+                        });
+                        let resp = ui.add_enabled(verify_enabled(model), btn);
+                        if resp.clicked() {
+                            outcome = Some(SetupOutcome::Verify);
+                        }
+                    }
+                });
             }); // ScrollArea
     });
 
@@ -722,8 +724,11 @@ mod tests {
 
     #[test]
     fn connectivity_request_deepseek_uses_bearer_auth() {
-        let (url, headers) =
-            connectivity_request("deepseek", "https://api.deepseek.com/v1", "sk-deepseek-test");
+        let (url, headers) = connectivity_request(
+            "deepseek",
+            "https://api.deepseek.com/v1",
+            "sk-deepseek-test",
+        );
         assert_eq!(url, "https://api.deepseek.com/v1/models");
         assert!(headers
             .iter()
@@ -732,10 +737,7 @@ mod tests {
 
     #[test]
     fn default_model_returns_provider_specific_models() {
-        assert_eq!(
-            default_model("anthropic"),
-            "claude-haiku-4-5-20251001"
-        );
+        assert_eq!(default_model("anthropic"), "claude-haiku-4-5-20251001");
         assert_eq!(default_model("openai"), "gpt-4o-mini");
         assert_eq!(default_model("gemini"), "gemini-2.0-flash");
         assert_eq!(default_model("ollama"), "llama3.2");
@@ -744,10 +746,7 @@ mod tests {
 
     #[test]
     fn default_model_falls_back_to_anthropic_for_unknown() {
-        assert_eq!(
-            default_model("nonexistent"),
-            "claude-haiku-4-5-20251001"
-        );
+        assert_eq!(default_model("nonexistent"), "claude-haiku-4-5-20251001");
     }
 
     #[test]
