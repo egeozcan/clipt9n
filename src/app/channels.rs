@@ -123,6 +123,7 @@ impl super::ClipApp {
             crate::tray::ID_HISTORY => self.summon_history(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
+            crate::tray::ID_OPEN_CONFIG => self.dispatch_open_config(),
             crate::tray::ID_ACCESSIBILITY_SETTINGS => self.dispatch_open_accessibility_settings(),
             crate::tray::ID_RERUN_WIZARD => self.dispatch_rerun_wizard(ctx),
             crate::tray::ID_HIDE => self.dispatch_hide_tray_request(ctx),
@@ -147,6 +148,27 @@ impl super::ClipApp {
         };
         if let Err(e) = tx.send(()) {
             tracing::warn!(error = %e, "tray: reload glossary send failed");
+        }
+    }
+
+    fn dispatch_open_config(&self) {
+        let Some(parent) = self.state_path.parent() else {
+            tracing::warn!("tray: cannot open config — state path has no parent");
+            return;
+        };
+        let cfg_path = parent.join("config.toml");
+        // Create an empty config file if it doesn't exist yet, so the
+        // user can edit it immediately.
+        if !cfg_path.exists() {
+            if let Err(e) = std::fs::write(&cfg_path, "") {
+                tracing::warn!(error = %e, path = %cfg_path.display(), "tray: failed to create config file");
+                return;
+            }
+            tracing::info!(path = %cfg_path.display(), "tray: created empty config file");
+        }
+        match crate::platform::current().open_path(&cfg_path) {
+            Ok(()) => tracing::info!(path = %cfg_path.display(), "tray: opened config"),
+            Err(e) => tracing::warn!(error = %e, "tray: open config failed"),
         }
     }
 
