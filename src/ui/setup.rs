@@ -145,7 +145,7 @@ pub fn default_model(provider_kind: &str) -> &'static str {
         "openai" => "gpt-4o-mini",
         "gemini" => "gemini-2.0-flash",
         "ollama" => "llama3.2",
-        "deepseek" => "deepseek-v4-pro",
+        "deepseek" => "deepseek-v4-flash",
         _ => "claude-haiku-4-5-20251001",
     }
 }
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(default_model("openai"), "gpt-4o-mini");
         assert_eq!(default_model("gemini"), "gemini-2.0-flash");
         assert_eq!(default_model("ollama"), "llama3.2");
-        assert_eq!(default_model("deepseek"), "deepseek-v4-pro");
+        assert_eq!(default_model("deepseek"), "deepseek-v4-flash");
     }
 
     #[test]
