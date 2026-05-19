@@ -205,6 +205,12 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
 
     frame.show(ctx, |ui| {
         ui.set_max_width(540.0); // 580px outer - 2 × 20px margin
+        // Wrap entire wizard in a ScrollArea so long content (e.g.
+        // provider error messages) doesn't get clipped by the fixed
+        // viewport height.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
 
         // Header.
         ui.label(
@@ -511,12 +517,15 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                         );
                         ui.add_space(6.0);
                         ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(&model.err_msg)
-                                    .color(theme::BAD)
-                                    .strong()
-                                    .monospace()
-                                    .size(12.5),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&model.err_msg)
+                                        .color(theme::BAD)
+                                        .strong()
+                                        .monospace()
+                                        .size(12.5),
+                                )
+                                .wrap(),
                             );
                             ui.label(
                                 RichText::new(
@@ -570,6 +579,7 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                 }
             }
         });
+            }); // ScrollArea
     });
 
     outcome
