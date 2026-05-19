@@ -304,9 +304,10 @@ impl Config {
         }
         let contents = std::fs::read_to_string(path)
             .map_err(|e| TranslateError::Config(format!("reading {}: {e}", path.display())))?;
-        let cfg: Self = toml::from_str(&contents)
+        let mut cfg: Self = toml::from_str(&contents)
             .map_err(|e| TranslateError::Config(format!("parsing {}: {e}", path.display())))?;
         cfg.validate()?;
+        cfg.normalize();
         Ok(cfg)
     }
 
@@ -336,6 +337,59 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Auto-correct stale provider defaults when the user changes `type`
+    /// but leaves the previous provider's model / base_url / account
+    /// untouched. Only fires when the value matches another provider's
+    /// hardcoded default exactly — custom values are never overwritten.
+    fn normalize(&mut self) {
+        let kind = self.provider.kind.as_str();
+        let (default_model, default_url, default_account) = match kind {
+            "anthropic" => (
+                "claude-haiku-4-5-20251001",
+                "https://api.anthropic.com/v1",
+                "anthropic",
+            ),
+            "openai" => ("gpt-4o-mini", "https://api.openai.com/v1", "openai"),
+            "gemini" => (
+                "gemini-2.0-flash",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                "gemini",
+            ),
+            "ollama" => ("llama3.2", "http://localhost:11434/v1", "ollama"),
+            "deepseek" => (
+                "deepseek-v4-flash",
+                "https://api.deepseek.com/v1",
+                "deepseek",
+            ),
+            _ => return, // unknown provider — leave config as-is
+        };
+
+        // Detect if the model matches the default for a DIFFERENT provider.
+        let model_is_stale = self.provider.model != default_model
+            && all_default_models()
+                .iter()
+                .any(|&(provider, m)| provider != kind && self.provider.model == m);
+        if model_is_stale {
+            self.provider.model = default_model.to_string();
+        }
+
+        // Same heuristic for base_url.
+        let url_is_stale = self.provider.base_url != default_url
+            && all_default_urls()
+                .iter()
+                .any(|&(provider, u)| provider != kind && self.provider.base_url == u);
+        if url_is_stale {
+            self.provider.base_url = default_url.to_string();
+        }
+
+        // Same for the API key account name.
+        if self.provider.api_key.account != default_account
+            && all_default_accounts().contains(&self.provider.api_key.account.as_str())
+        {
+            self.provider.api_key.account = default_account.to_string();
+        }
     }
 
     /// Look up a target-language label by ISO code from configured slots.
@@ -370,6 +424,38 @@ impl Config {
         std::fs::write(path, toml_str)
             .map_err(|e| TranslateError::Config(format!("writing {}: {e}", path.display())))
     }
+}
+
+/// Hardcoded default models for every known provider, used by
+/// `Config::normalize` to detect stale cross-provider defaults.
+fn all_default_models() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("anthropic", "claude-haiku-4-5-20251001"),
+        ("openai", "gpt-4o-mini"),
+        ("gemini", "gemini-2.0-flash"),
+        ("ollama", "llama3.2"),
+        ("deepseek", "deepseek-v4-flash"),
+    ]
+}
+
+/// Hardcoded default base URLs for every known provider.
+fn all_default_urls() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("anthropic", "https://api.anthropic.com/v1"),
+        ("openai", "https://api.openai.com/v1"),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
+        ("ollama", "http://localhost:11434/v1"),
+        ("deepseek", "https://api.deepseek.com/v1"),
+    ]
+}
+
+/// Known provider account names — values a user would only have if
+/// they previously ran the setup wizard for that provider.
+fn all_default_accounts() -> Vec<&'static str> {
+    vec!["anthropic", "openai", "gemini", "ollama", "deepseek"]
 }
 
 /// Logical hotkey modifier as authored by the user. Mapped to the
@@ -863,6 +949,70 @@ copy_delay_ms = 150
         assert_eq!(loaded.hotkey.selection.key, "K");
         assert_eq!(loaded.glossary.matching, "substring");
         assert!(!loaded.history.store_text);
+    }
+
+    #[test]
+    fn normalize_fixes_stale_model_when_type_changes() {
+        // Simulate: user had Anthropic, then changed type to "deepseek"
+        // without updating model or base_url.
+        let toml = r#"
+[provider]
+type = "deepseek"
+model = "claude-haiku-4-5-20251001"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 30
+
+[provider.api_key]
+source = "file"
+account = "anthropic"
+"#;
+        let mut cfg: Config = toml::from_str(toml).unwrap();
+        cfg.normalize();
+        assert_eq!(cfg.provider.kind, "deepseek");
+        assert_eq!(cfg.provider.model, "deepseek-v4-flash");
+        assert_eq!(cfg.provider.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(cfg.provider.api_key.account, "deepseek");
+    }
+
+    #[test]
+    fn normalize_preserves_custom_model() {
+        // User set a custom model — should never be overwritten.
+        let toml = r#"
+[provider]
+type = "deepseek"
+model = "deepseek-v4-pro"
+base_url = "https://api.deepseek.com/v1"
+timeout_seconds = 30
+
+[provider.api_key]
+source = "file"
+account = "deepseek"
+"#;
+        let mut cfg: Config = toml::from_str(toml).unwrap();
+        cfg.normalize();
+        assert_eq!(cfg.provider.model, "deepseek-v4-pro");
+        assert_eq!(cfg.provider.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(cfg.provider.api_key.account, "deepseek");
+    }
+
+    #[test]
+    fn normalize_noop_when_already_correct() {
+        let toml = r#"
+[provider]
+type = "anthropic"
+model = "claude-haiku-4-5-20251001"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 30
+
+[provider.api_key]
+source = "file"
+account = "anthropic"
+"#;
+        let mut cfg: Config = toml::from_str(toml).unwrap();
+        cfg.normalize();
+        assert_eq!(cfg.provider.model, "claude-haiku-4-5-20251001");
+        assert_eq!(cfg.provider.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(cfg.provider.api_key.account, "anthropic");
     }
 
     #[test]
