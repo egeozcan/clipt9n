@@ -26,8 +26,8 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ProviderConfig {
-    /// One of: "anthropic", "openai", "gemini", "ollama".
-    /// gemini and ollama route through the OpenAI-compatible provider.
+    /// One of: "anthropic", "openai", "gemini", "ollama", "deepseek".
+    /// gemini, ollama, and deepseek route through the OpenAI-compatible provider.
     #[serde(rename = "type")]
     pub kind: String,
     pub model: String,

@@ -15,8 +15,8 @@ use crate::ui::theme;
 /// check1/check2/errMsg.
 #[derive(Debug, Clone, Default)]
 pub struct SetupWizardModel {
-    /// One of "anthropic" | "openai" | "gemini" | "ollama". Default
-    /// "anthropic" per design.
+    /// One of "anthropic" | "openai" | "gemini" | "ollama" | "deepseek".
+    /// Default "anthropic" per design.
     pub provider: String,
     /// API key in flight. Wrapped in `Zeroizing` from the moment the
     /// user types it.
@@ -92,6 +92,7 @@ pub fn provider_key_url(provider_kind: &str) -> &'static str {
         "openai" => "https://platform.openai.com/api-keys",
         "gemini" => "https://aistudio.google.com/app/apikey",
         "ollama" => "https://ollama.com/download",
+        "deepseek" => "https://platform.deepseek.com/api_keys",
         _ => "https://console.anthropic.com/settings/keys",
     }
 }
@@ -108,6 +109,7 @@ pub fn providers() -> Vec<(&'static str, &'static str, &'static str)> {
         ("openai", "OpenAI", "OPENAI_API_KEY"),
         ("gemini", "Google Gemini", "GEMINI_API_KEY"),
         ("ollama", "Ollama (local)", "OLLAMA_API_KEY"),
+        ("deepseek", "DeepSeek", "DEEPSEEK_API_KEY"),
     ]
 }
 
@@ -129,6 +131,7 @@ pub fn default_base_url(provider_kind: &str) -> &'static str {
         "openai" => "https://api.openai.com/v1",
         "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
         "ollama" => "http://localhost:11434/v1",
+        "deepseek" => "https://api.deepseek.com/v1",
         _ => "https://api.anthropic.com/v1",
     }
 }
@@ -590,13 +593,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn providers_returns_four_entries_in_design_order() {
+    fn providers_returns_five_entries_in_design_order() {
         let p = providers();
-        assert_eq!(p.len(), 4);
+        assert_eq!(p.len(), 5);
         assert_eq!(p[0].0, "anthropic");
         assert_eq!(p[1].0, "openai");
         assert_eq!(p[2].0, "gemini");
         assert_eq!(p[3].0, "ollama");
+        assert_eq!(p[4].0, "deepseek");
     }
 
     #[test]
@@ -627,6 +631,10 @@ mod tests {
             "https://aistudio.google.com/app/apikey"
         );
         assert_eq!(provider_key_url("ollama"), "https://ollama.com/download");
+        assert_eq!(
+            provider_key_url("deepseek"),
+            "https://platform.deepseek.com/api_keys"
+        );
     }
 
     #[test]
@@ -686,6 +694,16 @@ mod tests {
         assert!(headers
             .iter()
             .any(|(k, v)| k == "Authorization" && v == "Bearer sk-test"));
+    }
+
+    #[test]
+    fn connectivity_request_deepseek_uses_bearer_auth() {
+        let (url, headers) =
+            connectivity_request("deepseek", "https://api.deepseek.com/v1", "sk-deepseek-test");
+        assert_eq!(url, "https://api.deepseek.com/v1/models");
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v == "Bearer sk-deepseek-test"));
     }
 
     #[test]

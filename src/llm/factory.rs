@@ -39,7 +39,7 @@ pub fn build_provider(
             &cfg.provider.model,
             timeout,
         )?),
-        "openai" | "gemini" | "ollama" => Arc::new(OpenAiCompatibleProvider::new(
+        "openai" | "gemini" | "ollama" | "deepseek" => Arc::new(OpenAiCompatibleProvider::new(
             base_url,
             key,
             &cfg.provider.model,
@@ -47,7 +47,7 @@ pub fn build_provider(
         )?),
         other => {
             return Err(TranslateError::Config(format!(
-                "unknown provider type '{other}'; expected one of: anthropic, openai, gemini, ollama"
+                "unknown provider type '{other}'; expected one of: anthropic, openai, gemini, ollama, deepseek"
             )));
         }
     };
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn openai_compatible_kinds_route_to_openai_provider() {
-        for kind in ["openai", "gemini", "ollama"] {
+        for kind in ["openai", "gemini", "ollama", "deepseek"] {
             let mut cfg = Config::default();
             cfg.provider.kind = kind.into();
             let key = Zeroizing::new("sk-test".to_string());
