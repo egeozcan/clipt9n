@@ -6,6 +6,7 @@ use std::time::Duration;
 use super::pure;
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::error::TranslateError;
+use crate::history::store::NewEntry;
 use crate::translator::{Action, Translator};
 
 /// Outcome from a translation worker. Sent from the tokio runtime to the
@@ -59,6 +60,8 @@ impl super::ClipApp {
             let preview =
                 crate::ui::size_confirm::format_preview(&self.prompt_model.clipboard_text);
             let char_count = self.prompt_model.clipboard_text.chars().count();
+            // Don't consume pending_preview here — the user may still
+            // want preview mode when they confirm the size.
             self.app_state = super::AppState::ConfirmingSize {
                 pending_action: action,
                 action_label,
@@ -68,7 +71,8 @@ impl super::ClipApp {
             };
             return;
         }
-        self.start_translation(ctx, slot, action, action_label, overlay_label);
+        let preview_mode = std::mem::take(&mut self.pending_preview);
+        self.start_translation(ctx, slot, action, action_label, overlay_label, preview_mode);
     }
 
     pub(super) fn start_translation(
@@ -78,6 +82,7 @@ impl super::ClipApp {
         action: Action,
         action_label: String,
         overlay_label: String,
+        preview_mode: bool,
     ) {
         self.dispatch_gen = pure::next_gen(self.dispatch_gen);
         let gen = self.dispatch_gen;
@@ -103,6 +108,7 @@ impl super::ClipApp {
             action_label: action_label.clone(),
             overlay_label,
             started_at: std::time::Instant::now(),
+            preview_mode,
         };
         ctx.request_repaint();
 
@@ -179,6 +185,32 @@ impl super::ClipApp {
         }
         match outcome.result {
             Ok(ref translated) => {
+                // If preview mode is active, show the result window
+                // instead of writing to clipboard directly.
+                let preview_mode = matches!(
+                    &self.app_state,
+                    super::AppState::Translating {
+                        preview_mode: true,
+                        ..
+                    }
+                );
+                if preview_mode {
+                    self.app_state = super::AppState::ShowingResult {
+                        result_text: translated.clone(),
+                        source_text: outcome.source_text.clone(),
+                        action_label: outcome.action_label.clone(),
+                        detected_source_lang: outcome.detected_source_lang.clone(),
+                        action: outcome.action.clone(),
+                        slot: outcome.slot,
+                    };
+                    tracing::info!(
+                        slot = outcome.slot,
+                        action = %outcome.action_label,
+                        "translation complete — showing result preview"
+                    );
+                    return;
+                }
+
                 let mut cb = match ArboardClipboard::new() {
                     Ok(c) => c,
                     Err(e) => {
@@ -236,6 +268,17 @@ impl super::ClipApp {
     }
 
     fn schedule_history_insert(&self, outcome: &TranslationOutcome, translated: &str) {
+        let entry = build_history_entry(
+            &outcome.source_text,
+            translated,
+            &outcome.action,
+            outcome.detected_source_lang.as_deref(),
+            self.cfg.history.store_text,
+        );
+        self.schedule_history_insert_from_entry(entry);
+    }
+
+    pub(super) fn schedule_history_insert_from_entry(&self, entry: NewEntry) {
         // Short-circuit if history is disabled (config or corruption).
         let Some(history) = self.history.clone() else {
             return;
@@ -246,41 +289,13 @@ impl super::ClipApp {
         {
             return;
         }
-        let history_disabled = self.history_disabled.clone();
         let max_entries = self.cfg.history.max_entries;
-        let store_text = self.cfg.history.store_text;
-        let source_text = outcome.source_text.clone();
-        let result_text = translated.to_string();
-        let action = outcome.action.clone();
-        let detected = outcome.detected_source_lang.clone();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        let entry = crate::history::store::NewEntry {
-            created_at: now,
-            action: pure::action_kind_str(&action).to_string(),
-            source_lang: detected,
-            target_lang: pure::target_lang_for(&action),
-            char_count: source_text.chars().count() as i64,
-            source: if store_text { Some(source_text) } else { None },
-            result: if store_text { Some(result_text) } else { None },
-        };
 
         let inner = self.runtime.spawn(async move {
-            // history is Arc<History> (already unwrapped from the Option
-            // above). insert_with_cap takes &self.
             if let Err(e) = history.insert_with_cap(entry, max_entries) {
                 tracing::warn!(error = %e, "history insert failed; row dropped");
-                // Don't disable globally — a transient SQLite error
-                // (e.g., disk full) shouldn't permanently take down
-                // history. Corruption-class errors set the flag at
-                // open time, not at insert time.
-                let _ = history_disabled; // suppress unused warning
             }
         });
-        // Watcher: catch a panic in the inner task and log it.
         self.runtime.spawn(async move {
             if let Err(join_err) = inner.await {
                 tracing::warn!(
@@ -289,5 +304,39 @@ impl super::ClipApp {
                 );
             }
         });
+    }
+}
+
+/// Build a `NewEntry` for history insertion from explicit fields.
+/// Shared by `schedule_history_insert` (direct clipboard path) and
+/// `update_showing_result` (preview → Copy path).
+pub(super) fn build_history_entry(
+    source_text: &str,
+    result_text: &str,
+    action: &Action,
+    detected_source_lang: Option<&str>,
+    store_text: bool,
+) -> NewEntry {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    NewEntry {
+        created_at: now,
+        action: pure::action_kind_str(action).to_string(),
+        source_lang: detected_source_lang.map(String::from),
+        target_lang: pure::target_lang_for(action),
+        char_count: source_text.chars().count() as i64,
+        source: if store_text {
+            Some(source_text.to_string())
+        } else {
+            None
+        },
+        result: if store_text {
+            Some(result_text.to_string())
+        } else {
+            None
+        },
     }
 }

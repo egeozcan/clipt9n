@@ -10,9 +10,10 @@ use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::error::TranslateError;
 use crate::platform::Platform;
 use crate::translator::Action;
-use crate::ui::{custom_prompt as prompt_custom, prompt, size_confirm, translating};
+use crate::ui::{custom_prompt as prompt_custom, prompt, result, size_confirm, translating};
 
 use super::pure;
+use super::translation::build_history_entry;
 use super::AppState;
 
 impl super::ClipApp {
@@ -60,6 +61,7 @@ impl super::ClipApp {
     }
 
     fn show_window_with_current_prompt_text(&mut self, ctx: &egui::Context) {
+        self.pending_preview = false;
         self.prompt_model.last_slot = self.state.last_slot;
 
         // Compute pair-agnostic glossary hits for the chip strip preview.
@@ -111,11 +113,16 @@ impl super::ClipApp {
         let click = prompt::draw(ctx, &self.cfg, &self.prompt_model, focus_target);
         let key = self.handle_keys_showing(ctx);
         let outcome = click.or(key);
+        // Capture Shift-held state at pick time. Shift+pick means
+        // "show result in a preview window" instead of replacing
+        // the clipboard immediately.
+        let shift_held = ctx.input(|i| i.modifiers.shift);
         match outcome {
             Some(prompt::PromptOutcome::Pick(n)) => {
                 // dispatch() may transition to any of the new states; restore
                 // Showing only if dispatch didn't transition.
                 self.app_state = AppState::Showing;
+                self.pending_preview = shift_held && !self.prompt_model.clipboard_text.is_empty();
                 self.dispatch(ctx, n);
             }
             Some(prompt::PromptOutcome::Cancel) => {
@@ -206,7 +213,8 @@ impl super::ClipApp {
                     Action::Custom { .. } => 6,
                     _ => self.state.last_slot.unwrap_or(0),
                 };
-                self.start_translation(ctx, slot, pending_action, action_label, overlay_label);
+                let preview_mode = std::mem::take(&mut self.pending_preview);
+                self.start_translation(ctx, slot, pending_action, action_label, overlay_label, preview_mode);
             }
             Some(size_confirm::SizeConfirmOutcome::Cancel) => {
                 self.dismiss_to_idle(ctx);
@@ -230,6 +238,7 @@ impl super::ClipApp {
         action_label: String,
         overlay_label: String,
         started_at: std::time::Instant,
+        preview_mode: bool,
     ) {
         // Tighter repaint cadence so the bar animates smoothly.
         if !self.reduced_motion {
@@ -263,7 +272,83 @@ impl super::ClipApp {
             action_label,
             overlay_label,
             started_at,
+            preview_mode,
         };
+    }
+
+    pub(super) fn update_showing_result(
+        &mut self,
+        ctx: &egui::Context,
+        result_text: String,
+        source_text: String,
+        action_label: String,
+        detected_source_lang: Option<String>,
+        action: Action,
+        slot: u8,
+    ) {
+        let model = result::ResultModel {
+            result_text: result_text.clone(),
+            action_label: action_label.clone(),
+            source_char_count: source_text.chars().count(),
+        };
+        let click = result::draw(ctx, &model);
+        let key = ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                Some(result::ResultOutcome::Dismiss)
+            } else if i.key_pressed(Key::Enter) {
+                Some(result::ResultOutcome::Copy)
+            } else {
+                None
+            }
+        });
+        let outcome = click.or(key);
+        match outcome {
+            Some(result::ResultOutcome::Copy) => {
+                if let Err(e) = self.copy_to_clipboard(&result_text) {
+                    tracing::error!(error = %e, "clipboard write from result preview failed");
+                } else {
+                    if let Err(e) =
+                        crate::notify::translation_copied(&action_label, &result_text)
+                    {
+                        tracing::warn!(error = %e, "notification failed");
+                    }
+                    // History insert (best-effort, same pattern as
+                    // handle_translation_done).
+                    let entry = build_history_entry(
+                        &source_text,
+                        &result_text,
+                        &action,
+                        detected_source_lang.as_deref(),
+                        self.cfg.history.store_text,
+                    );
+                    self.schedule_history_insert_from_entry(entry);
+                }
+                tracing::info!(
+                    slot,
+                    action = %action_label,
+                    "result preview: copied to clipboard"
+                );
+                self.dismiss_to_idle(ctx);
+            }
+            Some(result::ResultOutcome::Dismiss) => {
+                tracing::info!(
+                    slot,
+                    action = %action_label,
+                    "result preview: dismissed without copying"
+                );
+                self.dismiss_to_idle(ctx);
+            }
+            None => {
+                self.app_state = AppState::ShowingResult {
+                    result_text,
+                    source_text,
+                    action_label,
+                    detected_source_lang,
+                    action,
+                    slot,
+                };
+            }
+        }
     }
 
     fn handle_keys_showing(&self, ctx: &egui::Context) -> Option<prompt::PromptOutcome> {

@@ -1,6 +1,7 @@
 pub mod custom_prompt;
 pub mod history;
 pub mod prompt;
+pub mod result;
 pub mod setup;
 pub mod size_confirm;
 pub mod theme;

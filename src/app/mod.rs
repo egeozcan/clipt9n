@@ -66,6 +66,20 @@ enum AppState {
         action_label: String,
         overlay_label: String,
         started_at: std::time::Instant,
+        /// Whether the user held Shift when picking the slot —
+        /// result will be shown in a preview window instead of
+        /// written directly to the clipboard.
+        preview_mode: bool,
+    },
+    /// Translation completed in preview mode. The result is
+    /// displayed with Copy and Dismiss actions.
+    ShowingResult {
+        result_text: String,
+        source_text: String,
+        action_label: String,
+        detected_source_lang: Option<String>,
+        action: crate::translator::Action,
+        slot: u8,
     },
     /// Encrypted history viewer is open. The model holds the
     /// most-recent query results plus search/selection state.
@@ -237,6 +251,12 @@ pub struct ClipApp {
     /// between animated and static rendering.
     reduced_motion: bool,
 
+    /// Set to `true` when the user picks a slot while holding Shift in
+    /// the prompt window. Consumed by `start_translation` and carried
+    /// through to `AppState::Translating.preview_mode`. Cleared by
+    /// `std::mem::take` at consumption.
+    pending_preview: bool,
+
     /// PID of the application that was frontmost before clipt9n showed its
     /// window. Captured in `show_window` / `show_window_from_selection`;
     /// restored in `dismiss_to_idle` so the user lands back in their
@@ -323,6 +343,7 @@ impl ClipApp {
             dispatch_gen: 0,
             last_translation_at: None,
             reduced_motion,
+            pending_preview: false,
             previous_app_pid: None,
         }
     }
@@ -500,11 +521,30 @@ impl eframe::App for ClipApp {
                 action_label,
                 overlay_label,
                 started_at,
+                preview_mode,
             } => {
-                self.update_translating(ctx, gen, action_label, overlay_label, started_at);
+                self.update_translating(ctx, gen, action_label, overlay_label, started_at, preview_mode);
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
+            AppState::ShowingResult {
+                result_text,
+                source_text,
+                action_label,
+                detected_source_lang,
+                action,
+                slot,
+            } => {
+                self.update_showing_result(
+                    ctx,
+                    result_text,
+                    source_text,
+                    action_label,
+                    detected_source_lang,
+                    action,
+                    slot,
+                );
+            }
             AppState::ConfirmingTrayHide { model } => {
                 self.update_confirming_tray_hide(ctx, model);
             }

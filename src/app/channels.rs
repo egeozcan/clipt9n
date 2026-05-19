@@ -168,6 +168,7 @@ impl super::ClipApp {
                 AppState::ShowingHistory { .. } => "showing_history",
                 AppState::SetupWizard { .. } => "setup_wizard",
                 AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
+                AppState::ShowingResult { .. } => "showing_result",
             },
             "dispatch_rerun_wizard"
         );
