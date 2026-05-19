@@ -192,7 +192,15 @@ impl super::ClipApp {
         model: &crate::ui::setup::SetupWizardModel,
     ) -> Result<(), TranslateError> {
         // Update in-memory config.
+        let prev_kind = self.cfg.provider.kind.clone();
         self.cfg.provider.kind = model.provider.clone();
+        // Auto-select sensible defaults when switching providers.
+        if self.cfg.provider.kind != prev_kind {
+            self.cfg.provider.model =
+                crate::ui::setup::default_model(&model.provider).to_string();
+            self.cfg.provider.base_url =
+                crate::ui::setup::default_base_url(&model.provider).to_string();
+        }
         let new_source = match model.storage {
             crate::ui::setup::Storage::Keychain => "keychain",
             crate::ui::setup::Storage::Env => "env",

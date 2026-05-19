@@ -136,6 +136,20 @@ pub fn default_base_url(provider_kind: &str) -> &'static str {
     }
 }
 
+/// Default model for each provider. Used by `persist_setup_completion`
+/// to auto-select a sensible model when the user switches provider
+/// in the setup wizard.
+pub fn default_model(provider_kind: &str) -> &'static str {
+    match provider_kind {
+        "anthropic" => "claude-haiku-4-5-20251001",
+        "openai" => "gpt-4o-mini",
+        "gemini" => "gemini-2.0-flash",
+        "ollama" => "llama3.2",
+        "deepseek" => "deepseek-v4-pro",
+        _ => "claude-haiku-4-5-20251001",
+    }
+}
+
 /// Which check produced a result. The App receives this in a channel
 /// and flips the corresponding `check1` / `check2` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -704,6 +718,26 @@ mod tests {
         assert!(headers
             .iter()
             .any(|(k, v)| k == "Authorization" && v == "Bearer sk-deepseek-test"));
+    }
+
+    #[test]
+    fn default_model_returns_provider_specific_models() {
+        assert_eq!(
+            default_model("anthropic"),
+            "claude-haiku-4-5-20251001"
+        );
+        assert_eq!(default_model("openai"), "gpt-4o-mini");
+        assert_eq!(default_model("gemini"), "gemini-2.0-flash");
+        assert_eq!(default_model("ollama"), "llama3.2");
+        assert_eq!(default_model("deepseek"), "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn default_model_falls_back_to_anthropic_for_unknown() {
+        assert_eq!(
+            default_model("nonexistent"),
+            "claude-haiku-4-5-20251001"
+        );
     }
 
     #[test]
