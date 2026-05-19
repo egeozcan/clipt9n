@@ -93,11 +93,11 @@ impl Default for LanguagesConfig {
                 code: "en".into(),
             },
             slot_2: LanguageSlot {
-                label: "Deutsch".into(),
+                label: "Deutsch (formell)".into(),
                 code: "de".into(),
             },
             slot_3: LanguageSlot {
-                label: "Türkçe".into(),
+                label: "Türkçe (resmî)".into(),
                 code: "tr".into(),
             },
         }
@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(cfg.provider.kind, "anthropic");
         assert_eq!(cfg.provider.model, "claude-haiku-4-5-20251001");
         assert_eq!(cfg.languages.slot_1.code, "en");
-        assert_eq!(cfg.languages.slot_2.label, "Deutsch");
+        assert_eq!(cfg.languages.slot_2.label, "Deutsch (formell)");
     }
 
     #[test]
@@ -599,8 +599,8 @@ code = "fr"
     fn label_for_code_resolves_default_slots() {
         let cfg = Config::default();
         assert_eq!(cfg.label_for_code("en").unwrap(), "English");
-        assert_eq!(cfg.label_for_code("de").unwrap(), "Deutsch");
-        assert_eq!(cfg.label_for_code("tr").unwrap(), "Türkçe");
+        assert_eq!(cfg.label_for_code("de").unwrap(), "Deutsch (formell)");
+        assert_eq!(cfg.label_for_code("tr").unwrap(), "Türkçe (resmî)");
     }
 
     #[test]

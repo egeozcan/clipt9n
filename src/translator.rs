@@ -364,7 +364,7 @@ mod tests {
             .unwrap();
         assert_eq!(result, "Hallo, Welt.");
         let (system, user) = provider.captured();
-        assert!(system.contains("Translate the user's text into Deutsch."));
+        assert!(system.contains("Translate the user's text into Deutsch (formell)."));
         assert_eq!(user, "Hello, world.");
     }
 

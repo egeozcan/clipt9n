@@ -200,8 +200,8 @@ mod tests {
             panic!("expected Action::Translate");
         };
         assert_eq!(code, "de");
-        assert_eq!(action_label, "Translate to Deutsch");
-        assert_eq!(overlay_label, "Translating to Deutsch…");
+        assert_eq!(action_label, "Translate to Deutsch (formell)");
+        assert_eq!(overlay_label, "Translating to Deutsch (formell)…");
     }
 
     #[test]
@@ -220,8 +220,8 @@ mod tests {
             panic!("expected Action::Translate");
         };
         assert_eq!(code, "tr");
-        assert_eq!(action_label, "Translate to Türkçe");
-        assert_eq!(overlay_label, "Translating to Türkçe…");
+        assert_eq!(action_label, "Translate to Türkçe (resmî)");
+        assert_eq!(overlay_label, "Translating to Türkçe (resmî)…");
     }
 
     #[test]
@@ -349,7 +349,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(
             action_label_for(&Action::Translate { code: "de".into() }, &cfg),
-            "Translate to Deutsch"
+            "Translate to Deutsch (formell)"
         );
         assert_eq!(action_label_for(&Action::FixGrammar, &cfg), "Fix grammar");
         assert_eq!(
