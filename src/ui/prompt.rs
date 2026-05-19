@@ -72,7 +72,7 @@ pub struct GlossaryHit {
     pub target: String,
 }
 
-pub const SLOTS: [SlotDef; 6] = [
+pub const SLOTS: [SlotDef; 8] = [
     SlotDef {
         n: 1,
         kind: SlotKind::Lang,
@@ -87,14 +87,22 @@ pub const SLOTS: [SlotDef; 6] = [
     },
     SlotDef {
         n: 4,
-        kind: SlotKind::FixGrammar,
+        kind: SlotKind::Lang,
     },
     SlotDef {
         n: 5,
-        kind: SlotKind::Rewrite,
+        kind: SlotKind::Lang,
     },
     SlotDef {
         n: 6,
+        kind: SlotKind::FixGrammar,
+    },
+    SlotDef {
+        n: 7,
+        kind: SlotKind::Rewrite,
+    },
+    SlotDef {
+        n: 8,
         kind: SlotKind::Custom,
     },
 ];
@@ -107,9 +115,11 @@ pub fn slot_strings(slot: SlotDef, cfg: &Config) -> (&str, &str) {
         (1, SlotKind::Lang) => (&cfg.languages.slot_1.label, &cfg.languages.slot_1.code),
         (2, SlotKind::Lang) => (&cfg.languages.slot_2.label, &cfg.languages.slot_2.code),
         (3, SlotKind::Lang) => (&cfg.languages.slot_3.label, &cfg.languages.slot_3.code),
-        (4, SlotKind::FixGrammar) => ("Fix grammar", "conservative"),
-        (5, SlotKind::Rewrite) => ("Rewrite for clarity", "aggressive"),
-        (6, SlotKind::Custom) => ("Custom prompt…", "type instruction"),
+        (4, SlotKind::Lang) => (&cfg.languages.slot_4.label, &cfg.languages.slot_4.code),
+        (5, SlotKind::Lang) => (&cfg.languages.slot_5.label, &cfg.languages.slot_5.code),
+        (6, SlotKind::FixGrammar) => ("Fix grammar", "conservative"),
+        (7, SlotKind::Rewrite) => ("Rewrite for clarity", "aggressive"),
+        (8, SlotKind::Custom) => ("Custom prompt…", "type instruction"),
         _ => ("(invalid slot)", ""),
     }
 }
@@ -304,7 +314,7 @@ fn draw_populated(
                 ui.style_mut().spacing.item_spacing.x = 4.0;
                 theme::kbd(ui, "1");
                 ui.label(RichText::new("–").color(theme::INK_3).size(11.0));
-                theme::kbd(ui, "6");
+                theme::kbd(ui, "8");
                 ui.label(
                     RichText::new("pick ·")
                         .color(theme::INK_3)
@@ -601,9 +611,9 @@ mod tests {
     }
 
     #[test]
-    fn slot_strings_for_slot_4_returns_fix_grammar_tag() {
+    fn slot_strings_for_slot_6_returns_fix_grammar_tag() {
         let cfg = Config::default();
-        let (label, tag) = slot_strings(SLOTS[3], &cfg);
+        let (label, tag) = slot_strings(SLOTS[5], &cfg);
         assert_eq!(label, "Fix grammar");
         assert_eq!(tag, "conservative");
     }

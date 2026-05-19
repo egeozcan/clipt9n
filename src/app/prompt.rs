@@ -169,7 +169,7 @@ impl super::ClipApp {
             let action = Action::Custom { instruction };
             let action_label = pure::action_label_for(&action, &self.cfg);
             let overlay_label = pure::overlay_label_for(&action);
-            self.dispatch_translate(ctx, 6, action, action_label, overlay_label);
+            self.dispatch_translate(ctx, 8, action, action_label, overlay_label);
             return;
         }
         // Otherwise stay in EnteringCustom with the (possibly mutated) model.
@@ -210,7 +210,7 @@ impl super::ClipApp {
                 // Use the persisted `last_slot` to identify which slot owned
                 // this dispatch. Custom prompts use slot 6.
                 let slot = match &pending_action {
-                    Action::Custom { .. } => 6,
+                    Action::Custom { .. } => 8,
                     _ => self.state.last_slot.unwrap_or(0),
                 };
                 let preview_mode = std::mem::take(&mut self.pending_preview);
@@ -373,6 +373,8 @@ impl super::ClipApp {
                 (Key::Num4, 4),
                 (Key::Num5, 5),
                 (Key::Num6, 6),
+                (Key::Num7, 7),
+                (Key::Num8, 8),
             ] {
                 if i.key_pressed(key) && !self.prompt_model.clipboard_text.is_empty() {
                     return Some(prompt::PromptOutcome::Pick(n));

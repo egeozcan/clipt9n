@@ -40,17 +40,29 @@ pub(super) fn decide_intent(slot: u8, cfg: &Config) -> Option<Intent> {
             },
             &cfg.languages.slot_3.label,
         )),
-        4 => Some(Intent::Translate {
+        4 => Some(translate_intent(
+            Action::Translate {
+                code: cfg.languages.slot_4.code.clone(),
+            },
+            &cfg.languages.slot_4.label,
+        )),
+        5 => Some(translate_intent(
+            Action::Translate {
+                code: cfg.languages.slot_5.code.clone(),
+            },
+            &cfg.languages.slot_5.label,
+        )),
+        6 => Some(Intent::Translate {
             action: Action::FixGrammar,
             action_label: "Fix grammar".into(),
             overlay_label: "Fixing grammar…".into(),
         }),
-        5 => Some(Intent::Translate {
+        7 => Some(Intent::Translate {
             action: Action::Rewrite,
             action_label: "Rewrite for clarity".into(),
             overlay_label: "Rewriting for clarity…".into(),
         }),
-        6 => Some(Intent::EnterCustom),
+        8 => Some(Intent::EnterCustom),
         _ => None,
     }
 }
@@ -200,8 +212,8 @@ mod tests {
             panic!("expected Action::Translate");
         };
         assert_eq!(code, "de");
-        assert_eq!(action_label, "Translate to Deutsch (formell)");
-        assert_eq!(overlay_label, "Translating to Deutsch (formell)…");
+        assert_eq!(action_label, "Translate to Deutsch");
+        assert_eq!(overlay_label, "Translating to Deutsch…");
     }
 
     #[test]
@@ -219,15 +231,55 @@ mod tests {
         let Action::Translate { code } = action else {
             panic!("expected Action::Translate");
         };
+        assert_eq!(code, "de");
+        assert_eq!(action_label, "Translate to Deutsch (formell)");
+        assert_eq!(overlay_label, "Translating to Deutsch (formell)…");
+    }
+
+    #[test]
+    fn slot_4_resolves_to_translate_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(4, &cfg).expect("slot 4 is valid");
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
+            panic!("expected Intent::Translate");
+        };
+        let Action::Translate { code } = action else {
+            panic!("expected Action::Translate");
+        };
+        assert_eq!(code, "tr");
+        assert_eq!(action_label, "Translate to Türkçe");
+        assert_eq!(overlay_label, "Translating to Türkçe…");
+    }
+
+    #[test]
+    fn slot_5_resolves_to_translate_intent() {
+        let cfg = cfg_with_threshold(2000);
+        let intent = decide_intent(5, &cfg).expect("slot 5 is valid");
+        let Intent::Translate {
+            action,
+            action_label,
+            overlay_label,
+        } = intent
+        else {
+            panic!("expected Intent::Translate");
+        };
+        let Action::Translate { code } = action else {
+            panic!("expected Action::Translate");
+        };
         assert_eq!(code, "tr");
         assert_eq!(action_label, "Translate to Türkçe (resmî)");
         assert_eq!(overlay_label, "Translating to Türkçe (resmî)…");
     }
 
     #[test]
-    fn slot_4_resolves_to_fix_grammar_intent() {
+    fn slot_6_resolves_to_fix_grammar_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(4, &cfg).expect("slot 4 is valid");
+        let intent = decide_intent(6, &cfg).expect("slot 6 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -242,9 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn slot_5_resolves_to_rewrite_intent() {
+    fn slot_7_resolves_to_rewrite_intent() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(5, &cfg).expect("slot 5 is valid");
+        let intent = decide_intent(7, &cfg).expect("slot 7 is valid");
         let Intent::Translate {
             action,
             action_label,
@@ -259,9 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn slot_6_resolves_to_enter_custom() {
+    fn slot_8_resolves_to_enter_custom() {
         let cfg = cfg_with_threshold(2000);
-        let intent = decide_intent(6, &cfg).expect("slot 6 is valid");
+        let intent = decide_intent(8, &cfg).expect("slot 8 is valid");
         assert!(matches!(intent, Intent::EnterCustom));
     }
 
@@ -269,7 +321,7 @@ mod tests {
     fn invalid_slot_returns_none() {
         let cfg = cfg_with_threshold(2000);
         assert!(decide_intent(0, &cfg).is_none());
-        assert!(decide_intent(7, &cfg).is_none());
+        assert!(decide_intent(9, &cfg).is_none());
     }
 
     #[test]
@@ -349,7 +401,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(
             action_label_for(&Action::Translate { code: "de".into() }, &cfg),
-            "Translate to Deutsch (formell)"
+            "Translate to Deutsch"
         );
         assert_eq!(action_label_for(&Action::FixGrammar, &cfg), "Fix grammar");
         assert_eq!(

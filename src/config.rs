@@ -83,6 +83,8 @@ pub struct LanguagesConfig {
     pub slot_1: LanguageSlot,
     pub slot_2: LanguageSlot,
     pub slot_3: LanguageSlot,
+    pub slot_4: LanguageSlot,
+    pub slot_5: LanguageSlot,
 }
 
 impl Default for LanguagesConfig {
@@ -93,10 +95,18 @@ impl Default for LanguagesConfig {
                 code: "en".into(),
             },
             slot_2: LanguageSlot {
-                label: "Deutsch (formell)".into(),
+                label: "Deutsch".into(),
                 code: "de".into(),
             },
             slot_3: LanguageSlot {
+                label: "Deutsch (formell)".into(),
+                code: "de".into(),
+            },
+            slot_4: LanguageSlot {
+                label: "Türkçe".into(),
+                code: "tr".into(),
+            },
+            slot_5: LanguageSlot {
                 label: "Türkçe (resmî)".into(),
                 code: "tr".into(),
             },
@@ -399,6 +409,8 @@ impl Config {
             &self.languages.slot_1,
             &self.languages.slot_2,
             &self.languages.slot_3,
+            &self.languages.slot_4,
+            &self.languages.slot_5,
         ] {
             if slot.code == code {
                 return Ok(&slot.label);
@@ -549,7 +561,7 @@ mod tests {
         assert_eq!(cfg.provider.kind, "anthropic");
         assert_eq!(cfg.provider.model, "claude-haiku-4-5-20251001");
         assert_eq!(cfg.languages.slot_1.code, "en");
-        assert_eq!(cfg.languages.slot_2.label, "Deutsch (formell)");
+        assert_eq!(cfg.languages.slot_2.label, "Deutsch");
     }
 
     #[test]
@@ -599,8 +611,8 @@ code = "fr"
     fn label_for_code_resolves_default_slots() {
         let cfg = Config::default();
         assert_eq!(cfg.label_for_code("en").unwrap(), "English");
-        assert_eq!(cfg.label_for_code("de").unwrap(), "Deutsch (formell)");
-        assert_eq!(cfg.label_for_code("tr").unwrap(), "Türkçe (resmî)");
+        assert_eq!(cfg.label_for_code("de").unwrap(), "Deutsch");
+        assert_eq!(cfg.label_for_code("tr").unwrap(), "Türkçe");
     }
 
     #[test]
