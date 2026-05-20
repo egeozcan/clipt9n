@@ -400,6 +400,24 @@ impl Config {
         {
             self.provider.api_key.account = default_account.to_string();
         }
+
+        self.normalize_languages();
+    }
+
+    /// Auto-correct stale language slot defaults. When a slot's saved value
+    /// matches a previously-shipped default that has since been replaced,
+    /// reset it to the current default. Custom user values are preserved.
+    fn normalize_languages(&mut self) {
+        // (slot index, prior default label, prior default code)
+        // Pre-3c08cfb, slot_3 shipped as Türkçe/tr. Now it defaults to
+        // Deutsch (formell)/de; reset only when the saved value still
+        // matches the prior default verbatim.
+        let stale_slot_3 = self.languages.slot_3.label == "Türkçe"
+            && self.languages.slot_3.code == "tr";
+        if stale_slot_3 {
+            let default = LanguagesConfig::default();
+            self.languages.slot_3 = default.slot_3;
+        }
     }
 
     /// Look up a target-language label by ISO code from configured slots.
@@ -1025,6 +1043,59 @@ account = "anthropic"
         assert_eq!(cfg.provider.model, "claude-haiku-4-5-20251001");
         assert_eq!(cfg.provider.base_url, "https://api.anthropic.com/v1");
         assert_eq!(cfg.provider.api_key.account, "anthropic");
+    }
+
+    #[test]
+    fn normalize_resets_stale_slot_3_to_deutsch_formell() {
+        // Pre-expansion configs had slot_3 = Türkçe/tr; new default is
+        // Deutsch (formell)/de.
+        let toml = r#"
+[provider]
+type = "anthropic"
+
+[provider.api_key]
+source = "file"
+account = "anthropic"
+
+[languages.slot_1]
+label = "English"
+code = "en"
+
+[languages.slot_2]
+label = "Deutsch"
+code = "de"
+
+[languages.slot_3]
+label = "Türkçe"
+code = "tr"
+"#;
+        let mut cfg: Config = toml::from_str(toml).unwrap();
+        cfg.normalize();
+        assert_eq!(cfg.languages.slot_3.label, "Deutsch (formell)");
+        assert_eq!(cfg.languages.slot_3.code, "de");
+        // Slots 4 and 5 fall back to defaults (Türkçe / Türkçe (resmî)).
+        assert_eq!(cfg.languages.slot_4.label, "Türkçe");
+        assert_eq!(cfg.languages.slot_5.label, "Türkçe (resmî)");
+    }
+
+    #[test]
+    fn normalize_preserves_customized_slot_3() {
+        let toml = r#"
+[provider]
+type = "anthropic"
+
+[provider.api_key]
+source = "file"
+account = "anthropic"
+
+[languages.slot_3]
+label = "Français"
+code = "fr"
+"#;
+        let mut cfg: Config = toml::from_str(toml).unwrap();
+        cfg.normalize();
+        assert_eq!(cfg.languages.slot_3.label, "Français");
+        assert_eq!(cfg.languages.slot_3.code, "fr");
     }
 
     #[test]
