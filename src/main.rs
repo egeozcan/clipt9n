@@ -213,6 +213,54 @@ fn main() -> anyhow::Result<()> {
     };
     let hotkey_in_use = hotkey_in_use || selection_hotkey_in_use;
 
+    // Replace hotkey — copies the current selection, translates it, and replaces inline.
+    let (replace_hotkey_id, replace_hotkey_in_use) = if cfg.hotkey.replace.enabled {
+        let mod_kind = match Modifier::parse(&cfg.hotkey.replace.modifier) {
+            Some(m) => m,
+            None => {
+                tracing::warn!(
+                    modifier = %cfg.hotkey.replace.modifier,
+                    "unknown replace hotkey modifier; replace hotkey disabled"
+                );
+                Modifier::Super
+            }
+        };
+        let mut mods = match mod_kind.resolve_native() {
+            NativeModifier::Ctrl => Modifiers::CONTROL,
+            NativeModifier::Alt => Modifiers::ALT,
+            NativeModifier::Meta => Modifiers::META,
+        };
+        if cfg.hotkey.replace.shift {
+            mods |= Modifiers::SHIFT;
+        }
+        if cfg.hotkey.replace.option {
+            mods |= Modifiers::ALT;
+        }
+        match letter_to_code(&cfg.hotkey.replace.key) {
+            Some(code) => {
+                let hk = HotKey::new(Some(mods), code);
+                let id = hk.id();
+                match manager.register(hk) {
+                    Ok(()) => (Some(id), false),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "replace hotkey registration failed");
+                        (None, true)
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    key = %cfg.hotkey.replace.key,
+                    "unsupported replace hotkey key; replace hotkey disabled"
+                );
+                (None, false)
+            }
+        }
+    } else {
+        (None, false)
+    };
+    let hotkey_in_use = hotkey_in_use || replace_hotkey_in_use;
+
     // History hotkey — M5 addition. Failure to register (e.g., already
     // claimed by another app) is non-fatal; we log warn and the user
     // can still use the tray-menu "History" item once M7 lands.
@@ -382,6 +430,7 @@ fn main() -> anyhow::Result<()> {
                 prompt_hotkey_id,
                 history_hotkey_id,
                 selection_hotkey_id,
+                replace_hotkey_id,
                 accessibility_revoked,
                 hotkey_in_use,
             );

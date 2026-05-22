@@ -27,4 +27,20 @@ impl Platform for LinuxPlatform {
                 }
             })
     }
+
+    fn paste_from_clipboard(&self) -> Result<(), crate::error::TranslateError> {
+        std::process::Command::new("xdotool")
+            .args(["key", "ctrl+v"])
+            .status()
+            .map_err(|e| crate::error::TranslateError::Internal(format!("xdotool: {e}")))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(crate::error::TranslateError::Internal(format!(
+                        "xdotool exited with status {status}"
+                    )))
+                }
+            })
+    }
 }

@@ -22,6 +22,10 @@ impl super::ClipApp {
                 .selection_hotkey_id
                 .map(|id| event.id == id)
                 .unwrap_or(false);
+            let is_replace = self
+                .replace_hotkey_id
+                .map(|id| event.id == id)
+                .unwrap_or(false);
             if is_prompt {
                 if matches!(self.app_state, AppState::Idle) {
                     self.show_window(ctx);
@@ -39,6 +43,10 @@ impl super::ClipApp {
                     self.show_window_from_selection(ctx);
                 } else {
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+            } else if is_replace {
+                if matches!(self.app_state, AppState::Idle) {
+                    self.replace_selection_inline(ctx);
                 }
             } else {
                 tracing::debug!(
@@ -187,6 +195,7 @@ impl super::ClipApp {
                 AppState::EnteringCustom { .. } => "entering_custom",
                 AppState::ConfirmingSize { .. } => "confirming_size",
                 AppState::Translating { .. } => "translating",
+                AppState::TranslatingInline { .. } => "translating_inline",
                 AppState::ShowingHistory { .. } => "showing_history",
                 AppState::SetupWizard { .. } => "setup_wizard",
                 AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",

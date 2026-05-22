@@ -125,6 +125,10 @@ impl Platform for MacOsPlatform {
         post_cmd_c()
     }
 
+    fn paste_from_clipboard(&self) -> Result<(), TranslateError> {
+        post_cmd_v()
+    }
+
     fn clipboard_change_count(&self) -> Option<i64> {
         unsafe { pasteboard_change_count() }
     }
@@ -259,6 +263,36 @@ fn post_cmd_c() -> Result<(), TranslateError> {
             }
             return Err(TranslateError::Internal(
                 "creating Cmd+C keyboard event failed".into(),
+            ));
+        }
+        CGEventSetFlags(down, K_CG_EVENT_FLAG_MASK_COMMAND);
+        CGEventSetFlags(up, K_CG_EVENT_FLAG_MASK_COMMAND);
+        CGEventPost(K_CG_HID_EVENT_TAP, down);
+        CGEventPost(K_CG_HID_EVENT_TAP, up);
+        CFRelease(down.cast_const());
+        CFRelease(up.cast_const());
+    }
+
+    Ok(())
+}
+
+fn post_cmd_v() -> Result<(), TranslateError> {
+    const K_CG_HID_EVENT_TAP: u32 = 0;
+    const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 1 << 20;
+    const MACOS_VIRTUAL_KEY_V: u16 = 0x09;
+
+    unsafe {
+        let down = CGEventCreateKeyboardEvent(std::ptr::null(), MACOS_VIRTUAL_KEY_V, true);
+        let up = CGEventCreateKeyboardEvent(std::ptr::null(), MACOS_VIRTUAL_KEY_V, false);
+        if down.is_null() || up.is_null() {
+            if !down.is_null() {
+                CFRelease(down.cast_const());
+            }
+            if !up.is_null() {
+                CFRelease(up.cast_const());
+            }
+            return Err(TranslateError::Internal(
+                "creating Cmd+V keyboard event failed".into(),
             ));
         }
         CGEventSetFlags(down, K_CG_EVENT_FLAG_MASK_COMMAND);

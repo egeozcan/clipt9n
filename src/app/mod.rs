@@ -71,6 +71,14 @@ enum AppState {
         /// written directly to the clipboard.
         preview_mode: bool,
     },
+    /// Background translation for inline replacement. The window remains hidden.
+    TranslatingInline {
+        gen: u64,
+        #[allow(dead_code)]
+        action_label: String,
+        #[allow(dead_code)]
+        started_at: std::time::Instant,
+    },
     /// Translation completed in preview mode. The result is
     /// displayed with Copy and Dismiss actions.
     ShowingResult {
@@ -224,6 +232,10 @@ pub struct ClipApp {
     /// disabled it via `[hotkey.selection] enabled = false` or registration
     /// failed.
     selection_hotkey_id: Option<u32>,
+    /// `global-hotkey` ID for the inline replace hotkey. `None` if the user
+    /// disabled it via `[hotkey.replace] enabled = false` or registration
+    /// failed.
+    replace_hotkey_id: Option<u32>,
 
     app_state: AppState,
     prompt_model: crate::ui::prompt::PromptModel,
@@ -282,6 +294,7 @@ impl ClipApp {
         prompt_hotkey_id: u32,
         history_hotkey_id: Option<u32>,
         selection_hotkey_id: Option<u32>,
+        replace_hotkey_id: Option<u32>,
         accessibility_revoked: bool,
         hotkey_in_use: bool,
     ) -> Self {
@@ -337,6 +350,7 @@ impl ClipApp {
             prompt_hotkey_id,
             history_hotkey_id,
             selection_hotkey_id,
+            replace_hotkey_id,
             app_state: AppState::Idle,
             has_been_focused: false,
             initial_focus_pending: false,
@@ -469,7 +483,7 @@ impl eframe::App for ClipApp {
         self.drain_channels(ctx);
         self.drain_tray_events(ctx);
 
-        let want_visible = !matches!(self.app_state, AppState::Idle);
+        let want_visible = !matches!(self.app_state, AppState::Idle | AppState::TranslatingInline { .. });
         ctx.send_viewport_cmd(ViewportCommand::Visible(want_visible));
 
         if !want_visible {
@@ -498,6 +512,7 @@ impl eframe::App for ClipApp {
         // Render the active state and process keyboard.
         match std::mem::replace(&mut self.app_state, AppState::Idle) {
             AppState::Idle => unreachable!("handled above"),
+            AppState::TranslatingInline { .. } => unreachable!("handled above"),
             AppState::Showing => self.update_showing(ctx),
             AppState::EnteringCustom { model } => self.update_entering_custom(ctx, model),
             AppState::ConfirmingSize {

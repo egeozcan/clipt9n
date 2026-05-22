@@ -140,6 +140,8 @@ pub struct HotkeyConfig {
     /// the prompt hotkey, this copies the selection first and does not fall
     /// back to existing clipboard contents.
     pub selection: SelectionHotkeyConfig,
+    /// Dedicated hotkey for translating the current selected text and replacing it inline.
+    pub replace: ReplaceHotkeyConfig,
 }
 
 impl Default for HotkeyConfig {
@@ -152,6 +154,7 @@ impl Default for HotkeyConfig {
             enabled: true,
             history: HistoryHotkeyConfig::default(),
             selection: SelectionHotkeyConfig::default(),
+            replace: ReplaceHotkeyConfig::default(),
         }
     }
 }
@@ -198,6 +201,32 @@ impl Default for SelectionHotkeyConfig {
             key: "Y".into(),
             enabled: true,
             copy_delay_ms: 80,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ReplaceHotkeyConfig {
+    pub modifier: String,
+    pub option: bool,
+    pub shift: bool,
+    pub key: String,
+    pub enabled: bool,
+    pub copy_delay_ms: u64,
+    pub default_slot: u8,
+}
+
+impl Default for ReplaceHotkeyConfig {
+    fn default() -> Self {
+        Self {
+            modifier: "super".into(),
+            option: true,
+            shift: false,
+            key: "U".into(),
+            enabled: true,
+            copy_delay_ms: 80,
+            default_slot: 1,
         }
     }
 }
@@ -907,6 +936,43 @@ copy_delay_ms = 150
         assert_eq!(cfg.hotkey.selection.key, "K");
         assert!(!cfg.hotkey.selection.enabled);
         assert_eq!(cfg.hotkey.selection.copy_delay_ms, 150);
+    }
+
+    #[test]
+    fn default_replace_hotkey_is_super_option_u() {
+        let cfg = Config::default();
+        assert_eq!(cfg.hotkey.replace.modifier, "super");
+        assert!(!cfg.hotkey.replace.shift);
+        assert!(cfg.hotkey.replace.option);
+        assert_eq!(cfg.hotkey.replace.key, "U");
+        assert!(cfg.hotkey.replace.enabled);
+        assert_eq!(cfg.hotkey.replace.copy_delay_ms, 80);
+        assert_eq!(cfg.hotkey.replace.default_slot, 1);
+    }
+
+    #[test]
+    fn loads_replace_hotkey_override() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+[hotkey.replace]
+modifier = "ctrl"
+shift = true
+key = "N"
+enabled = false
+copy_delay_ms = 120
+default_slot = 3
+"#
+        )
+        .unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.hotkey.replace.modifier, "ctrl");
+        assert!(cfg.hotkey.replace.shift);
+        assert_eq!(cfg.hotkey.replace.key, "N");
+        assert!(!cfg.hotkey.replace.enabled);
+        assert_eq!(cfg.hotkey.replace.copy_delay_ms, 120);
+        assert_eq!(cfg.hotkey.replace.default_slot, 3);
     }
 
     #[test]

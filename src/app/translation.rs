@@ -7,6 +7,7 @@ use super::pure;
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::error::TranslateError;
 use crate::history::store::NewEntry;
+use crate::platform::Platform;
 use crate::translator::{Action, Translator};
 
 /// Outcome from a translation worker. Sent from the tokio runtime to the
@@ -165,15 +166,93 @@ impl super::ClipApp {
         });
     }
 
+    pub(super) fn start_translation_inline(
+        &mut self,
+        source_text: String,
+        action: Action,
+        action_label: String,
+        slot: u8,
+        ctx: &egui::Context,
+    ) {
+        self.dispatch_gen = pure::next_gen(self.dispatch_gen);
+        let gen = self.dispatch_gen;
+        let cfg = self.cfg.clone();
+        let provider = self
+            .provider
+            .as_ref()
+            .expect(
+                "provider must be Some; None is unreachable from start_translation_inline",
+            )
+            .clone();
+        let tx = self.result_tx.clone();
+
+        self.app_state = super::AppState::TranslatingInline {
+            gen,
+            action_label: action_label.clone(),
+            started_at: std::time::Instant::now(),
+        };
+        ctx.request_repaint();
+
+        let ctx_for_repaint = ctx.clone();
+        let label_for_panic = action_label.clone();
+        let templates = self.templates.clone();
+        let glossary = self.glossary.clone();
+        let detected_source = crate::glossary::detect_source_lang(&source_text)
+            .as_deref()
+            .and_then(crate::glossary::iso3_to_iso2)
+            .map(String::from);
+        let action_for_outcome = action.clone();
+        let source_text_for_outcome = source_text.clone();
+
+        let worker = self.runtime.spawn(async move {
+            let g_snapshot = crate::glossary::Glossary::read_shared(&glossary).clone();
+            let translator = Translator::new(&cfg, provider.as_ref(), &templates, &g_snapshot);
+            let result = translator.execute(&action, &source_text).await;
+            TranslationOutcome {
+                result,
+                action_label,
+                slot,
+                gen,
+                detected_source_lang: detected_source,
+                source_text: source_text_for_outcome,
+                action: action_for_outcome,
+            }
+        });
+
+        self.runtime.spawn(async move {
+            let outcome = match worker.await {
+                Ok(o) => o,
+                Err(join_err) => {
+                    tracing::error!(error = %join_err, "translation worker panicked");
+                    TranslationOutcome {
+                        result: Err(TranslateError::Internal(format!(
+                            "translation worker crashed: {join_err}"
+                        ))),
+                        action_label: label_for_panic,
+                        slot,
+                        gen,
+                        detected_source_lang: None,
+                        source_text: String::new(),
+                        action: Action::FixGrammar, // placeholder — never read on Err
+                    }
+                }
+            };
+
+            let _ = tx.send(outcome);
+            ctx_for_repaint.request_repaint();
+        });
+    }
+
     pub(super) fn handle_translation_done(
         &mut self,
         outcome: TranslationOutcome,
         ctx: &egui::Context,
     ) {
         // Stale outcome from a cancelled translation; drop silently.
-        let current_gen = match &self.app_state {
-            super::AppState::Translating { gen, .. } => Some(*gen),
-            _ => None,
+        let (current_gen, is_inline) = match &self.app_state {
+            super::AppState::Translating { gen, .. } => (Some(*gen), false),
+            super::AppState::TranslatingInline { gen, .. } => (Some(*gen), true),
+            _ => (None, false),
         };
         if Some(outcome.gen) != current_gen {
             tracing::debug!(
@@ -185,57 +264,85 @@ impl super::ClipApp {
         }
         match outcome.result {
             Ok(ref translated) => {
-                // If preview mode is active, show the result window
-                // instead of writing to clipboard directly.
-                let preview_mode = matches!(
-                    &self.app_state,
-                    super::AppState::Translating {
-                        preview_mode: true,
-                        ..
-                    }
-                );
-                if preview_mode {
-                    self.app_state = super::AppState::ShowingResult {
-                        result_text: translated.clone(),
-                        source_text: outcome.source_text.clone(),
-                        action_label: outcome.action_label.clone(),
-                        detected_source_lang: outcome.detected_source_lang.clone(),
-                        action: outcome.action.clone(),
-                        slot: outcome.slot,
+                if is_inline {
+                    let mut cb = match ArboardClipboard::new() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!(error = %e, "clipboard open failed");
+                            self.dismiss_to_idle(ctx);
+                            return;
+                        }
                     };
+                    if let Err(e) = cb.write_text(translated) {
+                        tracing::error!(error = %e, "clipboard write failed");
+                    } else {
+                        // Delay briefly before pasting to allow target application to process the clipboard change notification.
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        if let Err(e) = crate::platform::current().paste_from_clipboard() {
+                            tracing::error!(error = %e, "inline replacement paste failed");
+                        }
+                        // History insert: best-effort, AFTER clipboard write
+                        // succeeds, NEVER blocks the user's primary outcome.
+                        self.schedule_history_insert(&outcome, translated);
+                    }
                     tracing::info!(
                         slot = outcome.slot,
                         action = %outcome.action_label,
-                        "translation complete — showing result preview"
+                        "inline replacement complete"
                     );
-                    return;
-                }
-
-                let mut cb = match ArboardClipboard::new() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!(error = %e, "clipboard open failed");
-                        self.dismiss_to_idle(ctx);
+                } else {
+                    // If preview mode is active, show the result window
+                    // instead of writing to clipboard directly.
+                    let preview_mode = matches!(
+                        &self.app_state,
+                        super::AppState::Translating {
+                            preview_mode: true,
+                            ..
+                        }
+                    );
+                    if preview_mode {
+                        self.app_state = super::AppState::ShowingResult {
+                            result_text: translated.clone(),
+                            source_text: outcome.source_text.clone(),
+                            action_label: outcome.action_label.clone(),
+                            detected_source_lang: outcome.detected_source_lang.clone(),
+                            action: outcome.action.clone(),
+                            slot: outcome.slot,
+                        };
+                        tracing::info!(
+                            slot = outcome.slot,
+                            action = %outcome.action_label,
+                            "translation complete — showing result preview"
+                        );
                         return;
                     }
-                };
-                if let Err(e) = cb.write_text(translated) {
-                    tracing::error!(error = %e, "clipboard write failed");
-                } else {
-                    if let Err(e) =
-                        crate::notify::translation_copied(&outcome.action_label, translated)
-                    {
-                        tracing::warn!(error = %e, "notification failed");
+
+                    let mut cb = match ArboardClipboard::new() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!(error = %e, "clipboard open failed");
+                            self.dismiss_to_idle(ctx);
+                            return;
+                        }
+                    };
+                    if let Err(e) = cb.write_text(translated) {
+                        tracing::error!(error = %e, "clipboard write failed");
+                    } else {
+                        if let Err(e) =
+                            crate::notify::translation_copied(&outcome.action_label, translated)
+                        {
+                            tracing::warn!(error = %e, "notification failed");
+                        }
+                        // History insert: best-effort, AFTER clipboard write
+                        // succeeds, NEVER blocks the user's primary outcome.
+                        self.schedule_history_insert(&outcome, translated);
                     }
-                    // History insert: best-effort, AFTER clipboard write
-                    // succeeds, NEVER blocks the user's primary outcome.
-                    self.schedule_history_insert(&outcome, translated);
+                    tracing::info!(
+                        slot = outcome.slot,
+                        action = %outcome.action_label,
+                        "translation complete"
+                    );
                 }
-                tracing::info!(
-                    slot = outcome.slot,
-                    action = %outcome.action_label,
-                    "translation complete"
-                );
             }
             Err(crate::error::TranslateError::Provider { status: 401, .. }) => {
                 tracing::warn!("translation 401 — API key invalid; opening setup wizard");
@@ -340,3 +447,201 @@ pub(super) fn build_history_entry(
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::llm::LlmProvider;
+    use crate::state::State;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl LlmProvider for MockProvider {
+        async fn complete(&self, _system: &str, _user: &str) -> Result<String, TranslateError> {
+            Ok("Hola Mundo".to_string())
+        }
+    }
+
+    #[test]
+    fn test_start_translation_inline_transitions_state_and_spawns_worker() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let (_hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
+        let (_reload_tx, reload_rx) = crossbeam_channel::unbounded();
+        let (setup_tx, setup_rx) = std::sync::mpsc::channel();
+
+        let provider = std::sync::Arc::new(MockProvider);
+        let templates = std::sync::Arc::new(crate::llm::templates::Templates::built_in());
+        let glossary = std::sync::Arc::new(std::sync::RwLock::new(crate::glossary::Glossary::empty()));
+
+        let mut app = super::super::ClipApp {
+            cfg: Config::default(),
+            state_path: PathBuf::from("state.toml"),
+            state: State::default(),
+            provider: Some(provider),
+            templates,
+            glossary,
+            glossary_path: PathBuf::from("glossary.toml"),
+            glossary_malformed: std::sync::atomic::AtomicBool::new(false),
+            runtime: rt,
+            hotkey_rx,
+            result_tx,
+            result_rx,
+            glossary_reload_rx: reload_rx,
+            glossary_reload_tx: None,
+            history: None,
+            history_disabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            history_warned: std::sync::atomic::AtomicBool::new(false),
+            secrets: Box::new(crate::secrets::EnvSecrets::new("DUMMY")),
+            tray: None,
+            setup_check_tx: setup_tx,
+            setup_check_rx: setup_rx,
+            accessibility_revoked: false,
+            hotkey_in_use: false,
+            prompt_hotkey_id: 0,
+            history_hotkey_id: None,
+            selection_hotkey_id: None,
+            replace_hotkey_id: None,
+            app_state: super::super::AppState::Idle,
+            prompt_model: crate::ui::prompt::PromptModel {
+                clipboard_text: String::new(),
+                detected_lang: None,
+                last_slot: None,
+                glossary_hits: vec![],
+            },
+            has_been_focused: false,
+            initial_focus_pending: false,
+            dispatch_gen: 0,
+            last_translation_at: None,
+            reduced_motion: false,
+            pending_preview: false,
+            previous_app_pid: None,
+        };
+
+        app.cfg.languages.slot_1 = crate::config::LanguageSlot {
+            label: "Spanish".to_string(),
+            code: "es".to_string(),
+        };
+
+        let ctx = egui::Context::default();
+
+        app.start_translation_inline(
+            "Hello World".to_string(),
+            Action::Translate { code: "es".to_string() },
+            "Translate to Spanish".to_string(),
+            1,
+            &ctx,
+        );
+
+        // Assert state transitioned
+        assert!(matches!(app.app_state, super::super::AppState::TranslatingInline { .. }));
+        if let super::super::AppState::TranslatingInline { gen, action_label, .. } = &app.app_state {
+            assert_eq!(*gen, app.dispatch_gen);
+            assert_eq!(action_label, "Translate to Spanish");
+        } else {
+            panic!("Expected AppState::TranslatingInline");
+        }
+
+        // Wait for the tokio worker to finish and send the result
+        let outcome = app.result_rx.recv_timeout(std::time::Duration::from_secs(2)).expect("outcome received");
+        assert_eq!(outcome.gen, app.dispatch_gen);
+        assert_eq!(outcome.slot, 1);
+        assert_eq!(outcome.result.unwrap(), "Hola Mundo");
+    }
+
+    #[test]
+    fn test_handle_translation_done_inline_writes_clipboard_and_pastes() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let (_hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
+        let (_reload_tx, reload_rx) = crossbeam_channel::unbounded();
+        let (setup_tx, setup_rx) = std::sync::mpsc::channel();
+
+        let provider = std::sync::Arc::new(MockProvider);
+        let templates = std::sync::Arc::new(crate::llm::templates::Templates::built_in());
+        let glossary = std::sync::Arc::new(std::sync::RwLock::new(crate::glossary::Glossary::empty()));
+
+        let mut app = super::super::ClipApp {
+            cfg: Config::default(),
+            state_path: PathBuf::from("state.toml"),
+            state: State::default(),
+            provider: Some(provider),
+            templates,
+            glossary,
+            glossary_path: PathBuf::from("glossary.toml"),
+            glossary_malformed: std::sync::atomic::AtomicBool::new(false),
+            runtime: rt,
+            hotkey_rx,
+            result_tx,
+            result_rx,
+            glossary_reload_rx: reload_rx,
+            glossary_reload_tx: None,
+            history: None,
+            history_disabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            history_warned: std::sync::atomic::AtomicBool::new(false),
+            secrets: Box::new(crate::secrets::EnvSecrets::new("DUMMY")),
+            tray: None,
+            setup_check_tx: setup_tx,
+            setup_check_rx: setup_rx,
+            accessibility_revoked: false,
+            hotkey_in_use: false,
+            prompt_hotkey_id: 0,
+            history_hotkey_id: None,
+            selection_hotkey_id: None,
+            replace_hotkey_id: None,
+            app_state: super::super::AppState::TranslatingInline {
+                gen: 42,
+                action_label: "Translate to Spanish".to_string(),
+                started_at: std::time::Instant::now(),
+            },
+            prompt_model: crate::ui::prompt::PromptModel {
+                clipboard_text: String::new(),
+                detected_lang: None,
+                last_slot: None,
+                glossary_hits: vec![],
+            },
+            has_been_focused: false,
+            initial_focus_pending: false,
+            dispatch_gen: 42,
+            last_translation_at: None,
+            reduced_motion: false,
+            pending_preview: false,
+            previous_app_pid: None,
+        };
+
+        let ctx = egui::Context::default();
+
+        let outcome = TranslationOutcome {
+            result: Ok("Inline Translation Result".to_string()),
+            action_label: "Translate to Spanish".to_string(),
+            slot: 1,
+            gen: 42,
+            detected_source_lang: None,
+            source_text: "Hello".to_string(),
+            action: Action::Translate { code: "es".to_string() },
+        };
+
+        app.handle_translation_done(outcome, &ctx);
+
+        // State should be dismissed to Idle
+        assert!(matches!(app.app_state, super::super::AppState::Idle));
+
+        // Clipboard should contain the translated text
+        let mut cb = ArboardClipboard::new().expect("clipboard open");
+        let cb_text = cb.read_text().expect("clipboard read");
+        assert_eq!(cb_text, "Inline Translation Result");
+    }
+}
+

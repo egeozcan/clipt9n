@@ -24,7 +24,7 @@ impl super::ClipApp {
     }
 
     pub(super) fn show_window_from_selection(&mut self, ctx: &egui::Context) {
-        match self.snapshot_selected_text() {
+        match self.snapshot_selected_text(self.cfg.hotkey.selection.copy_delay_ms) {
             Ok(text) => {
                 self.prompt_model.clipboard_text = text;
                 self.capture_previous_app();
@@ -39,15 +39,42 @@ impl super::ClipApp {
         }
     }
 
-    fn snapshot_selected_text(&self) -> Result<String, TranslateError> {
+    pub(super) fn replace_selection_inline(&mut self, ctx: &egui::Context) {
+        match self.snapshot_selected_text(self.cfg.hotkey.replace.copy_delay_ms) {
+            Ok(text) => {
+                let slot = self.state.last_slot.unwrap_or(self.cfg.hotkey.replace.default_slot);
+                match pure::decide_intent(slot, &self.cfg) {
+                    Some(pure::Intent::Translate { action, action_label, .. }) => {
+                        self.start_translation_inline(text, action, action_label, slot, ctx);
+                    }
+                    _ => {
+                        tracing::warn!("replace_selection_inline: intent for slot {slot} is not inlineable");
+                        let label = match slot {
+                            8 => Some("Custom Prompt"),
+                            _ => None,
+                        };
+                        if let Err(notify_err) = crate::notify::inline_replace_not_inlineable(slot, label) {
+                            tracing::warn!(error = %notify_err, "notification failed");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "replace selection inline text capture failed");
+                if let Err(notify_err) = crate::notify::selection_capture_failed(&e) {
+                    tracing::warn!(error = %notify_err, "notification failed");
+                }
+            }
+        }
+    }
+
+    fn snapshot_selected_text(&self, copy_delay_ms: u64) -> Result<String, TranslateError> {
         let mut cb = ArboardClipboard::new()?;
         let before = cb.read_text().unwrap_or_default();
         let platform = crate::platform::current();
         let before_change_count = platform.clipboard_change_count();
         platform.copy_selection_to_clipboard()?;
-        std::thread::sleep(Duration::from_millis(
-            self.cfg.hotkey.selection.copy_delay_ms,
-        ));
+        std::thread::sleep(Duration::from_millis(copy_delay_ms));
         let after = cb.read_text()?;
         let after_change_count = platform.clipboard_change_count();
         let copy_changed = match (before_change_count, after_change_count) {

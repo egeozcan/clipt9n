@@ -73,6 +73,13 @@ pub trait Platform {
         ))
     }
 
+    /// Ask the foreground app to paste from the system clipboard.
+    fn paste_from_clipboard(&self) -> Result<(), TranslateError> {
+        Err(TranslateError::Internal(
+            "clipboard paste is not implemented on this platform".into(),
+        ))
+    }
+
     /// Platform clipboard generation, when available. macOS exposes
     /// NSPasteboard.changeCount, which lets selection capture distinguish
     /// "copy produced the same text" from "copy did nothing".

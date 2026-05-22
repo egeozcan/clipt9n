@@ -156,8 +156,8 @@ fn clicking_slot_after_selection_capture_fires_pick() {
     let s = state.lock().unwrap();
     assert_eq!(
         s.outcome,
-        Some(PromptOutcome::Pick(4)),
-        "clicking slot 4 ('Fix grammar') after selection capture must fire Pick(4)"
+        Some(PromptOutcome::Pick(6)),
+        "clicking slot 6 ('Fix grammar') after selection capture must fire Pick(6)"
     );
 }
 
