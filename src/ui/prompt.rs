@@ -134,34 +134,46 @@ pub fn slot_strings(slot: SlotDef, cfg: &Config) -> (&str, &str) {
 /// (or `Some(1)` if no last slot) on the first frame after summon, then
 /// `None` on subsequent frames so egui's normal Tab-driven focus tracking
 /// takes over.
+///
+/// `focused_slot` is written back with the 1-based index of whichever
+/// slot row currently holds keyboard focus, or `None` if no slot row is
+/// focused. Callers use this to implement arrow-key wrap-around and
+/// keyboard navigation that stays within the slot list.
 pub fn draw(
     ctx: &egui::Context,
     cfg: &Config,
     model: &PromptModel,
     focus_target: Option<u8>,
+    focused_slot: &mut Option<u8>,
 ) -> Option<PromptOutcome> {
     let mut clicked: Option<PromptOutcome> = None;
     theme::window_frame(ctx, "Translate clipboard", Some("clipt9n · prompt"), |ui| {
         if model.clipboard_text.is_empty() {
             draw_empty(ui);
         } else {
-            draw_populated(ui, cfg, model, &mut clicked, focus_target);
+            draw_populated(ui, cfg, model, &mut clicked, focus_target, focused_slot);
         }
     });
     clicked
 }
 
+/// Shorthand: non-selectable label so it never steals focus from the
+/// slot rows during keyboard navigation.
+fn label(ui: &mut egui::Ui, rich_text: RichText) -> egui::Response {
+    ui.add(egui::Label::new(rich_text).selectable(false))
+}
+
 fn draw_empty(ui: &mut egui::Ui) {
     ui.add_space(20.0);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new("⎚").size(28.0).color(theme::BAD));
+        label(ui, RichText::new("⎚").size(28.0).color(theme::BAD));
         ui.add_space(8.0);
-        ui.label(
+        label(ui, 
             RichText::new("Clipboard is empty or not text.")
                 .color(theme::INK)
                 .size(14.0),
         );
-        ui.label(
+        label(ui, 
             RichText::new("Copy something and try again.")
                 .color(theme::INK_3)
                 .size(12.0),
@@ -171,7 +183,7 @@ fn draw_empty(ui: &mut egui::Ui) {
             ui.style_mut().spacing.item_spacing.x = 4.0;
             ui.add_space(ui.available_width() / 2.0 - 40.0);
             theme::kbd(ui, "Esc");
-            ui.label(
+            label(ui, 
                 RichText::new("to dismiss")
                     .color(theme::INK_3)
                     .size(11.0)
@@ -188,6 +200,7 @@ fn draw_populated(
     model: &PromptModel,
     clicked: &mut Option<PromptOutcome>,
     focus_target: Option<u8>,
+    focused_slot: &mut Option<u8>,
 ) {
     let body_padding = egui::Margin::symmetric(18, 14);
     egui::Frame::new()
@@ -195,14 +208,14 @@ fn draw_populated(
         .show(ui, |ui| {
             // ----- Preview header -----
             ui.horizontal(|ui| {
-                ui.label(
+                label(ui, 
                     RichText::new("CLIPBOARD")
                         .color(theme::INK_3)
                         .size(11.0)
                         .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
+                    label(ui, 
                         RichText::new(format!("· {} chars", model.clipboard_text.chars().count()))
                             .color(theme::INK_3)
                             .monospace()
@@ -218,7 +231,7 @@ fn draw_populated(
                         .corner_radius(3)
                         .inner_margin(egui::Margin::symmetric(6, 1));
                     lang_frame.show(ui, |ui| {
-                        ui.label(
+                        label(ui, 
                             RichText::new(lang)
                                 .color(theme::ACCENT)
                                 .monospace()
@@ -241,7 +254,7 @@ fn draw_populated(
                     .show(ui, |ui| {
                         for line in preview.lines().take(3) {
                             ui.horizontal(|ui| {
-                                ui.label(
+                                label(ui, 
                                     RichText::new("›")
                                         .color(theme::ACCENT.linear_multiply(0.6))
                                         .monospace(),
@@ -265,6 +278,7 @@ fn draw_populated(
                                         .monospace()
                                         .size(12.5),
                                     )
+                                    .selectable(false)
                                     .truncate(),
                                 );
                             });
@@ -278,19 +292,24 @@ fn draw_populated(
 
             // ----- Slot rows -----
             // Wrapped in a ScrollArea so that on monitors too small to fit
-            // the full window, Tab still works: focused rows auto-scroll
-            // into view. Reserve room for the footer below the area.
+            // the full window, focused rows auto-scroll into view. Reserve
+            // room for the footer below the area.
             let footer_reserve = 60.0;
             let area_max_height = ui.available_height() - footer_reserve;
             egui::ScrollArea::vertical()
                 .max_height(area_max_height.max(120.0))
                 .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
+                    // Collect responses so we can handle arrow-key
+                    // navigation inline, cancelling egui's spatial
+                    // double-move (begin_pass sets focus_direction,
+                    // end_pass re-applies it).
                     for slot in SLOTS {
                         let (label, trailing) = slot_strings(slot, cfg);
                         let is_last = model.last_slot == Some(slot.n);
                         let should_focus = focus_target == Some(slot.n);
-                        if draw_slot_row(ui, slot, label, trailing, is_last, should_focus) {
+                        if draw_slot_row(ui, slot, label, trailing, is_last, should_focus, focused_slot) {
                             *clicked = Some(PromptOutcome::Pick(slot.n));
                         }
                     }
@@ -313,32 +332,45 @@ fn draw_populated(
                 // each kbd cap and its adjacent label so they don't touch.
                 ui.style_mut().spacing.item_spacing.x = 4.0;
                 theme::kbd(ui, "1");
-                ui.label(RichText::new("–").color(theme::INK_3).size(11.0));
-                theme::kbd(ui, "8");
-                ui.label(
-                    RichText::new("pick ·")
+                label(ui, 
+                    RichText::new("–")
                         .color(theme::INK_3)
-                        .monospace()
                         .size(11.0),
+                );
+                theme::kbd(ui, "8");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("pick ·")
+                            .color(theme::INK_3)
+                            .monospace()
+                            .size(11.0),
+                    )
+                    .selectable(false),
                 );
                 theme::kbd(ui, "↵");
-                ui.label(
-                    RichText::new("confirm ·")
-                        .color(theme::INK_3)
-                        .monospace()
-                        .size(11.0),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("confirm ·")
+                            .color(theme::INK_3)
+                            .monospace()
+                            .size(11.0),
+                    )
+                    .selectable(false),
                 );
                 theme::kbd(ui, "Esc");
-                ui.label(
-                    RichText::new("cancel")
-                        .color(theme::INK_3)
-                        .monospace()
-                        .size(11.0),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("cancel")
+                            .color(theme::INK_3)
+                            .monospace()
+                            .size(11.0),
+                    )
+                    .selectable(false),
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if should_warn_large_paste(&model.clipboard_text, cfg) {
-                        ui.label(
+                        label(ui, 
                             RichText::new("⚠ large paste")
                                 .color(theme::WARN)
                                 .monospace()
@@ -357,6 +389,7 @@ fn draw_slot_row(
     trailing: &str,
     is_last: bool,
     should_focus: bool,
+    focused_slot: &mut Option<u8>,
 ) -> bool {
     // Allocate the row as a single focusable widget so Tab navigates between
     // rows. Drawing happens with painter + a child Ui scoped to the inner
@@ -373,6 +406,9 @@ fn draw_slot_row(
     let rect = response.rect;
 
     let focused = response.has_focus();
+    if focused {
+        *focused_slot = Some(slot.n);
+    }
     let hovered = response.hovered();
     if focused {
         response.scroll_to_me(None);
@@ -395,77 +431,86 @@ fn draw_slot_row(
         Stroke::NONE
     };
 
-    if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, 6.0, bg);
-        if border.width > 0.0 {
-            ui.painter()
-                .rect_stroke(rect, 6.0, border, egui::StrokeKind::Inside);
-        }
-
-        // Inner content: horizontal layout with badge, label, trailing.
-        let inner_rect = rect.shrink2(Vec2::new(10.0, 7.0));
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(inner_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        let cui = &mut child;
-
-        // Number badge
-        let (badge_rect, _) = cui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::hover());
-        cui.painter().rect_filled(badge_rect, 4.0, theme::PANEL_3);
-        cui.painter().rect_stroke(
-            badge_rect,
-            4.0,
-            Stroke::new(1.0, theme::LINE),
-            egui::StrokeKind::Inside,
-        );
-        cui.painter().text(
-            badge_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            format!("{}", slot.n),
-            egui::FontId::monospace(11.5),
-            theme::INK_2,
-        );
-        cui.add_space(8.0);
-        // `selectable(false)` is load-bearing: egui's default `Label` has
-        // selectable text, whose text-selection sense intercepts clicks on
-        // the text area and prevents the parent row's `Sense::click()` from
-        // firing. Without this, clicking the literal "Fix grammar" text
-        // wouldn't pick the slot — only the empty area to its right would.
-        cui.add(
-            egui::Label::new(RichText::new(label).color(theme::INK).size(13.5)).selectable(false),
-        );
-        cui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if is_last {
-                let badge = egui::Frame::new()
-                    .fill(Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x29))
-                    .corner_radius(255)
-                    .inner_margin(egui::Margin::symmetric(7, 2));
-                badge.show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new("LAST USED")
-                                .color(theme::ACCENT)
-                                .size(10.0)
-                                .strong(),
-                        )
-                        .selectable(false),
-                    );
-                });
-                ui.add_space(6.0);
-            }
-            ui.add(
-                egui::Label::new(
-                    RichText::new(trailing)
-                        .color(theme::INK_3)
-                        .monospace()
-                        .size(11.0),
-                )
-                .selectable(false),
-            );
-        });
+    // NOTE: Do NOT gate `new_child(...)` (or any other id-allocating call)
+    // behind `is_rect_visible(rect)`. `new_child` increments the parent's
+    // `next_auto_id_salt`, which is also the source of every slot row's
+    // widget id (`allocate_response` → `allocate_space` → `Id::new(salt)`).
+    // If the inside block is skipped on some frames (e.g. slot 5 just
+    // below the ScrollArea clip) and re-runs on others (during the scroll
+    // animation), the salt count changes mid-traversal and the slot rows
+    // get NEW ids. egui's focus is pinned to a specific id; when the id
+    // disappears, the dead-man's switch in `end_pass` clears focus.
+    // Render unconditionally — egui clips painter calls against the Ui's
+    // clip rect, so off-screen text/rects cost almost nothing.
+    ui.painter().rect_filled(rect, 6.0, bg);
+    if border.width > 0.0 {
+        ui.painter()
+            .rect_stroke(rect, 6.0, border, egui::StrokeKind::Inside);
     }
+
+    // Inner content: horizontal layout with badge, label, trailing.
+    let inner_rect = rect.shrink2(Vec2::new(10.0, 7.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let cui = &mut child;
+
+    // Number badge
+    let (badge_rect, _) = cui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::hover());
+    cui.painter().rect_filled(badge_rect, 4.0, theme::PANEL_3);
+    cui.painter().rect_stroke(
+        badge_rect,
+        4.0,
+        Stroke::new(1.0, theme::LINE),
+        egui::StrokeKind::Inside,
+    );
+    cui.painter().text(
+        badge_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{}", slot.n),
+        egui::FontId::monospace(11.5),
+        theme::INK_2,
+    );
+    cui.add_space(8.0);
+    // `selectable(false)` is load-bearing: egui's default `Label` has
+    // selectable text, whose text-selection sense intercepts clicks on
+    // the text area and prevents the parent row's `Sense::click()` from
+    // firing. Without this, clicking the literal "Fix grammar" text
+    // wouldn't pick the slot — only the empty area to its right would.
+    cui.add(
+        egui::Label::new(RichText::new(label).color(theme::INK).size(13.5)).selectable(false),
+    );
+    cui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if is_last {
+            let badge = egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x29))
+                .corner_radius(255)
+                .inner_margin(egui::Margin::symmetric(7, 2));
+            badge.show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("LAST USED")
+                            .color(theme::ACCENT)
+                            .size(10.0)
+                            .strong(),
+                    )
+                    .selectable(false),
+                );
+            });
+            ui.add_space(6.0);
+        }
+        ui.add(
+            egui::Label::new(
+                RichText::new(trailing)
+                    .color(theme::INK_3)
+                    .monospace()
+                    .size(11.0),
+            )
+            .selectable(false),
+        );
+    });
 
     // AccessKit / VoiceOver hook.
     let label_for_a11y = label.to_string();
@@ -531,7 +576,7 @@ fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.style_mut().spacing.item_spacing.x = 6.0;
-                ui.label(
+                label(ui, 
                     RichText::new("GLOSSARY WILL INJECT:")
                         .color(theme::WARN)
                         .size(10.0)
@@ -541,7 +586,7 @@ fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
                     chip(ui, hit);
                 }
                 if more > 0 {
-                    ui.label(
+                    label(ui, 
                         RichText::new(format!("+{more} more"))
                             .color(theme::INK_3)
                             .monospace()
@@ -562,19 +607,19 @@ fn chip(ui: &mut egui::Ui, hit: &GlossaryHit) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.style_mut().spacing.item_spacing.x = 4.0;
-                ui.label(
+                label(ui, 
                     RichText::new(&hit.source)
                         .color(theme::INK_2)
                         .monospace()
                         .size(11.0),
                 );
-                ui.label(
+                label(ui, 
                     RichText::new("→")
                         .color(theme::INK_3)
                         .monospace()
                         .size(11.0),
                 );
-                ui.label(
+                label(ui, 
                     RichText::new(&hit.target)
                         .color(theme::ACCENT)
                         .monospace()

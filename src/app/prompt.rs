@@ -129,15 +129,20 @@ impl super::ClipApp {
         // On the first frame after summon, request_focus on the slot the
         // user last picked (or slot 1 by default). With focus pre-set,
         // Enter on that row directly fires Pick(n) via egui's built-in
-        // Sense::click handling — no separate "RepeatLast" key shortcut
-        // needed; the focused row IS the repeat target.
+        // Sense::click handling.
+        //
+        // Arrow-key navigation between slots uses egui's native spatial
+        // focus system (ArrowUp/Down → find_widget_in_direction).  The
+        // slot list uses a manually-scrolled clipped area (no ScrollArea)
+        // so there is no invisible Sense::drag() widget below the last
+        // slot to steal focus.
         let focus_target = if self.initial_focus_pending {
             self.initial_focus_pending = false;
             Some(self.state.last_slot.unwrap_or(1))
         } else {
             None
         };
-        let click = prompt::draw(ctx, &self.cfg, &self.prompt_model, focus_target);
+        let click = prompt::draw(ctx, &self.cfg, &self.prompt_model, focus_target, &mut None);
         let key = self.handle_keys_showing(ctx);
         let outcome = click.or(key);
         // Capture Shift-held state at pick time. Shift+pick means

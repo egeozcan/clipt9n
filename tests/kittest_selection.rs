@@ -48,7 +48,7 @@ fn selection_capture_prompt_shows_clipboard_text_and_language_chip() {
 
     let mut harness = Harness::new(move |ctx| {
         let mut s = state_clone.lock().unwrap();
-        if let Some(o) = draw(ctx, &s.cfg, &s.model, None) {
+        if let Some(o) = draw(ctx, &s.cfg, &s.model, None, &mut None) {
             s.outcome = Some(o);
         }
     });
@@ -87,7 +87,7 @@ fn unknown_language_shows_fallback_chip_and_still_renders_text() {
 
     let mut harness = Harness::new(move |ctx| {
         let mut s = state_clone.lock().unwrap();
-        if let Some(o) = draw(ctx, &s.cfg, &s.model, None) {
+        if let Some(o) = draw(ctx, &s.cfg, &s.model, None, &mut None) {
             s.outcome = Some(o);
         }
     });
@@ -116,7 +116,7 @@ fn clicking_slot_after_selection_capture_fires_pick() {
 
     let mut harness = Harness::new(move |ctx| {
         let mut s = state_clone.lock().unwrap();
-        if let Some(o) = draw(ctx, &s.cfg, &s.model, None) {
+        if let Some(o) = draw(ctx, &s.cfg, &s.model, None, &mut None) {
             s.outcome = Some(o);
         }
     });
@@ -185,7 +185,7 @@ fn glossary_chips_render_after_selection_capture() {
 
     let mut harness = Harness::new(move |ctx| {
         let mut s = state_clone.lock().unwrap();
-        if let Some(o) = draw(ctx, &s.cfg, &s.model, None) {
+        if let Some(o) = draw(ctx, &s.cfg, &s.model, None, &mut None) {
             s.outcome = Some(o);
         }
     });

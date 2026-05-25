@@ -73,6 +73,8 @@ pub fn visuals() -> Visuals {
 // ----- Reusable widgets -----
 
 /// Render a kbd-style key cap. Use for footer keymap hints.
+/// Inner labels use `selectable(false)` so decorative kbd caps
+/// never steal keyboard focus from the slot list.
 pub fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let frame = egui::Frame::new()
         .fill(PANEL_3)
@@ -81,11 +83,14 @@ pub fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
         .inner_margin(egui::Margin::symmetric(5, 1));
     frame
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(text)
-                    .monospace()
-                    .size(10.5)
-                    .color(INK_2),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .monospace()
+                        .size(10.5)
+                        .color(INK_2),
+                )
+                .selectable(false),
             );
         })
         .response

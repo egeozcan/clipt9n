@@ -49,7 +49,7 @@ fn clicking_the_literal_slot_text_fires_pick_outcome() {
 
     let mut harness = Harness::new(move |ctx| {
         let mut s = state_clone.lock().unwrap();
-        if let Some(PromptOutcome::Pick(n)) = draw(ctx, &s.cfg, &s.model, None) {
+        if let Some(PromptOutcome::Pick(n)) = draw(ctx, &s.cfg, &s.model, None, &mut None) {
             s.picked = Some(n);
         }
     });
