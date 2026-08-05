@@ -13,7 +13,6 @@ mod tray;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use eframe::CreationContext;
@@ -275,6 +274,14 @@ pub struct ClipApp {
     /// previous app after the translation completes or is cancelled.
     previous_app_pid: Option<i32>,
 
+    /// Context clone used to wake the event loop from background threads.
+    ///
+    /// The loop sleeps until something asks for a repaint, so every
+    /// producer feeding a channel that `update()` drains must call
+    /// `request_repaint()` after sending, or its message sits unseen until
+    /// an unrelated frame happens to run.
+    repaint_ctx: egui::Context,
+
     /// Last `ViewportCommand::Visible` value handed to eframe, or `None`
     /// before the first send. Every visibility change goes through
     /// `set_window_visible`, which drops no-op sends.
@@ -373,6 +380,7 @@ impl ClipApp {
             reduced_motion,
             pending_preview: false,
             previous_app_pid: None,
+            repaint_ctx: cc.egui_ctx.clone(),
             last_sent_visible: None,
         }
     }
@@ -449,7 +457,12 @@ impl ClipApp {
     pub fn install_glossary_reload(&mut self, tx: crossbeam_channel::Sender<()>) {
         let tx_for_sighup = tx.clone();
         self.glossary_reload_tx = Some(tx);
-        crate::platform::install_sighup_reload(&self.runtime, tx_for_sighup);
+        // Wake the event loop on SIGHUP; without this the reload sits in
+        // the channel until an unrelated frame runs. See `repaint_ctx`.
+        let ctx = self.repaint_ctx.clone();
+        crate::platform::install_sighup_reload(&self.runtime, tx_for_sighup, move || {
+            ctx.request_repaint()
+        });
     }
 
     /// Attach a TrayHandle constructed by main.rs. Called once after
@@ -505,8 +518,13 @@ impl ClipApp {
 
 impl eframe::App for ClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(150));
-
+        // No periodic repaint here on purpose: the event loop sleeps until
+        // woken. Every channel drained below has a producer that calls
+        // `request_repaint()` after sending (hotkeys via
+        // `install_hotkey_handler`, tray menu via `tray.rs`, translation
+        // outcomes via `translation.rs`, setup checks and SIGHUP reloads
+        // via `repaint_ctx`). Add a wake alongside any new producer rather
+        // than reinstating a poll — see `repaint_ctx`.
         self.drain_channels(ctx);
         self.drain_tray_events(ctx);
 

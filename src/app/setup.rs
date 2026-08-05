@@ -99,6 +99,9 @@ impl super::ClipApp {
         let provider = provider.to_string();
         let base_url = crate::ui::setup::default_base_url(&provider).to_string();
         let tx = self.setup_check_tx.clone();
+        // Wake the sleeping event loop once the result lands. See
+        // `ClipApp::repaint_ctx`.
+        let ctx = self.repaint_ctx.clone();
         let runtime = self.runtime.handle().clone();
         runtime.spawn(async move {
             let result = run_connectivity_check(&provider, &base_url, &key).await;
@@ -113,6 +116,7 @@ impl super::ClipApp {
                 crate::ui::setup::SetupCheck::Connectivity,
                 final_result.map_err(|e| e.to_string()),
             ));
+            ctx.request_repaint();
         });
     }
 
@@ -127,6 +131,9 @@ impl super::ClipApp {
         let templates = self.templates.clone();
         let glossary = self.glossary.clone();
         let tx = self.setup_check_tx.clone();
+        // Wake the sleeping event loop once the result lands. See
+        // `ClipApp::repaint_ctx`.
+        let ctx = self.repaint_ctx.clone();
         let runtime = self.runtime.handle().clone();
         runtime.spawn(async move {
             let base_url_override = crate::ui::setup::default_base_url(&provider_kind);
@@ -176,6 +183,7 @@ impl super::ClipApp {
                 crate::ui::setup::SetupCheck::SampleTranslation,
                 final_result.map(|_| ()).map_err(|e| e.to_string()),
             ));
+            ctx.request_repaint();
         });
     }
 

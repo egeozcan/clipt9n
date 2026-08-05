@@ -310,8 +310,10 @@ fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Forward hotkey events from the global-hotkey channel into ours.
-    let hotkey_rx = GlobalHotKeyEvent::receiver().clone();
+    // Forward hotkey events into our own channel. The handler that fills
+    // it is installed later, inside the eframe creator closure, because it
+    // needs the egui context — see `install_hotkey_handler`.
+    let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded::<GlobalHotKeyEvent>();
 
     // M6: first-launch detection. If we have no key in keychain AND
     // the keychain is reachable, start in the setup wizard. Otherwise
@@ -414,6 +416,8 @@ fn main() -> anyhow::Result<()> {
             // launched via Finder, not under `cargo run`).
             platform::current().set_dock_visible(false);
 
+            install_hotkey_handler(&cc.egui_ctx, hotkey_tx);
+
             let mut app = ClipApp::new(
                 cc,
                 cfg,
@@ -496,6 +500,33 @@ fn main() -> anyhow::Result<()> {
 
     drop(manager);
     Ok(())
+}
+
+/// Route global-hotkey events into `tx`, waking the egui context on each
+/// one. Installed from the eframe creator closure, the only place with a
+/// context to clone.
+///
+/// Why not `GlobalHotKeyEvent::receiver()`: that static channel delivers
+/// the event but leaves the event loop asleep, so `ClipApp::update` would
+/// not observe it until some unrelated pass ran. The app used to paper
+/// over this by requesting a repaint every 150 ms — a poll that rendered
+/// and presented a hidden window ~7x/second forever, costing ~2% CPU
+/// around the clock for an app that is idle almost all the time.
+///
+/// Waking the context here is the same trick `tray.rs` uses for menu
+/// events, and it lets the event loop sleep until something real happens.
+/// Anything else that feeds a channel drained by `update()` must wake the
+/// context too, or it will hang until the next unrelated frame.
+fn install_hotkey_handler(
+    ctx: &eframe::egui::Context,
+    tx: crossbeam_channel::Sender<GlobalHotKeyEvent>,
+) {
+    let ctx = ctx.clone();
+    GlobalHotKeyEvent::set_event_handler(Some(move |ev: GlobalHotKeyEvent| {
+        if tx.send(ev).is_ok() {
+            ctx.request_repaint();
+        }
+    }));
 }
 
 fn letter_to_code(key: &str) -> Option<Code> {

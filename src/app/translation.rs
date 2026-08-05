@@ -524,6 +524,7 @@ mod tests {
             reduced_motion: false,
             pending_preview: false,
             previous_app_pid: None,
+            repaint_ctx: egui::Context::default(),
             last_sent_visible: None,
         };
 
@@ -620,6 +621,7 @@ mod tests {
             reduced_motion: false,
             pending_preview: false,
             previous_app_pid: None,
+            repaint_ctx: egui::Context::default(),
             last_sent_visible: None,
         };
 

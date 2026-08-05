@@ -193,12 +193,21 @@ fn owner_only_permissions_are_enforced_for_test_impl(
 /// spawned task rather than propagated. Callers can rely on this not
 /// being a startup failure mode.
 #[cfg(unix)]
-pub fn install_sighup_reload(rt: &tokio::runtime::Runtime, tx: crossbeam_channel::Sender<()>) {
-    unix::install(rt, tx);
+pub fn install_sighup_reload(
+    rt: &tokio::runtime::Runtime,
+    tx: crossbeam_channel::Sender<()>,
+    wake: impl Fn() + Send + 'static,
+) {
+    unix::install(rt, tx, wake);
 }
 
 #[cfg(not(unix))]
-pub fn install_sighup_reload(_rt: &tokio::runtime::Runtime, _tx: crossbeam_channel::Sender<()>) {}
+pub fn install_sighup_reload(
+    _rt: &tokio::runtime::Runtime,
+    _tx: crossbeam_channel::Sender<()>,
+    _wake: impl Fn() + Send + 'static,
+) {
+}
 
 #[cfg(test)]
 mod tests {
@@ -251,6 +260,6 @@ mod tests {
             .expect("tokio runtime");
         let (tx, _rx) = crossbeam_channel::unbounded::<()>();
         // Infallible — Unix installs a real listener, Windows is no-op.
-        install_sighup_reload(&rt, tx);
+        install_sighup_reload(&rt, tx, || {});
     }
 }

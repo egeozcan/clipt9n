@@ -20,9 +20,14 @@ use tokio::runtime::Runtime;
 /// runtime-context guard closes that window: by the time `install`
 /// returns, SIGHUP is intercepted.
 ///
+/// `wake` runs after each successful send. The caller's event loop may be
+/// asleep — a bare channel send would sit unread until something unrelated
+/// woke it — so `wake` is what makes the reload land promptly. Kept as a
+/// callback rather than an `egui::Context` so this module stays UI-agnostic.
+///
 /// The task runs until the runtime is dropped; if `tx` is dropped, sends
 /// fail silently (logged at debug) and the task exits.
-pub(crate) fn install(rt: &Runtime, tx: Sender<()>) {
+pub(crate) fn install(rt: &Runtime, tx: Sender<()>, wake: impl Fn() + Send + 'static) {
     let _enter = rt.enter();
     let mut sighup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(s) => s,
@@ -42,6 +47,7 @@ pub(crate) fn install(rt: &Runtime, tx: Sender<()>) {
                         tracing::debug!("reload channel closed; SIGHUP listener exiting");
                         return;
                     }
+                    wake();
                 }
                 None => {
                     tracing::debug!("SIGHUP stream ended; listener exiting");
