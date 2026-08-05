@@ -116,7 +116,7 @@ impl super::ClipApp {
 
         pure::reset_focus_loss_latch(&mut self.has_been_focused);
         self.initial_focus_pending = true;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        self.set_window_visible(ctx, true);
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = AppState::Showing;
     }

@@ -274,6 +274,20 @@ pub struct ClipApp {
     /// restored in `dismiss_to_idle` so the user lands back in their
     /// previous app after the translation completes or is cancelled.
     previous_app_pid: Option<i32>,
+
+    /// Last `ViewportCommand::Visible` value handed to eframe, or `None`
+    /// before the first send. Every visibility change goes through
+    /// `set_window_visible`, which drops no-op sends.
+    ///
+    /// **Why this must never become an unconditional per-frame send:**
+    /// `Context::send_viewport_cmd` calls `request_repaint` internally, so
+    /// a `Visible` command issued on every pass schedules the next pass
+    /// immediately — a self-perpetuating full-rate render loop that never
+    /// lets the event loop sleep. On macOS each send also reaches
+    /// `-[NSWindow orderOut:]`, which is expensive even when the window is
+    /// already hidden; profiling an idle build showed ~57% of on-CPU time
+    /// inside `orderOut:` alone, for ~28% total CPU while doing nothing.
+    last_sent_visible: Option<bool>,
 }
 
 impl ClipApp {
@@ -359,7 +373,20 @@ impl ClipApp {
             reduced_motion,
             pending_preview: false,
             previous_app_pid: None,
+            last_sent_visible: None,
         }
+    }
+
+    /// Send `ViewportCommand::Visible` only when the value actually
+    /// changes. See `last_sent_visible` for why unconditional sends are a
+    /// CPU trap. All show/hide paths funnel through here so the cached
+    /// value stays truthful.
+    pub(super) fn set_window_visible(&mut self, ctx: &egui::Context, visible: bool) {
+        if self.last_sent_visible == Some(visible) {
+            return;
+        }
+        self.last_sent_visible = Some(visible);
+        ctx.send_viewport_cmd(ViewportCommand::Visible(visible));
     }
 
     /// Capture the PID of the currently frontmost application. Called
@@ -461,7 +488,7 @@ impl ClipApp {
     /// Restores focus to the user's previous application.
     fn dismiss_to_idle(&mut self, ctx: &egui::Context) {
         self.app_state = AppState::Idle;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.set_window_visible(ctx, false);
         // Restore focus to the application the user was in before
         // clipt9n summoned its window (e.g. after a translation
         // completes or the user cancels).
@@ -484,7 +511,7 @@ impl eframe::App for ClipApp {
         self.drain_tray_events(ctx);
 
         let want_visible = !matches!(self.app_state, AppState::Idle | AppState::TranslatingInline { .. });
-        ctx.send_viewport_cmd(ViewportCommand::Visible(want_visible));
+        self.set_window_visible(ctx, want_visible);
 
         if !want_visible {
             // Idle: paint clean chrome.

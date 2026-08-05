@@ -184,7 +184,7 @@ impl super::ClipApp {
             &self.cfg.ui,
         )));
         self.app_state = super::AppState::Idle;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.set_window_visible(ctx, false);
     }
 
     fn persist_setup_completion(

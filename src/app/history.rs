@@ -51,7 +51,7 @@ impl super::ClipApp {
         // Resize viewport for history viewer.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(680.0, 540.0)));
         pure::reset_focus_loss_latch(&mut self.has_been_focused);
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        self.set_window_visible(ctx, true);
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.app_state = super::AppState::ShowingHistory { model };
     }
@@ -209,6 +209,6 @@ impl super::ClipApp {
             &self.cfg.ui,
         )));
         self.app_state = super::AppState::Idle;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.set_window_visible(ctx, false);
     }
 }

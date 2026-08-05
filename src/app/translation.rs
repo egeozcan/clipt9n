@@ -524,6 +524,7 @@ mod tests {
             reduced_motion: false,
             pending_preview: false,
             previous_app_pid: None,
+            last_sent_visible: None,
         };
 
         app.cfg.languages.slot_1 = crate::config::LanguageSlot {
@@ -619,6 +620,7 @@ mod tests {
             reduced_motion: false,
             pending_preview: false,
             previous_app_pid: None,
+            last_sent_visible: None,
         };
 
         let ctx = egui::Context::default();

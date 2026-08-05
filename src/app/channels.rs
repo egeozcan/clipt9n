@@ -211,7 +211,7 @@ impl super::ClipApp {
         // "Re-run setup wizard" item is the only re-focus path.
         if matches!(self.app_state, AppState::SetupWizard { .. }) {
             pure::reset_focus_loss_latch(&mut self.has_been_focused);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.set_window_visible(ctx, true);
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             crate::platform::current().activate_app();
             return;
@@ -237,7 +237,7 @@ impl super::ClipApp {
             crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
         ));
         pure::reset_focus_loss_latch(&mut self.has_been_focused);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        self.set_window_visible(ctx, true);
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         crate::platform::current().activate_app();
         self.app_state = AppState::SetupWizard { model };

@@ -2,8 +2,6 @@
 //! dismissal-to-idle for tray-specific modals. Extracted from
 //! `app/mod.rs` Step 6b of the improvement plan.
 
-use egui::ViewportCommand;
-
 use super::pure;
 use super::AppState;
 
@@ -17,7 +15,7 @@ impl super::ClipApp {
             crate::ui::tray_modal::TRAY_HIDE_MODAL_SIZE,
         ));
         pure::reset_focus_loss_latch(&mut self.has_been_focused);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        self.set_window_visible(ctx, true);
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.app_state = AppState::ConfirmingTrayHide { model };
     }
@@ -114,6 +112,6 @@ impl super::ClipApp {
             crate::ui::prompt_default_inner_size(&self.cfg.ui),
         ));
         self.app_state = AppState::Idle;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.set_window_visible(ctx, false);
     }
 }
