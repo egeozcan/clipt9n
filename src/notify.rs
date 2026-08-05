@@ -31,7 +31,10 @@ pub fn selection_capture_failed(err: &TranslateError) -> Result<(), TranslateErr
 }
 
 /// Show a notification when inline replacement failed because slot is not inlineable.
-pub fn inline_replace_not_inlineable(slot: u8, action_label: Option<&str>) -> Result<(), TranslateError> {
+pub fn inline_replace_not_inlineable(
+    slot: u8,
+    action_label: Option<&str>,
+) -> Result<(), TranslateError> {
     let body = if let Some(label) = action_label {
         format!("Slot {slot} ({label}) is not inlineable.")
     } else {

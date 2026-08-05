@@ -528,7 +528,10 @@ impl eframe::App for ClipApp {
         self.drain_channels(ctx);
         self.drain_tray_events(ctx);
 
-        let want_visible = !matches!(self.app_state, AppState::Idle | AppState::TranslatingInline { .. });
+        let want_visible = !matches!(
+            self.app_state,
+            AppState::Idle | AppState::TranslatingInline { .. }
+        );
         self.set_window_visible(ctx, want_visible);
 
         if !want_visible {

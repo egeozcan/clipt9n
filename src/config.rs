@@ -441,8 +441,8 @@ impl Config {
         // Pre-3c08cfb, slot_3 shipped as Türkçe/tr. Now it defaults to
         // Deutsch (formell)/de; reset only when the saved value still
         // matches the prior default verbatim.
-        let stale_slot_3 = self.languages.slot_3.label == "Türkçe"
-            && self.languages.slot_3.code == "tr";
+        let stale_slot_3 =
+            self.languages.slot_3.label == "Türkçe" && self.languages.slot_3.code == "tr";
         if stale_slot_3 {
             let default = LanguagesConfig::default();
             self.languages.slot_3 = default.slot_3;

@@ -254,9 +254,9 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                             theme::PANEL_2
                         };
                         let stroke = if active {
-                            Stroke::new(1.0, theme::ACCENT)
+                            Stroke::new(1.0_f32, theme::ACCENT)
                         } else {
-                            Stroke::new(1.0, theme::LINE_SOFT)
+                            Stroke::new(1.0_f32, theme::LINE_SOFT)
                         };
                         let resp = egui::Frame::new()
                             .fill(bg)
@@ -379,9 +379,9 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                     if model.keychain_available {
                         let active = matches!(model.storage, Storage::Keychain);
                         let stroke = if active {
-                            Stroke::new(1.0, theme::ACCENT)
+                            Stroke::new(1.0_f32, theme::ACCENT)
                         } else {
-                            Stroke::new(1.0, theme::LINE_SOFT)
+                            Stroke::new(1.0_f32, theme::LINE_SOFT)
                         };
                         let resp = egui::Frame::new()
                             .fill(theme::PANEL_2)
@@ -416,9 +416,9 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                     // Env option (always shown).
                     let active = matches!(model.storage, Storage::Env);
                     let stroke = if active {
-                        Stroke::new(1.0, theme::ACCENT)
+                        Stroke::new(1.0_f32, theme::ACCENT)
                     } else {
-                        Stroke::new(1.0, theme::LINE_SOFT)
+                        Stroke::new(1.0_f32, theme::LINE_SOFT)
                     };
                     let resp = egui::Frame::new()
                         .fill(theme::PANEL_2)
@@ -480,7 +480,7 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                 // Check rows, painted in a panel.
                 egui::Frame::new()
                     .fill(theme::PANEL_2)
-                    .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE_SOFT))
                     .corner_radius(6.0)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
@@ -501,7 +501,7 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                     egui::Frame::new()
                         .fill(Color32::from_rgba_unmultiplied(255, 118, 118, 20))
                         .stroke(Stroke::new(
-                            1.0,
+                            1.0_f32,
                             Color32::from_rgba_unmultiplied(255, 118, 118, 64),
                         ))
                         .corner_radius(6.0)

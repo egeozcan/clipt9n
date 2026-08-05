@@ -78,7 +78,7 @@ pub fn draw(ctx: &egui::Context, model: &SizeConfirmModel) -> Option<SizeConfirm
                     ui.add_space(4.0);
                     egui::Frame::new()
                         .fill(theme::PANEL_2)
-                        .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                        .stroke(Stroke::new(1.0_f32, theme::LINE_SOFT))
                         .corner_radius(6)
                         .inner_margin(egui::Margin::symmetric(10, 8))
                         .show(ui, |ui| {
@@ -102,7 +102,7 @@ pub fn draw(ctx: &egui::Context, model: &SizeConfirmModel) -> Option<SizeConfirm
                     ui.painter().hline(
                         sep_rect.x_range(),
                         sep_rect.center().y,
-                        Stroke::new(1.0, theme::LINE_SOFT),
+                        Stroke::new(1.0_f32, theme::LINE_SOFT),
                     );
                     ui.add_space(10.0);
 
@@ -167,7 +167,7 @@ fn confirm_button(ui: &mut egui::Ui) -> egui::Response {
             ui.painter().rect_stroke(
                 rect,
                 6.0,
-                Stroke::new(2.0, theme::ACCENT_INK),
+                Stroke::new(2.0_f32, theme::ACCENT_INK),
                 egui::StrokeKind::Outside,
             );
         }
@@ -205,7 +205,7 @@ fn cancel_button(ui: &mut egui::Ui) -> egui::Response {
         ui.painter().rect_stroke(
             rect,
             6.0,
-            Stroke::new(1.0, theme::LINE),
+            Stroke::new(1.0_f32, theme::LINE),
             egui::StrokeKind::Inside,
         );
         if response.has_focus() {
@@ -215,7 +215,7 @@ fn cancel_button(ui: &mut egui::Ui) -> egui::Response {
             ui.painter().rect_stroke(
                 rect,
                 6.0,
-                Stroke::new(2.0, theme::ACCENT),
+                Stroke::new(2.0_f32, theme::ACCENT),
                 egui::StrokeKind::Outside,
             );
         }

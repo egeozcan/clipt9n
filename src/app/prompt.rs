@@ -42,18 +42,29 @@ impl super::ClipApp {
     pub(super) fn replace_selection_inline(&mut self, ctx: &egui::Context) {
         match self.snapshot_selected_text(self.cfg.hotkey.replace.copy_delay_ms) {
             Ok(text) => {
-                let slot = self.state.last_slot.unwrap_or(self.cfg.hotkey.replace.default_slot);
+                let slot = self
+                    .state
+                    .last_slot
+                    .unwrap_or(self.cfg.hotkey.replace.default_slot);
                 match pure::decide_intent(slot, &self.cfg) {
-                    Some(pure::Intent::Translate { action, action_label, .. }) => {
+                    Some(pure::Intent::Translate {
+                        action,
+                        action_label,
+                        ..
+                    }) => {
                         self.start_translation_inline(text, action, action_label, slot, ctx);
                     }
                     _ => {
-                        tracing::warn!("replace_selection_inline: intent for slot {slot} is not inlineable");
+                        tracing::warn!(
+                            "replace_selection_inline: intent for slot {slot} is not inlineable"
+                        );
                         let label = match slot {
                             8 => Some("Custom Prompt"),
                             _ => None,
                         };
-                        if let Err(notify_err) = crate::notify::inline_replace_not_inlineable(slot, label) {
+                        if let Err(notify_err) =
+                            crate::notify::inline_replace_not_inlineable(slot, label)
+                        {
                             tracing::warn!(error = %notify_err, "notification failed");
                         }
                     }

@@ -168,12 +168,14 @@ fn draw_empty(ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         label(ui, RichText::new("⎚").size(28.0).color(theme::BAD));
         ui.add_space(8.0);
-        label(ui, 
+        label(
+            ui,
             RichText::new("Clipboard is empty or not text.")
                 .color(theme::INK)
                 .size(14.0),
         );
-        label(ui, 
+        label(
+            ui,
             RichText::new("Copy something and try again.")
                 .color(theme::INK_3)
                 .size(12.0),
@@ -183,7 +185,8 @@ fn draw_empty(ui: &mut egui::Ui) {
             ui.style_mut().spacing.item_spacing.x = 4.0;
             ui.add_space(ui.available_width() / 2.0 - 40.0);
             theme::kbd(ui, "Esc");
-            label(ui, 
+            label(
+                ui,
                 RichText::new("to dismiss")
                     .color(theme::INK_3)
                     .size(11.0)
@@ -208,14 +211,16 @@ fn draw_populated(
         .show(ui, |ui| {
             // ----- Preview header -----
             ui.horizontal(|ui| {
-                label(ui, 
+                label(
+                    ui,
                     RichText::new("CLIPBOARD")
                         .color(theme::INK_3)
                         .size(11.0)
                         .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    label(ui, 
+                    label(
+                        ui,
                         RichText::new(format!("· {} chars", model.clipboard_text.chars().count()))
                             .color(theme::INK_3)
                             .monospace()
@@ -231,7 +236,8 @@ fn draw_populated(
                         .corner_radius(3)
                         .inner_margin(egui::Margin::symmetric(6, 1));
                     lang_frame.show(ui, |ui| {
-                        label(ui, 
+                        label(
+                            ui,
                             RichText::new(lang)
                                 .color(theme::ACCENT)
                                 .monospace()
@@ -248,13 +254,14 @@ fn draw_populated(
                 let preview = preview_text(&model.clipboard_text);
                 egui::Frame::new()
                     .fill(theme::PANEL_2)
-                    .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE_SOFT))
                     .corner_radius(6)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
                         for line in preview.lines().take(3) {
                             ui.horizontal(|ui| {
-                                label(ui, 
+                                label(
+                                    ui,
                                     RichText::new("›")
                                         .color(theme::ACCENT.linear_multiply(0.6))
                                         .monospace(),
@@ -309,7 +316,15 @@ fn draw_populated(
                         let (label, trailing) = slot_strings(slot, cfg);
                         let is_last = model.last_slot == Some(slot.n);
                         let should_focus = focus_target == Some(slot.n);
-                        if draw_slot_row(ui, slot, label, trailing, is_last, should_focus, focused_slot) {
+                        if draw_slot_row(
+                            ui,
+                            slot,
+                            label,
+                            trailing,
+                            is_last,
+                            should_focus,
+                            focused_slot,
+                        ) {
                             *clicked = Some(PromptOutcome::Pick(slot.n));
                         }
                     }
@@ -323,7 +338,7 @@ fn draw_populated(
             ui.painter().hline(
                 sep_rect.x_range(),
                 sep_rect.center().y,
-                Stroke::new(1.0, theme::LINE_SOFT),
+                Stroke::new(1.0_f32, theme::LINE_SOFT),
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -332,11 +347,7 @@ fn draw_populated(
                 // each kbd cap and its adjacent label so they don't touch.
                 ui.style_mut().spacing.item_spacing.x = 4.0;
                 theme::kbd(ui, "1");
-                label(ui, 
-                    RichText::new("–")
-                        .color(theme::INK_3)
-                        .size(11.0),
-                );
+                label(ui, RichText::new("–").color(theme::INK_3).size(11.0));
                 theme::kbd(ui, "8");
                 ui.add(
                     egui::Label::new(
@@ -370,7 +381,8 @@ fn draw_populated(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if should_warn_large_paste(&model.clipboard_text, cfg) {
-                        label(ui, 
+                        label(
+                            ui,
                             RichText::new("⚠ large paste")
                                 .color(theme::WARN)
                                 .monospace()
@@ -424,9 +436,12 @@ fn draw_slot_row(
         Color32::TRANSPARENT
     };
     let border = if focused {
-        Stroke::new(2.0, theme::ACCENT)
+        Stroke::new(2.0_f32, theme::ACCENT)
     } else if is_last {
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x2e))
+        Stroke::new(
+            1.0_f32,
+            Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x2e),
+        )
     } else {
         Stroke::NONE
     };
@@ -463,7 +478,7 @@ fn draw_slot_row(
     cui.painter().rect_stroke(
         badge_rect,
         4.0,
-        Stroke::new(1.0, theme::LINE),
+        Stroke::new(1.0_f32, theme::LINE),
         egui::StrokeKind::Inside,
     );
     cui.painter().text(
@@ -479,9 +494,7 @@ fn draw_slot_row(
     // the text area and prevents the parent row's `Sense::click()` from
     // firing. Without this, clicking the literal "Fix grammar" text
     // wouldn't pick the slot — only the empty area to its right would.
-    cui.add(
-        egui::Label::new(RichText::new(label).color(theme::INK).size(13.5)).selectable(false),
-    );
+    cui.add(egui::Label::new(RichText::new(label).color(theme::INK).size(13.5)).selectable(false));
     cui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if is_last {
             let badge = egui::Frame::new()
@@ -568,7 +581,7 @@ fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
     egui::Frame::new()
         .fill(Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x4d, 0x10))
         .stroke(Stroke::new(
-            1.0,
+            1.0_f32,
             Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x4d, 0x2e),
         ))
         .corner_radius(6)
@@ -576,7 +589,8 @@ fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.style_mut().spacing.item_spacing.x = 6.0;
-                label(ui, 
+                label(
+                    ui,
                     RichText::new("GLOSSARY WILL INJECT:")
                         .color(theme::WARN)
                         .size(10.0)
@@ -586,7 +600,8 @@ fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
                     chip(ui, hit);
                 }
                 if more > 0 {
-                    label(ui, 
+                    label(
+                        ui,
                         RichText::new(format!("+{more} more"))
                             .color(theme::INK_3)
                             .monospace()
@@ -601,25 +616,28 @@ fn draw_glossary_chips(ui: &mut egui::Ui, hits: &[GlossaryHit]) {
 fn chip(ui: &mut egui::Ui, hit: &GlossaryHit) {
     egui::Frame::new()
         .fill(theme::PANEL_3)
-        .stroke(Stroke::new(1.0, theme::LINE))
+        .stroke(Stroke::new(1.0_f32, theme::LINE))
         .corner_radius(4)
         .inner_margin(egui::Margin::symmetric(7, 2))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.style_mut().spacing.item_spacing.x = 4.0;
-                label(ui, 
+                label(
+                    ui,
                     RichText::new(&hit.source)
                         .color(theme::INK_2)
                         .monospace()
                         .size(11.0),
                 );
-                label(ui, 
+                label(
+                    ui,
                     RichText::new("→")
                         .color(theme::INK_3)
                         .monospace()
                         .size(11.0),
                 );
-                label(ui, 
+                label(
+                    ui,
                     RichText::new(&hit.target)
                         .color(theme::ACCENT)
                         .monospace()

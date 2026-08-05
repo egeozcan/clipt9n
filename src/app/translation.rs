@@ -180,9 +180,7 @@ impl super::ClipApp {
         let provider = self
             .provider
             .as_ref()
-            .expect(
-                "provider must be Some; None is unreachable from start_translation_inline",
-            )
+            .expect("provider must be Some; None is unreachable from start_translation_inline")
             .clone();
         let tx = self.result_tx.clone();
 
@@ -480,7 +478,8 @@ mod tests {
 
         let provider = std::sync::Arc::new(MockProvider);
         let templates = std::sync::Arc::new(crate::llm::templates::Templates::built_in());
-        let glossary = std::sync::Arc::new(std::sync::RwLock::new(crate::glossary::Glossary::empty()));
+        let glossary =
+            std::sync::Arc::new(std::sync::RwLock::new(crate::glossary::Glossary::empty()));
 
         let mut app = super::super::ClipApp {
             cfg: Config::default(),
@@ -537,15 +536,23 @@ mod tests {
 
         app.start_translation_inline(
             "Hello World".to_string(),
-            Action::Translate { code: "es".to_string() },
+            Action::Translate {
+                code: "es".to_string(),
+            },
             "Translate to Spanish".to_string(),
             1,
             &ctx,
         );
 
         // Assert state transitioned
-        assert!(matches!(app.app_state, super::super::AppState::TranslatingInline { .. }));
-        if let super::super::AppState::TranslatingInline { gen, action_label, .. } = &app.app_state {
+        assert!(matches!(
+            app.app_state,
+            super::super::AppState::TranslatingInline { .. }
+        ));
+        if let super::super::AppState::TranslatingInline {
+            gen, action_label, ..
+        } = &app.app_state
+        {
             assert_eq!(*gen, app.dispatch_gen);
             assert_eq!(action_label, "Translate to Spanish");
         } else {
@@ -553,7 +560,10 @@ mod tests {
         }
 
         // Wait for the tokio worker to finish and send the result
-        let outcome = app.result_rx.recv_timeout(std::time::Duration::from_secs(2)).expect("outcome received");
+        let outcome = app
+            .result_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("outcome received");
         assert_eq!(outcome.gen, app.dispatch_gen);
         assert_eq!(outcome.slot, 1);
         assert_eq!(outcome.result.unwrap(), "Hola Mundo");
@@ -573,7 +583,8 @@ mod tests {
 
         let provider = std::sync::Arc::new(MockProvider);
         let templates = std::sync::Arc::new(crate::llm::templates::Templates::built_in());
-        let glossary = std::sync::Arc::new(std::sync::RwLock::new(crate::glossary::Glossary::empty()));
+        let glossary =
+            std::sync::Arc::new(std::sync::RwLock::new(crate::glossary::Glossary::empty()));
 
         let mut app = super::super::ClipApp {
             cfg: Config::default(),
@@ -634,7 +645,9 @@ mod tests {
             gen: 42,
             detected_source_lang: None,
             source_text: "Hello".to_string(),
-            action: Action::Translate { code: "es".to_string() },
+            action: Action::Translate {
+                code: "es".to_string(),
+            },
         };
 
         app.handle_translation_done(outcome, &ctx);
@@ -648,4 +661,3 @@ mod tests {
         assert_eq!(cb_text, "Inline Translation Result");
     }
 }
-

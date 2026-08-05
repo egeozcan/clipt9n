@@ -46,7 +46,7 @@ pub fn draw(ctx: &egui::Context, model: &TrayHideModel) -> Option<TrayHideOutcom
             egui::Frame::new()
                 .fill(theme::PANEL)
                 .inner_margin(20.0)
-                .stroke(egui::Stroke::new(1.0, theme::LINE_SOFT))
+                .stroke(egui::Stroke::new(1.0_f32, theme::LINE_SOFT))
                 .corner_radius(10.0),
         )
         .show(ctx, |ui| {
@@ -79,7 +79,7 @@ pub fn draw(ctx: &egui::Context, model: &TrayHideModel) -> Option<TrayHideOutcom
                     egui::Button::new(RichText::new("Cancel").color(theme::INK).size(13.0))
                         .min_size(Vec2::new(110.0, 32.0))
                         .fill(theme::PANEL_2)
-                        .stroke(egui::Stroke::new(1.0, theme::LINE_SOFT)),
+                        .stroke(egui::Stroke::new(1.0_f32, theme::LINE_SOFT)),
                 );
                 if cancel.clicked() {
                     outcome = Some(TrayHideOutcome::Cancel);
@@ -94,7 +94,7 @@ pub fn draw(ctx: &egui::Context, model: &TrayHideModel) -> Option<TrayHideOutcom
                     )
                     .min_size(Vec2::new(110.0, 32.0))
                     .fill(theme::PANEL_2)
-                    .stroke(egui::Stroke::new(1.0, theme::LINE_SOFT)),
+                    .stroke(egui::Stroke::new(1.0_f32, theme::LINE_SOFT)),
                 );
                 if confirm.clicked() {
                     outcome = Some(TrayHideOutcome::Confirm);

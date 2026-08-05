@@ -49,23 +49,23 @@ pub fn visuals() -> Visuals {
 
     // Selection (highlighted rows, selected text)
     v.selection.bg_fill = Color32::from_rgba_unmultiplied(0xc8, 0xff, 0x5e, 0x18); // ~9% accent
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
     // Focus ring: 2px ACCENT on every focusable widget.
     v.widgets.inactive.bg_fill = PANEL_2;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, INK_2);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, INK_2);
 
     v.widgets.hovered.bg_fill = PANEL_3;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, INK);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, INK);
 
     v.widgets.active.bg_fill = PANEL_3;
-    v.widgets.active.bg_stroke = Stroke::new(2.0, ACCENT); // ← focus ring
-    v.widgets.active.fg_stroke = Stroke::new(1.0, INK);
+    v.widgets.active.bg_stroke = Stroke::new(2.0_f32, ACCENT); // ← focus ring
+    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, INK);
 
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE_SOFT);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, INK_3);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE_SOFT);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, INK_3);
 
     v
 }
@@ -78,7 +78,7 @@ pub fn visuals() -> Visuals {
 pub fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let frame = egui::Frame::new()
         .fill(PANEL_3)
-        .stroke(Stroke::new(1.0, LINE))
+        .stroke(Stroke::new(1.0_f32, LINE))
         .corner_radius(3)
         .inner_margin(egui::Margin::symmetric(5, 1));
     frame
@@ -113,7 +113,7 @@ pub fn window_frame<R>(
             egui::Frame::new()
                 .fill(Color32::from_rgba_unmultiplied(0x14, 0x16, 0x1c, 0x99))
                 .inner_margin(egui::Margin::symmetric(12, 9))
-                .stroke(Stroke::new(1.0, LINE_SOFT))
+                .stroke(Stroke::new(1.0_f32, LINE_SOFT))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(2.0);

@@ -282,7 +282,7 @@ pub fn draw(ctx: &egui::Context, model: &mut HistoryModel) -> Option<HistoryOutc
             ui.add_space(10.0);
             egui::Frame::new()
                 .fill(theme::PANEL_2)
-                .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                .stroke(Stroke::new(1.0_f32, theme::LINE_SOFT))
                 .inner_margin(12.0)
                 .show(ui, |ui| {
                     ui.columns(2, |cols| {
@@ -359,7 +359,7 @@ pub fn draw(ctx: &egui::Context, model: &mut HistoryModel) -> Option<HistoryOutc
                 .frame(
                     egui::Frame::new()
                         .fill(theme::PANEL)
-                        .stroke(Stroke::new(1.0, theme::LINE))
+                        .stroke(Stroke::new(1.0_f32, theme::LINE))
                         .inner_margin(18.0),
                 )
                 .show(ctx, |ui| {

@@ -126,7 +126,7 @@ pub fn draw(ctx: &egui::Context, model: &TranslatingModel) -> Option<Translating
                     ui.painter().hline(
                         sep_rect.x_range(),
                         sep_rect.center().y,
-                        Stroke::new(1.0, theme::LINE_SOFT),
+                        Stroke::new(1.0_f32, theme::LINE_SOFT),
                     );
                     ui.add_space(10.0);
 
@@ -193,14 +193,14 @@ fn cancel_button(ui: &mut egui::Ui) -> egui::Response {
         ui.painter().rect_stroke(
             rect,
             6.0,
-            Stroke::new(1.0, theme::LINE),
+            Stroke::new(1.0_f32, theme::LINE),
             egui::StrokeKind::Inside,
         );
         if response.has_focus() {
             ui.painter().rect_stroke(
                 rect,
                 6.0,
-                Stroke::new(2.0, theme::ACCENT),
+                Stroke::new(2.0_f32, theme::ACCENT),
                 egui::StrokeKind::Outside,
             );
         }

@@ -130,7 +130,7 @@ pub fn draw(ctx: &egui::Context, model: &mut CustomPromptModel) -> Option<Custom
                 let preview = preview_truncate(&model.clipboard_text);
                 egui::Frame::new()
                     .fill(theme::PANEL_2)
-                    .stroke(Stroke::new(1.0, theme::LINE_SOFT))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE_SOFT))
                     .corner_radius(6)
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
@@ -156,7 +156,7 @@ pub fn draw(ctx: &egui::Context, model: &mut CustomPromptModel) -> Option<Custom
                 ui.painter().hline(
                     sep_rect.x_range(),
                     sep_rect.center().y,
-                    Stroke::new(1.0, theme::LINE_SOFT),
+                    Stroke::new(1.0_f32, theme::LINE_SOFT),
                 );
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -225,9 +225,9 @@ fn chip(ui: &mut egui::Ui, label: &str) -> egui::Response {
         // ring) because the chips sit close together horizontally; an
         // outside ring would overlap the next chip.
         let (border_w, border_c) = if focused {
-            (2.0, theme::ACCENT)
+            (2.0_f32, theme::ACCENT)
         } else {
-            (1.0, theme::LINE)
+            (1.0_f32, theme::LINE)
         };
         ui.painter().rect_stroke(
             rect,
@@ -288,8 +288,12 @@ fn run_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
             } else {
                 theme::ACCENT
             };
-            ui.painter()
-                .rect_stroke(rect, 6.0, Stroke::new(2.0, ring), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(
+                rect,
+                6.0,
+                Stroke::new(2.0_f32, ring),
+                egui::StrokeKind::Outside,
+            );
         }
         ui.painter().text(
             rect.center(),
