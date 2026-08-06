@@ -147,11 +147,27 @@ fn main() -> anyhow::Result<()> {
     if cfg.hotkey.option {
         prompt_mods |= Modifiers::ALT;
     }
-    let prompt_key_code = letter_to_code(&cfg.hotkey.key)
-        .ok_or_else(|| anyhow::anyhow!("unsupported hotkey key: {}", cfg.hotkey.key))?;
+    // An unregisterable key must not abort the launch. Aborting here
+    // would be unrecoverable through the UI: no window and no tray icon
+    // means no way to correct the key except hand-editing the TOML. Fall
+    // back to the default so the app still comes up, and report it the
+    // same way the other three hotkeys report a bad key.
+    let (prompt_key_code, prompt_key_unsupported) = match letter_to_code(&cfg.hotkey.key) {
+        Some(code) => (code, false),
+        None => {
+            tracing::warn!(
+                key = %cfg.hotkey.key,
+                "unsupported prompt hotkey key; prompt hotkey disabled — fix it in Settings"
+            );
+            (Code::KeyT, true)
+        }
+    };
     let prompt_hotkey = HotKey::new(Some(prompt_mods), prompt_key_code);
     let prompt_hotkey_id = prompt_hotkey.id();
-    let hotkey_in_use = if cfg.hotkey.enabled {
+    let hotkey_in_use = if prompt_key_unsupported {
+        // Surface it on the tray pill — the hotkey genuinely won't work.
+        true
+    } else if cfg.hotkey.enabled {
         match manager.register(prompt_hotkey) {
             Ok(()) => false,
             Err(e) => {
@@ -385,6 +401,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The creator closure is `move`; hand it its own copy of the path
+    // the config was actually loaded from so saves go back to that file.
+    let cfg_path_for_app = cfg_path.clone();
+
     // eframe options: hidden, undecorated, always-on-top, centered window.
     let inner_size = clipt9n::ui::prompt_default_inner_size(&cfg.ui);
     let viewport = eframe::egui::ViewportBuilder::default()
@@ -429,6 +449,7 @@ fn main() -> anyhow::Result<()> {
                 history,
                 history_disabled_initial,
                 secrets,
+                cfg_path_for_app,
                 state_path,
                 hotkey_rx,
                 prompt_hotkey_id,
@@ -469,28 +490,30 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // The wizard wins over `--settings`: with no working key
+            // there is nothing for the editor to rebuild a provider
+            // from, so first-run setup has to come first.
             let app = match initial_setup_wizard {
                 Some(model) => {
                     app.with_initial_state(clipt9n::app::InitialState::SetupWizard(model))
                 }
+                None if cli.settings => {
+                    app.with_initial_state(clipt9n::app::InitialState::Settings)
+                }
                 None => app,
             };
-            // Make the viewport visible if we're starting in the wizard.
-            // (Normal startup is hidden — only the hotkey shows the prompt.)
-            if app.is_setup_wizard() {
+            // Make the viewport visible if we're starting in a window
+            // state. (Normal startup is hidden — only the hotkey shows
+            // the prompt.)
+            if let Some(size) = app.startup_window_size() {
                 cc.egui_ctx
-                    .send_viewport_cmd(eframe::egui::ViewportCommand::InnerSize(
-                        eframe::egui::Vec2::new(
-                            clipt9n::ui::setup::SETUP_WIZARD_INNER_SIZE.x,
-                            clipt9n::ui::setup::SETUP_WIZARD_INNER_SIZE.y,
-                        ),
-                    ));
+                    .send_viewport_cmd(eframe::egui::ViewportCommand::InnerSize(size));
                 cc.egui_ctx
                     .send_viewport_cmd(eframe::egui::ViewportCommand::Visible(true));
                 cc.egui_ctx
                     .send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
                 // Required for accessory-policy apps to surface the
-                // wizard window above the user's current foreground app.
+                // window above the user's current foreground app.
                 platform::current().activate_app();
             }
             Ok(Box::new(app))
@@ -603,6 +626,7 @@ mod tests {
             custom: None,
             show_tray: false,
             config_path: Some(cfg_path.clone()),
+            settings: false,
         };
 
         let (resolved_cfg, state_path) = gui_paths(&cli).unwrap();

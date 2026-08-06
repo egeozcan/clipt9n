@@ -70,12 +70,9 @@ impl super::ClipApp {
                 self.dismiss_setup_to_idle(ctx);
             }
             Some(crate::ui::setup::SetupOutcome::OpenConfig) => {
-                let cfg_path = self.state_path.parent().map(|p| p.join("config.toml"));
-                if let Some(p) = cfg_path {
-                    let plat = crate::platform::current();
-                    if let Err(e) = plat.open_path(&p) {
-                        tracing::warn!(error = %e, "open_path failed");
-                    }
+                let plat = crate::platform::current();
+                if let Err(e) = plat.open_path(self.config_path()) {
+                    tracing::warn!(error = %e, "open_path failed");
                 }
                 self.app_state = super::AppState::SetupWizard { model };
             }
@@ -220,11 +217,7 @@ impl super::ClipApp {
         self.cfg.provider.api_key.env_var = env_var.into();
 
         // Persist config to disk.
-        let cfg_path = self
-            .state_path
-            .parent()
-            .map(|p| p.join("config.toml"))
-            .ok_or_else(|| TranslateError::Config("state path has no parent".into()))?;
+        let cfg_path = self.config_path().to_path_buf();
         self.cfg.persist(&cfg_path)?;
 
         // Persist the key to the chosen backend. Env-storage logs a
@@ -259,10 +252,9 @@ impl super::ClipApp {
                     Ok(read) if *read == *model.key
                 );
                 if !readback_ok {
-                    let config_dir = self
-                        .state_path
-                        .parent()
-                        .ok_or_else(|| TranslateError::Config("state path has no parent".into()))?;
+                    let config_dir = cfg_path.parent().ok_or_else(|| {
+                        TranslateError::Config("config path has no parent".into())
+                    })?;
                     let keyfile = crate::secrets::FileSecrets::keyfile_path(config_dir);
                     let file_secrets = crate::secrets::FileSecrets::new(keyfile.clone());
                     file_secrets.set_api_key(model.key.clone())?;

@@ -57,6 +57,7 @@ clipt9n runs quietly in the menu bar. From the menu, you can:
 - Open history.
 - Open the glossary file.
 - Reload the glossary after editing it.
+- Open settings.
 - Re-run the setup wizard.
 - Hide the menu bar icon.
 - Quit the app.
@@ -151,9 +152,23 @@ clipt9n --custom "make this more diplomatic"
 
 ## Configuration
 
-Most users can configure clipt9n from the setup wizard. Advanced settings live in the config folder.
+Pick **Settings…** from the menu bar to edit the configuration in a window:
+provider and model, the API key and where it is stored, the five language
+slots, all four hotkeys, and the prompt/glossary/history behavior.
 
-On macOS, the default config file is:
+Saving applies immediately — the provider is rebuilt in place, so a new
+key or model takes effect on the next translation. Two changes need a
+relaunch and say so in the window: hotkey edits (registered once at
+startup) and turning history on or off.
+
+If the menu bar icon is hidden, reach the same window with:
+
+```bash
+clipt9n --settings
+```
+
+Everything the window covers, plus prompt-template overrides, also lives
+in the config file. On macOS, the default path is:
 
 ```text
 ~/Library/Application Support/clipboard-translator/config.toml

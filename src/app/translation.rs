@@ -483,6 +483,7 @@ mod tests {
 
         let mut app = super::super::ClipApp {
             cfg: Config::default(),
+            cfg_path: PathBuf::from("config.toml"),
             state_path: PathBuf::from("state.toml"),
             state: State::default(),
             provider: Some(provider),
@@ -588,6 +589,7 @@ mod tests {
 
         let mut app = super::super::ClipApp {
             cfg: Config::default(),
+            cfg_path: PathBuf::from("config.toml"),
             state_path: PathBuf::from("state.toml"),
             state: State::default(),
             provider: Some(provider),

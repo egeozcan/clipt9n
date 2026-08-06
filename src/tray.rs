@@ -60,6 +60,7 @@ pub const ID_GLOSSARY_OPEN: &str = "clipt9n.glossary.open";
 pub const ID_GLOSSARY_RELOAD: &str = "clipt9n.glossary.reload";
 pub const ID_ACCESSIBILITY_SETTINGS: &str = "clipt9n.accessibility.settings";
 pub const ID_RERUN_WIZARD: &str = "clipt9n.wizard";
+pub const ID_SETTINGS: &str = "clipt9n.settings";
 pub const ID_OPEN_CONFIG: &str = "clipt9n.config.open";
 pub const ID_HIDE: &str = "clipt9n.hide";
 pub const ID_QUIT: &str = "clipt9n.quit";
@@ -193,6 +194,8 @@ impl TrayHandle {
         ))
         .map_err(menu_err)?;
         menu.append(&PredefinedMenuItem::separator())
+            .map_err(menu_err)?;
+        menu.append(&MenuItem::with_id(ID_SETTINGS, "Settings…", true, None))
             .map_err(menu_err)?;
         menu.append(&MenuItem::with_id(
             ID_OPEN_CONFIG,
@@ -404,6 +407,7 @@ mod tests {
             ID_HISTORY,
             ID_GLOSSARY_OPEN,
             ID_GLOSSARY_RELOAD,
+            ID_SETTINGS,
             ID_OPEN_CONFIG,
             ID_ACCESSIBILITY_SETTINGS,
             ID_RERUN_WIZARD,

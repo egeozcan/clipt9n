@@ -120,7 +120,7 @@ pub struct LanguageSlot {
     pub code: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HotkeyConfig {
     /// "cmd" → Cmd on macOS, Ctrl on Linux/Windows. "ctrl" → Ctrl on every OS.
@@ -159,7 +159,7 @@ impl Default for HotkeyConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HistoryHotkeyConfig {
     pub modifier: String,
@@ -181,7 +181,7 @@ impl Default for HistoryHotkeyConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SelectionHotkeyConfig {
     pub modifier: String,
@@ -205,7 +205,7 @@ impl Default for SelectionHotkeyConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ReplaceHotkeyConfig {
     pub modifier: String,
@@ -350,7 +350,11 @@ impl Config {
         Ok(cfg)
     }
 
-    fn validate(&self) -> Result<(), TranslateError> {
+    /// Reject configs the rest of the app can't honor. Called by `load`
+    /// after parsing, and by the settings editor before it commits an
+    /// edited config to disk — the GUI must fail the same way the file
+    /// loader would, or a save could produce a config that won't load.
+    pub fn validate(&self) -> Result<(), TranslateError> {
         match self.provider.api_key.source.as_str() {
             "keychain" | "env" | "prompt" | "file" => {}
             other => {
@@ -572,6 +576,36 @@ impl Modifier {
     }
 }
 
+/// Whether `key` names a hotkey the app can actually register.
+///
+/// `main.rs::letter_to_code` is the registration-side table and accepts
+/// exactly `A`–`Z`. Keep the two in sync: the settings editor refuses to
+/// save anything this rejects, so widening one without the other either
+/// blocks a key that would work or — worse — lets a key through that
+/// fails to bind at launch.
+pub fn hotkey_key_is_supported(key: &str) -> bool {
+    key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase()
+}
+
+/// Render an arbitrary modifier/option/shift/key combination for UI
+/// display (e.g., "Cmd+Option+T"). Logical, not OS-mapped — it echoes
+/// what the user authored. An unparseable modifier renders as "?" so a
+/// typo is visible rather than silently normalized.
+pub fn hotkey_combo_display(modifier: &str, option: bool, shift: bool, key: &str) -> String {
+    let modifier = Modifier::parse(modifier)
+        .map(Modifier::display)
+        .unwrap_or("?");
+    let mut parts = vec![modifier.to_string()];
+    if option {
+        parts.push("Option".to_string());
+    }
+    if shift {
+        parts.push("Shift".to_string());
+    }
+    parts.push(key.to_string());
+    parts.join("+")
+}
+
 impl Config {
     /// Render the configured hotkey for UI display (e.g., "Cmd+Option+T").
     /// Returns "(disabled)" if `[hotkey].enabled = false`.
@@ -579,18 +613,12 @@ impl Config {
         if !self.hotkey.enabled {
             return "(disabled)".to_string();
         }
-        let modifier = Modifier::parse(&self.hotkey.modifier)
-            .map(Modifier::display)
-            .unwrap_or("?");
-        let mut parts = vec![modifier.to_string()];
-        if self.hotkey.option {
-            parts.push("Option".to_string());
-        }
-        if self.hotkey.shift {
-            parts.push("Shift".to_string());
-        }
-        parts.push(self.hotkey.key.clone());
-        parts.join("+")
+        hotkey_combo_display(
+            &self.hotkey.modifier,
+            self.hotkey.option,
+            self.hotkey.shift,
+            &self.hotkey.key,
+        )
     }
 }
 
@@ -718,6 +746,18 @@ enabled = true
         assert_eq!(cfg.hotkey.modifier, "ctrl");
         assert!(!cfg.hotkey.shift);
         assert_eq!(cfg.hotkey.key, "Y");
+    }
+
+    #[test]
+    fn supported_hotkey_keys_are_single_uppercase_letters() {
+        assert!(hotkey_key_is_supported("T"));
+        assert!(hotkey_key_is_supported("Z"));
+        // Everything `letter_to_code` has no arm for. "F5" and "Space"
+        // are the tempting ones — a config carrying either aborts the
+        // launch, so the editor must never write them.
+        for bad in ["", "t", "F5", "Space", "TT", "1", "Ü"] {
+            assert!(!hotkey_key_is_supported(bad), "should reject {bad:?}");
+        }
     }
 
     #[test]

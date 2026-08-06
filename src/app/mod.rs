@@ -7,6 +7,7 @@ mod channels;
 mod history;
 mod prompt;
 mod pure;
+mod settings;
 mod setup;
 mod translation;
 mod tray;
@@ -36,6 +37,10 @@ use crate::ui::{custom_prompt as prompt_custom, theme};
 pub enum InitialState {
     Idle,
     SetupWizard(crate::ui::setup::SetupWizardModel),
+    /// `--settings`: land in the editor instead of Idle. The model is
+    /// built from the app's own config, so unlike `SetupWizard` there's
+    /// nothing for the caller to seed.
+    Settings,
 }
 
 /// Top-level UI state machine.
@@ -100,6 +105,14 @@ enum AppState {
     SetupWizard {
         model: crate::ui::setup::SetupWizardModel,
     },
+    /// Settings editor is open. The model holds a working copy of the
+    /// config; nothing reaches `self.cfg` or disk until Save succeeds.
+    /// Boxed because it carries two whole `Config`s — inline it would
+    /// make every `AppState` move ~15× more expensive, and `update()`
+    /// moves the state twice per frame.
+    Settings {
+        model: Box<crate::ui::settings::SettingsModel>,
+    },
     /// Hide-icon confirmation modal is open. The model carries the
     /// active hotkey display so the modal can show users their actual
     /// keyboard shortcut, not a hardcoded one.
@@ -116,6 +129,13 @@ enum CustomKey {
 
 pub struct ClipApp {
     cfg: Config,
+    /// The config file this instance was loaded from. Carried rather
+    /// than re-derived: `--config` can name any filename, so
+    /// `state_path.parent()/config.toml` is wrong the moment the user
+    /// passes `--config …/profile-a.toml` — and it is wrong for a
+    /// *write*, which silently drops their changes into a file the app
+    /// will never read.
+    cfg_path: PathBuf,
     state_path: PathBuf,
     state: State,
 
@@ -310,6 +330,7 @@ impl ClipApp {
         history: Option<std::sync::Arc<crate::history::store::History>>,
         history_disabled_initial: bool,
         secrets: Box<dyn Secrets>,
+        cfg_path: PathBuf,
         state_path: PathBuf,
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
         prompt_hotkey_id: u32,
@@ -344,6 +365,7 @@ impl ClipApp {
                 glossary_hits: vec![],
             },
             cfg,
+            cfg_path,
             state_path,
             state,
             provider: Some(provider),
@@ -402,6 +424,11 @@ impl ClipApp {
     /// restore focus to the user's previous app.
     fn capture_previous_app(&mut self) {
         self.previous_app_pid = crate::platform::current().frontmost_app_pid();
+    }
+
+    /// The config file to read from and write back to.
+    fn config_path(&self) -> &std::path::Path {
+        &self.cfg_path
     }
 
     /// Read the system clipboard (text only). Returns the text or empty
@@ -485,6 +512,17 @@ impl ClipApp {
         matches!(self.app_state, AppState::SetupWizard { .. })
     }
 
+    /// Viewport size the app wants at startup, or `None` to stay hidden.
+    /// Normal launches are hidden — only a hotkey summons the prompt —
+    /// but the wizard and `--settings` both open a window immediately.
+    pub fn startup_window_size(&self) -> Option<egui::Vec2> {
+        match self.app_state {
+            AppState::SetupWizard { .. } => Some(crate::ui::setup::SETUP_WIZARD_INNER_SIZE),
+            AppState::Settings { .. } => Some(crate::ui::settings::SETTINGS_INNER_SIZE),
+            _ => None,
+        }
+    }
+
     /// Override the initial AppState. Used by main.rs to land in
     /// `SetupWizard` instead of `Idle` on first launch.
     pub fn with_initial_state(mut self, state_kind: InitialState) -> Self {
@@ -492,6 +530,11 @@ impl ClipApp {
             InitialState::Idle => {} // already the default
             InitialState::SetupWizard(model) => {
                 self.app_state = AppState::SetupWizard { model };
+            }
+            InitialState::Settings => {
+                self.app_state = AppState::Settings {
+                    model: Box::new(self.build_settings_model()),
+                };
             }
         }
         self
@@ -550,8 +593,15 @@ impl eframe::App for ClipApp {
         //
         // Clear `previous_app_pid` before dismissing — the user deliberately
         // clicked away to another app, so we must not yank them back.
+        //
+        // The settings editor opts out: it's a form, not a Spotlight
+        // overlay. Users routinely tab away mid-edit (to a password
+        // manager for an API key, or to check a model id), and
+        // dismissing to Idle would throw away everything they typed
+        // with no way to get it back. It closes on Esc / Cancel / Save.
         let focused = ctx.input(|i| i.focused);
-        if pure::update_focus_loss_latch(focused, &mut self.has_been_focused) {
+        let dismiss_on_blur = !matches!(self.app_state, AppState::Settings { .. });
+        if dismiss_on_blur && pure::update_focus_loss_latch(focused, &mut self.has_been_focused) {
             self.previous_app_pid = None;
             self.dismiss_to_idle(ctx);
             return;
@@ -597,6 +647,7 @@ impl eframe::App for ClipApp {
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
+            AppState::Settings { model } => self.update_settings(ctx, model),
             AppState::ShowingResult {
                 result_text,
                 source_text,

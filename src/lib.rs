@@ -61,6 +61,12 @@ pub struct Cli {
     /// Optional path to config.toml. Defaults to platform config dir.
     #[arg(long = "config", value_name = "PATH")]
     pub config_path: Option<std::path::PathBuf>,
+
+    /// Launch straight into the settings editor. Normally reached from
+    /// the tray menu; this flag is the way back in when the tray icon
+    /// has been hidden.
+    #[arg(long = "settings")]
+    pub settings: bool,
 }
 
 impl Cli {

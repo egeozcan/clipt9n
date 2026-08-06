@@ -69,7 +69,7 @@ impl super::ClipApp {
         }
     }
 
-    fn reload_glossary(&mut self) {
+    pub(super) fn reload_glossary(&mut self) {
         // Sync I/O on the egui update thread is acceptable here because
         // glossary files are small (typically <10KB) and the reload is
         // user-driven (SIGHUP / future tray menu), not periodic.
@@ -131,6 +131,7 @@ impl super::ClipApp {
             crate::tray::ID_HISTORY => self.summon_history(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
+            crate::tray::ID_SETTINGS => self.dispatch_open_settings(ctx),
             crate::tray::ID_OPEN_CONFIG => self.dispatch_open_config(),
             crate::tray::ID_ACCESSIBILITY_SETTINGS => self.dispatch_open_accessibility_settings(),
             crate::tray::ID_RERUN_WIZARD => self.dispatch_rerun_wizard(ctx),
@@ -159,12 +160,8 @@ impl super::ClipApp {
         }
     }
 
-    fn dispatch_open_config(&self) {
-        let Some(parent) = self.state_path.parent() else {
-            tracing::warn!("tray: cannot open config — state path has no parent");
-            return;
-        };
-        let cfg_path = parent.join("config.toml");
+    pub(super) fn dispatch_open_config(&self) {
+        let cfg_path = self.config_path().to_path_buf();
         // Create an empty config file if it doesn't exist yet, so the
         // user can edit it immediately.
         if !cfg_path.exists() {
@@ -198,6 +195,7 @@ impl super::ClipApp {
                 AppState::TranslatingInline { .. } => "translating_inline",
                 AppState::ShowingHistory { .. } => "showing_history",
                 AppState::SetupWizard { .. } => "setup_wizard",
+                AppState::Settings { .. } => "settings",
                 AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
                 AppState::ShowingResult { .. } => "showing_result",
             },
