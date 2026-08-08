@@ -23,6 +23,7 @@ use tokio::runtime::Runtime;
 
 use crate::clipboard::{ArboardClipboard, Clipboard};
 use crate::config::Config;
+use crate::desktop_io::{DesktopIo, DesktopTarget, SystemDesktopIo};
 use crate::error::TranslateError;
 use crate::llm::LlmProvider;
 use crate::platform::Platform;
@@ -82,6 +83,7 @@ enum AppState {
         action_label: String,
         #[allow(dead_code)]
         started_at: std::time::Instant,
+        target: DesktopTarget,
     },
     /// Translation completed in preview mode. The result is
     /// displayed with Copy and Dismiss actions.
@@ -179,6 +181,10 @@ pub struct ClipApp {
     hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
     result_tx: mpsc::Sender<translation::TranslationOutcome>,
     result_rx: mpsc::Receiver<translation::TranslationOutcome>,
+
+    /// Boundary for selection capture, clipboard writes, and guarded paste.
+    /// Kept behind a trait so tests never emit real desktop events.
+    desktop_io: Box<dyn DesktopIo>,
 
     /// SIGHUP / glossary-reload signal receiver. A unit value is sent
     /// each time a reload is requested (Task 10 wires the sender).
@@ -380,6 +386,7 @@ impl ClipApp {
             hotkey_rx,
             result_tx,
             result_rx,
+            desktop_io: Box::new(SystemDesktopIo),
             glossary_reload_rx,
             glossary_reload_tx: None,
             history,

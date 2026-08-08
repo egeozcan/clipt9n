@@ -6,9 +6,6 @@ use std::time::Duration;
 
 use egui::{Key, ViewportCommand};
 
-use crate::clipboard::{ArboardClipboard, Clipboard};
-use crate::error::TranslateError;
-use crate::platform::Platform;
 use crate::translator::Action;
 use crate::ui::{custom_prompt as prompt_custom, prompt, result, size_confirm, translating};
 
@@ -24,9 +21,10 @@ impl super::ClipApp {
     }
 
     pub(super) fn show_window_from_selection(&mut self, ctx: &egui::Context) {
-        match self.snapshot_selected_text(self.cfg.hotkey.selection.copy_delay_ms) {
-            Ok(text) => {
-                self.prompt_model.clipboard_text = text;
+        let copy_delay = Duration::from_millis(self.cfg.hotkey.selection.copy_delay_ms);
+        match self.desktop_io.capture_selection(copy_delay) {
+            Ok(snapshot) => {
+                self.prompt_model.clipboard_text = snapshot.selected_text;
                 self.capture_previous_app();
                 self.show_window_with_current_prompt_text(ctx);
             }
@@ -40,8 +38,9 @@ impl super::ClipApp {
     }
 
     pub(super) fn replace_selection_inline(&mut self, ctx: &egui::Context) {
-        match self.snapshot_selected_text(self.cfg.hotkey.replace.copy_delay_ms) {
-            Ok(text) => {
+        let copy_delay = Duration::from_millis(self.cfg.hotkey.replace.copy_delay_ms);
+        match self.desktop_io.capture_selection(copy_delay) {
+            Ok(snapshot) => {
                 let slot = self
                     .state
                     .last_slot
@@ -52,7 +51,14 @@ impl super::ClipApp {
                         action_label,
                         ..
                     }) => {
-                        self.start_translation_inline(text, action, action_label, slot, ctx);
+                        self.start_translation_inline(
+                            snapshot.selected_text,
+                            snapshot.target,
+                            action,
+                            action_label,
+                            slot,
+                            ctx,
+                        );
                     }
                     _ => {
                         tracing::warn!(
@@ -77,25 +83,6 @@ impl super::ClipApp {
                 }
             }
         }
-    }
-
-    fn snapshot_selected_text(&self, copy_delay_ms: u64) -> Result<String, TranslateError> {
-        let mut cb = ArboardClipboard::new()?;
-        let before = cb.read_text().unwrap_or_default();
-        let platform = crate::platform::current();
-        let before_change_count = platform.clipboard_change_count();
-        platform.copy_selection_to_clipboard()?;
-        std::thread::sleep(Duration::from_millis(copy_delay_ms));
-        let after = cb.read_text()?;
-        let after_change_count = platform.clipboard_change_count();
-        let copy_changed = match (before_change_count, after_change_count) {
-            (Some(before), Some(after)) => Some(after != before),
-            _ => None,
-        };
-        let selected = pure::selected_text_after_copy(&before, &after, copy_changed)
-            .ok_or(TranslateError::EmptyOrNonTextClipboard)?;
-        restore_clipboard(&before, &mut cb);
-        Ok(selected)
     }
 
     fn show_window_with_current_prompt_text(&mut self, ctx: &egui::Context) {
@@ -442,46 +429,5 @@ impl super::ClipApp {
             }
             None
         })
-    }
-}
-
-/// Restore the clipboard to its previous value after a selected-text
-/// capture. Called by `snapshot_selected_text` after the copy-selection
-/// keystroke; ensures the user's clipboard isn't disturbed by capture.
-pub(super) fn restore_clipboard(before: &str, cb: &mut dyn crate::clipboard::Clipboard) {
-    if !before.is_empty() {
-        if let Err(e) = cb.write_text(before) {
-            tracing::warn!(error = %e, "failed to restore clipboard after selected-text capture");
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::restore_clipboard;
-    use crate::clipboard::MockClipboard;
-
-    #[test]
-    fn restore_writes_back_non_empty_before() {
-        let mut cb = MockClipboard::with_text("current clipboard");
-        restore_clipboard("saved original", &mut cb);
-        assert_eq!(cb.written, Some("saved original".to_string()));
-    }
-
-    #[test]
-    fn restore_skips_write_when_before_is_empty() {
-        let mut cb = MockClipboard::with_text("current clipboard");
-        restore_clipboard("", &mut cb);
-        assert_eq!(cb.written, None, "empty before should not write");
-    }
-
-    #[test]
-    fn restore_skips_write_when_before_is_whitespace_only() {
-        let mut cb = MockClipboard::with_text("current clipboard");
-        // before is whitespace-only; the !before.is_empty() guard fires.
-        // Per the contract, whitespace-only "before" values are still
-        // restored — the clipboard had text and the user might want it back.
-        restore_clipboard("  \t\n  ", &mut cb);
-        assert_eq!(cb.written, Some("  \t\n  ".to_string()));
     }
 }

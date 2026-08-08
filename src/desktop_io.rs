@@ -1,0 +1,533 @@
+//! Safe, testable boundary for selected-text capture and inline paste.
+
+use std::borrow::Cow;
+use std::time::Duration;
+
+use crate::error::TranslateError;
+use crate::platform::Platform;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopTarget(TargetIdentity);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TargetIdentity {
+    Process(i32),
+    Unsupported,
+}
+
+impl DesktopTarget {
+    fn from_pid(pid: Option<i32>) -> Self {
+        match pid {
+            Some(pid) => Self(TargetIdentity::Process(pid)),
+            None => Self(TargetIdentity::Unsupported),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(id: u64) -> Self {
+        Self(TargetIdentity::Process(
+            id.try_into().expect("test target fits i32"),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unsupported() -> Self {
+        Self(TargetIdentity::Unsupported)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionSnapshot {
+    pub selected_text: String,
+    pub target: DesktopTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteDisposition {
+    Pasted,
+    TargetChanged,
+    Unsupported,
+}
+
+pub trait DesktopIo: Send {
+    fn capture_selection(
+        &mut self,
+        copy_delay: Duration,
+    ) -> Result<SelectionSnapshot, TranslateError>;
+
+    fn write_clipboard(&mut self, text: &str) -> Result<(), TranslateError>;
+
+    fn paste_if_target_current(
+        &mut self,
+        target: &DesktopTarget,
+    ) -> Result<PasteDisposition, TranslateError>;
+}
+
+/// Production desktop adapter. Clipboard handles are opened per operation so
+/// app construction remains infallible in headless or pre-login sessions.
+#[derive(Default)]
+pub struct SystemDesktopIo;
+
+impl DesktopIo for SystemDesktopIo {
+    fn capture_selection(
+        &mut self,
+        copy_delay: Duration,
+    ) -> Result<SelectionSnapshot, TranslateError> {
+        let mut clipboard = ArboardDesktopClipboard::new()?;
+        capture_selection_with(&mut clipboard, &crate::platform::current(), copy_delay)
+    }
+
+    fn write_clipboard(&mut self, text: &str) -> Result<(), TranslateError> {
+        ArboardDesktopClipboard::new()?.write_text(text)
+    }
+
+    fn paste_if_target_current(
+        &mut self,
+        target: &DesktopTarget,
+    ) -> Result<PasteDisposition, TranslateError> {
+        // Let the destination observe the clipboard ownership change before
+        // sending Paste, then verify focus at the last possible moment.
+        std::thread::sleep(Duration::from_millis(20));
+        paste_if_target_current_with(&crate::platform::current(), target)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ClipboardContents {
+    Empty,
+    Text(String),
+    Image {
+        width: usize,
+        height: usize,
+        bytes: Vec<u8>,
+    },
+}
+
+impl ClipboardContents {
+    fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Empty | Self::Image { .. } => None,
+        }
+    }
+}
+
+trait DesktopClipboard {
+    fn snapshot(&mut self) -> Result<ClipboardContents, TranslateError>;
+    fn read_copied_text(&mut self) -> Result<String, TranslateError>;
+    fn restore(&mut self, contents: ClipboardContents) -> Result<(), TranslateError>;
+    fn write_text(&mut self, text: &str) -> Result<(), TranslateError>;
+}
+
+struct ArboardDesktopClipboard {
+    inner: arboard::Clipboard,
+}
+
+impl ArboardDesktopClipboard {
+    fn new() -> Result<Self, TranslateError> {
+        arboard::Clipboard::new()
+            .map(|inner| Self { inner })
+            .map_err(|error| clipboard_error("opening", error))
+    }
+}
+
+impl DesktopClipboard for ArboardDesktopClipboard {
+    fn snapshot(&mut self) -> Result<ClipboardContents, TranslateError> {
+        match self.inner.get_text() {
+            Ok(text) => Ok(ClipboardContents::Text(text)),
+            Err(arboard::Error::ContentNotAvailable) => match self.inner.get_image() {
+                Ok(image) => Ok(ClipboardContents::Image {
+                    width: image.width,
+                    height: image.height,
+                    bytes: image.bytes.into_owned(),
+                }),
+                Err(arboard::Error::ContentNotAvailable) => Ok(ClipboardContents::Empty),
+                Err(error) => Err(clipboard_error("reading image from", error)),
+            },
+            Err(error) => Err(clipboard_error("reading text from", error)),
+        }
+    }
+
+    fn read_copied_text(&mut self) -> Result<String, TranslateError> {
+        self.inner.get_text().map_err(|error| match error {
+            arboard::Error::ContentNotAvailable => TranslateError::EmptyOrNonTextClipboard,
+            other => clipboard_error("reading copied text from", other),
+        })
+    }
+
+    fn restore(&mut self, contents: ClipboardContents) -> Result<(), TranslateError> {
+        match contents {
+            ClipboardContents::Empty => self
+                .inner
+                .clear()
+                .map_err(|error| clipboard_error("clearing", error)),
+            ClipboardContents::Text(text) => self
+                .inner
+                .set_text(text)
+                .map_err(|error| clipboard_error("restoring text to", error)),
+            ClipboardContents::Image {
+                width,
+                height,
+                bytes,
+            } => self
+                .inner
+                .set_image(arboard::ImageData {
+                    width,
+                    height,
+                    bytes: Cow::Owned(bytes),
+                })
+                .map_err(|error| clipboard_error("restoring image to", error)),
+        }
+    }
+
+    fn write_text(&mut self, text: &str) -> Result<(), TranslateError> {
+        self.inner
+            .set_text(text)
+            .map_err(|error| clipboard_error("writing text to", error))
+    }
+}
+
+fn clipboard_error(action: &str, error: arboard::Error) -> TranslateError {
+    TranslateError::InvalidClipboard(format!("{action} clipboard: {error}"))
+}
+
+struct ClipboardRestoreGuard<'a, C: DesktopClipboard> {
+    clipboard: &'a mut C,
+    original: Option<ClipboardContents>,
+}
+
+impl<'a, C: DesktopClipboard> ClipboardRestoreGuard<'a, C> {
+    fn new(clipboard: &'a mut C, original: ClipboardContents) -> Self {
+        Self {
+            clipboard,
+            original: Some(original),
+        }
+    }
+
+    fn restore_now(mut self) -> Result<(), TranslateError> {
+        let original = self.original.take().expect("restore guard is armed");
+        self.clipboard.restore(original)
+    }
+}
+
+impl<C: DesktopClipboard> Drop for ClipboardRestoreGuard<'_, C> {
+    fn drop(&mut self) {
+        let Some(original) = self.original.take() else {
+            return;
+        };
+        if let Err(error) = self.clipboard.restore(original) {
+            tracing::warn!(%error, "failed to restore clipboard after selected-text capture");
+        }
+    }
+}
+
+fn capture_selection_with<C: DesktopClipboard, P: Platform>(
+    clipboard: &mut C,
+    platform: &P,
+    copy_delay: Duration,
+) -> Result<SelectionSnapshot, TranslateError> {
+    // Destination identity must be captured before Copy: Copy itself can
+    // trigger focus changes in applications with custom clipboard handling.
+    let target = DesktopTarget::from_pid(platform.frontmost_app_pid());
+    let original = clipboard.snapshot()?;
+    let original_text = original.text().map(String::from);
+    let before_change_count = platform.clipboard_change_count();
+    let restore = ClipboardRestoreGuard::new(clipboard, original);
+
+    platform.copy_selection_to_clipboard()?;
+    std::thread::sleep(copy_delay);
+    let selected_text = restore.clipboard.read_copied_text()?;
+    let after_change_count = platform.clipboard_change_count();
+    let copy_changed = match (before_change_count, after_change_count) {
+        (Some(before), Some(after)) => after != before,
+        _ => original_text.as_deref() != Some(selected_text.as_str()),
+    };
+    if selected_text.trim().is_empty() || !copy_changed {
+        return Err(TranslateError::EmptyOrNonTextClipboard);
+    }
+
+    restore.restore_now()?;
+    Ok(SelectionSnapshot {
+        selected_text,
+        target,
+    })
+}
+
+fn paste_if_target_current_with<P: Platform>(
+    platform: &P,
+    target: &DesktopTarget,
+) -> Result<PasteDisposition, TranslateError> {
+    let TargetIdentity::Process(expected_pid) = target.0 else {
+        return Ok(PasteDisposition::Unsupported);
+    };
+    let Some(current_pid) = platform.frontmost_app_pid() else {
+        return Ok(PasteDisposition::Unsupported);
+    };
+    if current_pid != expected_pid {
+        return Ok(PasteDisposition::TargetChanged);
+    }
+
+    platform.paste_from_clipboard()?;
+    Ok(PasteDisposition::Pasted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Platform;
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum FakeContents {
+        Empty,
+        Text(String),
+        Image {
+            width: usize,
+            height: usize,
+            bytes: Vec<u8>,
+        },
+    }
+
+    struct FakeClipboard {
+        contents: FakeContents,
+        copy_result: Result<String, TranslateError>,
+        restore_count: usize,
+    }
+
+    impl FakeClipboard {
+        fn with_text(text: &str) -> Self {
+            Self {
+                contents: FakeContents::Text(text.to_string()),
+                copy_result: Ok("selected".to_string()),
+                restore_count: 0,
+            }
+        }
+    }
+
+    impl DesktopClipboard for FakeClipboard {
+        fn snapshot(&mut self) -> Result<ClipboardContents, TranslateError> {
+            Ok(match &self.contents {
+                FakeContents::Empty => ClipboardContents::Empty,
+                FakeContents::Text(text) => ClipboardContents::Text(text.clone()),
+                FakeContents::Image {
+                    width,
+                    height,
+                    bytes,
+                } => ClipboardContents::Image {
+                    width: *width,
+                    height: *height,
+                    bytes: bytes.clone(),
+                },
+            })
+        }
+
+        fn read_copied_text(&mut self) -> Result<String, TranslateError> {
+            std::mem::replace(&mut self.copy_result, Ok("selected".to_string()))
+        }
+
+        fn restore(&mut self, contents: ClipboardContents) -> Result<(), TranslateError> {
+            self.restore_count += 1;
+            self.contents = match contents {
+                ClipboardContents::Empty => FakeContents::Empty,
+                ClipboardContents::Text(text) => FakeContents::Text(text),
+                ClipboardContents::Image {
+                    width,
+                    height,
+                    bytes,
+                } => FakeContents::Image {
+                    width,
+                    height,
+                    bytes,
+                },
+            };
+            Ok(())
+        }
+
+        fn write_text(&mut self, text: &str) -> Result<(), TranslateError> {
+            self.contents = FakeContents::Text(text.to_string());
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakePlatform {
+        current_pid: Cell<Option<i32>>,
+        paste_count: Cell<usize>,
+        change_count: Cell<i64>,
+        suppress_copy_change: Cell<bool>,
+    }
+
+    impl Platform for FakePlatform {
+        fn copy_selection_to_clipboard(&self) -> Result<(), TranslateError> {
+            if !self.suppress_copy_change.get() {
+                self.change_count.set(self.change_count.get() + 1);
+            }
+            Ok(())
+        }
+
+        fn paste_from_clipboard(&self) -> Result<(), TranslateError> {
+            self.paste_count.set(self.paste_count.get() + 1);
+            Ok(())
+        }
+
+        fn frontmost_app_pid(&self) -> Option<i32> {
+            self.current_pid.get()
+        }
+
+        fn clipboard_change_count(&self) -> Option<i64> {
+            Some(self.change_count.get())
+        }
+    }
+
+    #[test]
+    fn capture_restores_original_clipboard_when_selected_text_is_empty() {
+        let mut clipboard = FakeClipboard::with_text("saved");
+        clipboard.copy_result = Ok(String::new());
+        let platform = FakePlatform {
+            current_pid: Cell::new(Some(41)),
+            ..Default::default()
+        };
+
+        let result = capture_selection_with(&mut clipboard, &platform, Duration::ZERO);
+
+        assert!(matches!(
+            result,
+            Err(TranslateError::EmptyOrNonTextClipboard)
+        ));
+        assert_eq!(clipboard.contents, FakeContents::Text("saved".into()));
+        assert_eq!(clipboard.restore_count, 1);
+    }
+
+    #[test]
+    fn capture_restores_initially_empty_clipboard() {
+        let mut clipboard = FakeClipboard {
+            contents: FakeContents::Empty,
+            copy_result: Ok("selected".into()),
+            restore_count: 0,
+        };
+        let platform = FakePlatform::default();
+
+        let snapshot = capture_selection_with(&mut clipboard, &platform, Duration::ZERO).unwrap();
+
+        assert_eq!(snapshot.selected_text, "selected");
+        assert_eq!(clipboard.contents, FakeContents::Empty);
+        assert_eq!(clipboard.restore_count, 1);
+    }
+
+    #[test]
+    fn capture_restores_supported_non_text_clipboard() {
+        let image = FakeContents::Image {
+            width: 1,
+            height: 1,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let mut clipboard = FakeClipboard {
+            contents: image.clone(),
+            copy_result: Ok("selected".into()),
+            restore_count: 0,
+        };
+        let platform = FakePlatform::default();
+
+        capture_selection_with(&mut clipboard, &platform, Duration::ZERO).unwrap();
+
+        assert_eq!(clipboard.contents, image);
+        assert_eq!(clipboard.restore_count, 1);
+    }
+
+    #[test]
+    fn capture_restores_after_clipboard_read_failure() {
+        let mut clipboard = FakeClipboard::with_text("saved");
+        clipboard.copy_result = Err(TranslateError::InvalidClipboard("read failed".into()));
+        let platform = FakePlatform::default();
+
+        let result = capture_selection_with(&mut clipboard, &platform, Duration::ZERO);
+
+        assert!(matches!(result, Err(TranslateError::InvalidClipboard(_))));
+        assert_eq!(clipboard.contents, FakeContents::Text("saved".into()));
+        assert_eq!(clipboard.restore_count, 1);
+    }
+
+    #[test]
+    fn capture_returns_text_and_originating_target() {
+        let mut clipboard = FakeClipboard::with_text("saved");
+        let platform = FakePlatform {
+            current_pid: Cell::new(Some(41)),
+            ..Default::default()
+        };
+
+        let snapshot = capture_selection_with(&mut clipboard, &platform, Duration::ZERO).unwrap();
+
+        assert_eq!(snapshot.selected_text, "selected");
+        assert_eq!(snapshot.target, DesktopTarget::for_test(41));
+    }
+
+    #[test]
+    fn capture_rejects_copy_that_did_not_change_the_clipboard() {
+        let mut clipboard = FakeClipboard::with_text("saved");
+        clipboard.copy_result = Ok("saved".into());
+        let platform = FakePlatform {
+            suppress_copy_change: Cell::new(true),
+            ..Default::default()
+        };
+
+        let result = capture_selection_with(&mut clipboard, &platform, Duration::ZERO);
+
+        assert!(matches!(
+            result,
+            Err(TranslateError::EmptyOrNonTextClipboard)
+        ));
+        assert_eq!(clipboard.contents, FakeContents::Text("saved".into()));
+    }
+
+    #[test]
+    fn capture_accepts_same_text_when_copy_changed_the_clipboard() {
+        let mut clipboard = FakeClipboard::with_text("same text");
+        clipboard.copy_result = Ok("same text".into());
+        let platform = FakePlatform::default();
+
+        let snapshot = capture_selection_with(&mut clipboard, &platform, Duration::ZERO).unwrap();
+
+        assert_eq!(snapshot.selected_text, "same text");
+        assert_eq!(clipboard.contents, FakeContents::Text("same text".into()));
+    }
+
+    #[test]
+    fn paste_is_refused_after_target_changes() {
+        let platform = FakePlatform {
+            current_pid: Cell::new(Some(99)),
+            ..Default::default()
+        };
+        let original = DesktopTarget::for_test(41);
+
+        let result = paste_if_target_current_with(&platform, &original).unwrap();
+
+        assert_eq!(result, PasteDisposition::TargetChanged);
+        assert_eq!(platform.paste_count.get(), 0);
+    }
+
+    #[test]
+    fn paste_succeeds_for_same_target() {
+        let platform = FakePlatform {
+            current_pid: Cell::new(Some(41)),
+            ..Default::default()
+        };
+        let original = DesktopTarget::for_test(41);
+
+        let result = paste_if_target_current_with(&platform, &original).unwrap();
+
+        assert_eq!(result, PasteDisposition::Pasted);
+        assert_eq!(platform.paste_count.get(), 1);
+    }
+
+    #[test]
+    fn paste_is_unsupported_without_verifiable_target() {
+        let platform = FakePlatform::default();
+        let original = DesktopTarget::unsupported();
+
+        let result = paste_if_target_current_with(&platform, &original).unwrap();
+
+        assert_eq!(result, PasteDisposition::Unsupported);
+        assert_eq!(platform.paste_count.get(), 0);
+    }
+}

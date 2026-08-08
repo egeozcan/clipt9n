@@ -79,23 +79,6 @@ pub(super) fn requires_size_confirm(source: &str, cfg: &Config) -> bool {
     source.chars().count() > cfg.ui.confirm_size_threshold
 }
 
-pub(super) fn selected_text_after_copy(
-    before: &str,
-    after: &str,
-    copy_changed: Option<bool>,
-) -> Option<String> {
-    if after.trim().is_empty() {
-        return None;
-    }
-
-    let copied_selection = copy_changed.unwrap_or(after != before);
-    if copied_selection {
-        Some(after.to_string())
-    } else {
-        None
-    }
-}
-
 pub(super) fn next_gen(current: u64) -> u64 {
     current.wrapping_add(1)
 }
@@ -331,44 +314,6 @@ mod tests {
         assert!(requires_size_confirm(&big, &cfg));
         let small = "x".repeat(50);
         assert!(!requires_size_confirm(&small, &cfg));
-    }
-
-    #[test]
-    fn selected_text_after_copy_accepts_changed_text() {
-        assert_eq!(
-            selected_text_after_copy("clipboard", "selected text", None),
-            Some("selected text".to_string())
-        );
-    }
-
-    #[test]
-    fn selected_text_after_copy_rejects_empty_or_unchanged_clipboard() {
-        assert_eq!(
-            selected_text_after_copy("clipboard", "clipboard", None),
-            None
-        );
-        assert_eq!(
-            selected_text_after_copy("clipboard", "   \n", Some(true)),
-            None
-        );
-    }
-
-    #[test]
-    fn selected_text_after_copy_accepts_same_text_when_pasteboard_changed() {
-        assert_eq!(
-            selected_text_after_copy("same text", "same text", Some(true)),
-            Some("same text".to_string())
-        );
-    }
-
-    #[test]
-    fn selected_text_after_copy_rejects_when_pasteboard_flag_says_unchanged() {
-        // Text changed but the pasteboard-change-count signal explicitly
-        // says no copy occurred (Some(false)). The signal wins.
-        assert_eq!(
-            selected_text_after_copy("old text", "different text", Some(false)),
-            None
-        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod app;
 pub mod clipboard;
 pub mod config;
 pub mod config_commit;
+pub mod desktop_io;
 pub mod error;
 pub mod glossary;
 pub mod history;

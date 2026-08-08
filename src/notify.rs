@@ -30,6 +30,15 @@ pub fn selection_capture_failed(err: &TranslateError) -> Result<(), TranslateErr
     show("No selected text copied", &error_presentation(err), 3000)
 }
 
+/// Tell the user an inline result is ready but its original target is no longer safe.
+pub fn inline_result_ready_for_manual_paste() -> Result<(), TranslateError> {
+    show(
+        "Inline result copied",
+        "The original app is no longer active. Paste the result manually.",
+        4000,
+    )
+}
+
 /// Show a notification when inline replacement failed because slot is not inlineable.
 pub fn inline_replace_not_inlineable(
     slot: u8,
