@@ -1,6 +1,6 @@
-//! Cross-restart state. Currently persists only the last-used slot index
-//! (1–6), so Enter on the prompt window can repeat it. Custom prompts are
-//! never persisted (spec privacy rule).
+//! Cross-restart state. Persists the last repeatable slot index (1–7), so
+//! Enter on the prompt window can repeat it. Custom prompts are never
+//! persisted (spec privacy rule).
 
 use std::path::Path;
 
@@ -56,7 +56,7 @@ impl State {
     }
 
     pub fn record_slot(&mut self, slot: u8) {
-        if (1..=6).contains(&slot) {
+        if (1..=7).contains(&slot) {
             self.last_slot = Some(slot);
         }
     }
@@ -86,14 +86,14 @@ mod tests {
     }
 
     #[test]
-    fn record_slot_rejects_out_of_range() {
+    fn record_slot_persists_rewrite_but_not_custom() {
         let mut s = State::default();
         s.record_slot(0);
         assert!(s.last_slot.is_none());
         s.record_slot(7);
-        assert!(s.last_slot.is_none());
-        s.record_slot(3);
-        assert_eq!(s.last_slot, Some(3));
+        assert_eq!(s.last_slot, Some(7));
+        s.record_slot(8);
+        assert_eq!(s.last_slot, Some(7));
     }
 
     #[test]

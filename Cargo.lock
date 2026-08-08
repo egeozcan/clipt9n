@@ -916,6 +916,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "whatlang",
+ "windows-sys 0.59.0",
  "wiremock",
  "zeroize",
 ]

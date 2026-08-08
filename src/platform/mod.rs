@@ -37,6 +37,12 @@ impl DestinationIdentity {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionAutomation {
+    Supported,
+    Unsupported(&'static str),
+}
+
 /// Behavior an OS may need to provide to the rest of the app. Per-OS impls
 /// in `macos.rs`, `linux.rs`, `windows.rs`. Defaults are no-ops.
 pub trait Platform {
@@ -56,10 +62,9 @@ pub trait Platform {
         false
     }
 
-    /// Open a path in the OS default handler. macOS shells out to
-    /// `open`; Linux to `xdg-open`; Windows to `cmd.exe /C start`.
-    /// Best-effort — returns `Err` if the helper isn't on PATH; the
-    /// caller (M6 wizard, M7 tray menu) logs warn and stays open.
+    /// Open a path in the OS default handler. macOS shells out to `open`,
+    /// Linux to `xdg-open`, and Windows uses native `ShellExecuteW` (never a
+    /// command shell). Best-effort; callers log failures and stay open.
     fn open_path(&self, path: &std::path::Path) -> Result<(), TranslateError> {
         let _ = path;
         Err(TranslateError::Internal(
@@ -95,6 +100,13 @@ pub trait Platform {
         Err(TranslateError::Internal(
             "accessibility settings are not available on this platform".into(),
         ))
+    }
+
+    /// Whether copy/paste gesture automation is available in this desktop
+    /// session. Native Wayland is explicitly unsupported until a portal or
+    /// compositor adapter replaces the X11-only xdotool path.
+    fn selection_automation(&self) -> SelectionAutomation {
+        SelectionAutomation::Supported
     }
 
     /// Ask the foreground app to copy its current selection to the system
@@ -165,12 +177,12 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::MacOsPlatform as ActivePlatform;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxPlatform as ActivePlatform;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::WindowsPlatform as ActivePlatform;

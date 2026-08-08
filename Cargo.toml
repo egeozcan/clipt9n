@@ -44,6 +44,9 @@ crossbeam-channel = "0.5"
 anyhow = "1"
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"

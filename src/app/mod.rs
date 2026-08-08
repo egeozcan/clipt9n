@@ -190,12 +190,6 @@ pub struct ClipApp {
     /// each time a reload is requested (Task 10 wires the sender).
     glossary_reload_rx: CrossbeamReceiver<()>,
 
-    /// Sender clone for the glossary-reload channel. Tray menu's
-    /// "Reload glossary" item sends `()` here; SIGHUP listener also
-    /// sends here. The receiver (`glossary_reload_rx` above) is drained
-    /// once per frame in `update()`.
-    glossary_reload_tx: Option<crossbeam_channel::Sender<()>>,
-
     /// Encrypted history store. `None` means history was disabled at
     /// config time (`[history] enabled = false`) OR open failed at
     /// startup. The `Arc<History>` lets worker tasks clone the handle
@@ -250,9 +244,9 @@ pub struct ClipApp {
     accessibility_revoked: bool,
     hotkey_in_use: bool,
 
-    /// `global-hotkey` ID for the prompt hotkey. Always set (the prompt
-    /// hotkey is always registered).
-    prompt_hotkey_id: u32,
+    /// `global-hotkey` ID for the prompt hotkey. `None` when disabled,
+    /// invalid, or unavailable because another app owns the shortcut.
+    prompt_hotkey_id: Option<u32>,
     /// `global-hotkey` ID for the history hotkey. `None` if the user
     /// disabled it via `[hotkey.history] enabled = false`.
     history_hotkey_id: Option<u32>,
@@ -342,7 +336,7 @@ impl ClipApp {
         cfg_path: PathBuf,
         state_path: PathBuf,
         hotkey_rx: CrossbeamReceiver<GlobalHotKeyEvent>,
-        prompt_hotkey_id: u32,
+        prompt_hotkey_id: Option<u32>,
         history_hotkey_id: Option<u32>,
         selection_hotkey_id: Option<u32>,
         replace_hotkey_id: Option<u32>,
@@ -388,7 +382,6 @@ impl ClipApp {
             result_rx,
             desktop_io: Box::new(SystemDesktopIo),
             glossary_reload_rx,
-            glossary_reload_tx: None,
             history,
             history_disabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 history_disabled_initial,
@@ -490,17 +483,13 @@ impl ClipApp {
     }
 
     /// Install the SIGHUP-driven glossary-reload listener against the
-    /// app's tokio runtime. Stashes a sender clone so the tray menu's
-    /// "Reload glossary" item can trigger reloads via `dispatch_reload_glossary`.
+    /// app's tokio runtime. Tray-menu reloads execute directly on the update
+    /// thread; this channel is reserved for the asynchronous signal path.
     pub fn install_glossary_reload(&mut self, tx: crossbeam_channel::Sender<()>) {
-        let tx_for_sighup = tx.clone();
-        self.glossary_reload_tx = Some(tx);
         // Wake the event loop on SIGHUP; without this the reload sits in
         // the channel until an unrelated frame runs. See `repaint_ctx`.
         let ctx = self.repaint_ctx.clone();
-        crate::platform::install_sighup_reload(&self.runtime, tx_for_sighup, move || {
-            ctx.request_repaint()
-        });
+        crate::platform::install_sighup_reload(&self.runtime, tx, move || ctx.request_repaint());
     }
 
     /// Attach a TrayHandle constructed by main.rs. Called once after
@@ -589,6 +578,9 @@ impl eframe::App for ClipApp {
         // than reinstating a poll — see `repaint_ctx`.
         self.drain_channels(ctx);
         self.drain_tray_events(ctx);
+        // Refresh even when the window remains hidden. Tray actions (notably
+        // glossary reload) must update their status in this same cycle.
+        self.refresh_tray_status();
 
         let want_visible = !matches!(
             self.app_state,
@@ -688,8 +680,6 @@ impl eframe::App for ClipApp {
                 self.update_confirming_tray_hide(ctx, model);
             }
         }
-
-        self.refresh_tray_status();
     }
 }
 

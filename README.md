@@ -139,6 +139,22 @@ cp -R target/release/bundle/osx/clipt9n.app /Applications/
 
 Because local builds are not notarized, macOS may ask you to confirm the first launch. Right-click the app, choose **Open**, and confirm.
 
+## Install On Linux
+
+The Linux package requires `xdg-open` for opening files and `xdotool` for
+selected-text copy and inline replacement on X11. Install both with your
+distribution package manager before packaging:
+
+```bash
+scripts/package-linux.sh
+```
+
+`xdotool` cannot automate native Wayland applications. On a native Wayland
+session, clipt9n explicitly disables selected-text copy and inline replacement
+with an actionable error; clipboard-only translation remains available. Log in
+to an X11 session to use those automation shortcuts until a portal or
+compositor adapter is implemented.
+
 ## Command Line Use
 
 clipt9n can also run without the menu bar UI. It reads your clipboard, performs the requested action, and writes the result back to your clipboard.

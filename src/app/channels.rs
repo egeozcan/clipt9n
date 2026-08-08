@@ -5,54 +5,94 @@
 use crate::platform::Platform;
 
 use egui::ViewportCommand;
+use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 
 use super::pure;
 use super::AppState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotkeyAction {
+    Prompt,
+    History,
+    Selection,
+    Replace,
+    Unknown(u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HotkeyIds {
+    prompt: Option<u32>,
+    history: Option<u32>,
+    selection: Option<u32>,
+    replace: Option<u32>,
+}
+
+fn drain_hotkey_actions(
+    receiver: &crossbeam_channel::Receiver<GlobalHotKeyEvent>,
+    ids: HotkeyIds,
+) -> Vec<HotkeyAction> {
+    let mut actions = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        if event.state != HotKeyState::Pressed {
+            continue;
+        }
+        let action = if ids.prompt == Some(event.id) {
+            HotkeyAction::Prompt
+        } else if ids.history == Some(event.id) {
+            HotkeyAction::History
+        } else if ids.selection == Some(event.id) {
+            HotkeyAction::Selection
+        } else if ids.replace == Some(event.id) {
+            HotkeyAction::Replace
+        } else {
+            HotkeyAction::Unknown(event.id)
+        };
+        actions.push(action);
+    }
+    actions
+}
+
 impl super::ClipApp {
     pub(super) fn drain_channels(&mut self, ctx: &egui::Context) {
-        // Hotkey events
-        while let Ok(event) = self.hotkey_rx.try_recv() {
-            let is_prompt = event.id == self.prompt_hotkey_id;
-            let is_history = self
-                .history_hotkey_id
-                .map(|id| event.id == id)
-                .unwrap_or(false);
-            let is_selection = self
-                .selection_hotkey_id
-                .map(|id| event.id == id)
-                .unwrap_or(false);
-            let is_replace = self
-                .replace_hotkey_id
-                .map(|id| event.id == id)
-                .unwrap_or(false);
-            if is_prompt {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.show_window(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+        // Hotkey events. Released events are discarded before ID routing,
+        // so one physical key press can dispatch at most one app action.
+        let ids = HotkeyIds {
+            prompt: self.prompt_hotkey_id,
+            history: self.history_hotkey_id,
+            selection: self.selection_hotkey_id,
+            replace: self.replace_hotkey_id,
+        };
+        for action in drain_hotkey_actions(&self.hotkey_rx, ids) {
+            match action {
+                HotkeyAction::Prompt => {
+                    if matches!(self.app_state, AppState::Idle) {
+                        self.show_window(ctx);
+                    } else {
+                        ctx.send_viewport_cmd(ViewportCommand::Focus);
+                    }
                 }
-            } else if is_history {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.summon_history(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                HotkeyAction::History => {
+                    if matches!(self.app_state, AppState::Idle) {
+                        self.summon_history(ctx);
+                    } else {
+                        ctx.send_viewport_cmd(ViewportCommand::Focus);
+                    }
                 }
-            } else if is_selection {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.show_window_from_selection(ctx);
-                } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                HotkeyAction::Selection => {
+                    if matches!(self.app_state, AppState::Idle) {
+                        self.show_window_from_selection(ctx);
+                    } else {
+                        ctx.send_viewport_cmd(ViewportCommand::Focus);
+                    }
                 }
-            } else if is_replace {
-                if matches!(self.app_state, AppState::Idle) {
-                    self.replace_selection_inline(ctx);
+                HotkeyAction::Replace => {
+                    if matches!(self.app_state, AppState::Idle) {
+                        self.replace_selection_inline(ctx);
+                    }
                 }
-            } else {
-                tracing::debug!(
-                    event_id = event.id,
-                    "ignoring hotkey event from unregistered ID"
-                );
+                HotkeyAction::Unknown(event_id) => {
+                    tracing::debug!(event_id, "ignoring hotkey event from unregistered ID");
+                }
             }
         }
         // Translation results
@@ -150,14 +190,11 @@ impl super::ClipApp {
         }
     }
 
-    fn dispatch_reload_glossary(&self) {
-        let Some(tx) = self.glossary_reload_tx.as_ref() else {
-            tracing::warn!("tray: reload glossary requested but no reload channel");
-            return;
-        };
-        if let Err(e) = tx.send(()) {
-            tracing::warn!(error = %e, "tray: reload glossary send failed");
-        }
+    fn dispatch_reload_glossary(&mut self) {
+        // Tray actions already run on the update thread. Reload directly so
+        // an idle app does not need a second repaint to drain its own signal.
+        self.reload_glossary();
+        self.refresh_tray_status();
     }
 
     pub(super) fn dispatch_open_config(&self) {
@@ -240,5 +277,135 @@ impl super::ClipApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         crate::platform::current().activate_app();
         self.app_state = AppState::SetupWizard { model };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::{mpsc, Arc, RwLock};
+
+    use async_trait::async_trait;
+
+    struct NoopProvider;
+
+    #[async_trait]
+    impl crate::llm::LlmProvider for NoopProvider {
+        async fn complete(
+            &self,
+            _system: &str,
+            _user: &str,
+        ) -> Result<String, crate::error::TranslateError> {
+            Ok(String::new())
+        }
+    }
+
+    fn test_app(glossary_path: PathBuf) -> super::super::ClipApp {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
+        let (result_tx, result_rx) = mpsc::channel();
+        let (_reload_tx, glossary_reload_rx) = crossbeam_channel::unbounded();
+        let (setup_check_tx, setup_check_rx) = mpsc::channel();
+        let state_path = glossary_path.with_file_name("state.toml");
+
+        super::super::ClipApp {
+            cfg: crate::config::Config::default(),
+            cfg_path: glossary_path.with_file_name("config.toml"),
+            state_path,
+            state: crate::state::State::default(),
+            provider: Some(Arc::new(NoopProvider)),
+            templates: Arc::new(crate::llm::templates::Templates::built_in()),
+            glossary: Arc::new(RwLock::new(crate::glossary::Glossary::empty())),
+            glossary_path,
+            glossary_malformed: std::sync::atomic::AtomicBool::new(true),
+            runtime,
+            hotkey_rx,
+            result_tx,
+            result_rx,
+            desktop_io: Box::new(crate::desktop_io::SystemDesktopIo),
+            glossary_reload_rx,
+            history: None,
+            history_disabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            history_warned: std::sync::atomic::AtomicBool::new(false),
+            secrets: Box::new(crate::secrets::EnvSecrets::new("CLIPT9N_TEST_KEY")),
+            tray: None,
+            setup_check_tx,
+            setup_check_rx,
+            setup_verification_gen: 0,
+            accessibility_revoked: false,
+            hotkey_in_use: false,
+            prompt_hotkey_id: None,
+            history_hotkey_id: None,
+            selection_hotkey_id: None,
+            replace_hotkey_id: None,
+            app_state: AppState::Idle,
+            prompt_model: crate::ui::prompt::PromptModel {
+                clipboard_text: String::new(),
+                detected_lang: None,
+                last_slot: None,
+                glossary_hits: Vec::new(),
+            },
+            has_been_focused: false,
+            initial_focus_pending: false,
+            dispatch_gen: 0,
+            last_translation_at: None,
+            reduced_motion: false,
+            pending_preview: false,
+            previous_app_pid: None,
+            repaint_ctx: egui::Context::default(),
+            last_sent_visible: None,
+        }
+    }
+
+    #[test]
+    fn pressed_then_released_dispatches_one_action() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tx.send(GlobalHotKeyEvent {
+            id: 10,
+            state: HotKeyState::Pressed,
+        })
+        .unwrap();
+        tx.send(GlobalHotKeyEvent {
+            id: 10,
+            state: HotKeyState::Released,
+        })
+        .unwrap();
+
+        let actions = drain_hotkey_actions(
+            &rx,
+            HotkeyIds {
+                prompt: Some(10),
+                history: Some(11),
+                selection: Some(12),
+                replace: Some(13),
+            },
+        );
+
+        assert_eq!(actions, vec![HotkeyAction::Prompt]);
+    }
+
+    #[test]
+    fn tray_reload_from_idle_loads_and_refreshes_status_in_same_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let glossary_path = dir.path().join("glossary.toml");
+        std::fs::write(
+            &glossary_path,
+            "[[entry]]\nsource = \"hello\"\ntarget = \"hola\"\n",
+        )
+        .unwrap();
+        let mut app = test_app(glossary_path);
+
+        app.dispatch_reload_glossary();
+
+        assert!(matches!(app.app_state, AppState::Idle));
+        assert_eq!(
+            crate::glossary::Glossary::read_shared(&app.glossary).len(),
+            1
+        );
+        assert_eq!(app.compute_tray_status(), crate::tray::TrayStatus::Ready);
     }
 }

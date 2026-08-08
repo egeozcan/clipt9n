@@ -8,6 +8,7 @@ pub mod desktop_io;
 pub mod error;
 pub mod glossary;
 pub mod history;
+pub mod hotkeys;
 pub mod llm;
 pub mod notify;
 pub mod platform;

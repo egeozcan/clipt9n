@@ -1,15 +1,15 @@
 use clap::Parser;
 use clipt9n::app::ClipApp;
-use clipt9n::config::{Config, Modifier, NativeModifier};
+use clipt9n::config::Config;
+use clipt9n::hotkeys::{
+    has_registration_warnings, register_binding, HotkeyBinding, RegistrationOutcome,
+};
 use clipt9n::platform::{self, Platform};
 use clipt9n::secrets::Secrets;
 use clipt9n::Cli;
 use directories::ProjectDirs;
 use eframe::NativeOptions;
-use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
-};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
 
 fn main() -> anyhow::Result<()> {
     init_tracing();
@@ -152,203 +152,71 @@ fn main() -> anyhow::Result<()> {
     // as persist_setup_completion's live-rebuild path (M7 Task 10).
     let provider = clipt9n::llm::factory::build_provider(&cfg, api_key, None)?;
 
-    // Hotkey registration. Three possible registrations: the prompt hotkey
-    // (always constructed, optionally registered), selected-text hotkey, and
-    // the history hotkey.
+    // All configurable shortcuts share one validation and registration path.
+    // Invalid input disables that binding explicitly; it never creates a
+    // fallback shortcut the user did not configure.
     let manager = GlobalHotKeyManager::new()?;
-
-    // Prompt hotkey — same as M2.
-    let prompt_modifier = Modifier::parse(&cfg.hotkey.modifier)
-        .ok_or_else(|| anyhow::anyhow!("unknown hotkey modifier: {}", cfg.hotkey.modifier))?;
-    let mut prompt_mods = match prompt_modifier.resolve_native() {
-        NativeModifier::Ctrl => Modifiers::CONTROL,
-        NativeModifier::Alt => Modifiers::ALT,
-        NativeModifier::Meta => Modifiers::META,
-    };
-    if cfg.hotkey.shift {
-        prompt_mods |= Modifiers::SHIFT;
+    let prompt_hotkey = register_binding(
+        HotkeyBinding {
+            name: "prompt",
+            modifier: &cfg.hotkey.modifier,
+            option: cfg.hotkey.option,
+            shift: cfg.hotkey.shift,
+            key: &cfg.hotkey.key,
+            enabled: cfg.hotkey.enabled,
+        },
+        |hotkey| manager.register(hotkey),
+    );
+    let selection_hotkey = register_binding(
+        HotkeyBinding {
+            name: "selected-text",
+            modifier: &cfg.hotkey.selection.modifier,
+            option: cfg.hotkey.selection.option,
+            shift: cfg.hotkey.selection.shift,
+            key: &cfg.hotkey.selection.key,
+            enabled: cfg.hotkey.selection.enabled,
+        },
+        |hotkey| manager.register(hotkey),
+    );
+    let replace_hotkey = register_binding(
+        HotkeyBinding {
+            name: "replace",
+            modifier: &cfg.hotkey.replace.modifier,
+            option: cfg.hotkey.replace.option,
+            shift: cfg.hotkey.replace.shift,
+            key: &cfg.hotkey.replace.key,
+            enabled: cfg.hotkey.replace.enabled,
+        },
+        |hotkey| manager.register(hotkey),
+    );
+    let history_hotkey = register_binding(
+        HotkeyBinding {
+            name: "history",
+            modifier: &cfg.hotkey.history.modifier,
+            option: cfg.hotkey.history.option,
+            shift: cfg.hotkey.history.shift,
+            key: &cfg.hotkey.history.key,
+            enabled: cfg.hotkey.history.enabled,
+        },
+        |hotkey| manager.register(hotkey),
+    );
+    let registration_outcomes: [&RegistrationOutcome; 4] = [
+        &prompt_hotkey,
+        &selection_hotkey,
+        &replace_hotkey,
+        &history_hotkey,
+    ];
+    for warning in registration_outcomes
+        .iter()
+        .filter_map(|outcome| outcome.warning.as_ref())
+    {
+        tracing::warn!(warning = %warning, "hotkey unavailable");
     }
-    if cfg.hotkey.option {
-        prompt_mods |= Modifiers::ALT;
-    }
-    // An unregisterable key must not abort the launch. Aborting here
-    // would be unrecoverable through the UI: no window and no tray icon
-    // means no way to correct the key except hand-editing the TOML. Fall
-    // back to the default so the app still comes up, and report it the
-    // same way the other three hotkeys report a bad key.
-    let (prompt_key_code, prompt_key_unsupported) = match letter_to_code(&cfg.hotkey.key) {
-        Some(code) => (code, false),
-        None => {
-            tracing::warn!(
-                key = %cfg.hotkey.key,
-                "unsupported prompt hotkey key; prompt hotkey disabled — fix it in Settings"
-            );
-            (Code::KeyT, true)
-        }
-    };
-    let prompt_hotkey = HotKey::new(Some(prompt_mods), prompt_key_code);
-    let prompt_hotkey_id = prompt_hotkey.id();
-    let hotkey_in_use = if prompt_key_unsupported {
-        // Surface it on the tray pill — the hotkey genuinely won't work.
-        true
-    } else if cfg.hotkey.enabled {
-        match manager.register(prompt_hotkey) {
-            Ok(()) => false,
-            Err(e) => {
-                tracing::warn!(error = %e, "prompt hotkey registration failed; tray menu remains the entry point");
-                true
-            }
-        }
-    } else {
-        false
-    };
-
-    // Selection hotkey — copies the current selection and opens the same
-    // action prompt using that text. Failure is non-fatal; the clipboard
-    // prompt hotkey and tray menu remain available.
-    let (selection_hotkey_id, selection_hotkey_in_use) = if cfg.hotkey.selection.enabled {
-        let mod_kind = match Modifier::parse(&cfg.hotkey.selection.modifier) {
-            Some(m) => m,
-            None => {
-                tracing::warn!(
-                    modifier = %cfg.hotkey.selection.modifier,
-                    "unknown selection hotkey modifier; selected-text hotkey disabled"
-                );
-                Modifier::Cmd
-            }
-        };
-        let mut mods = match mod_kind.resolve_native() {
-            NativeModifier::Ctrl => Modifiers::CONTROL,
-            NativeModifier::Alt => Modifiers::ALT,
-            NativeModifier::Meta => Modifiers::META,
-        };
-        if cfg.hotkey.selection.shift {
-            mods |= Modifiers::SHIFT;
-        }
-        if cfg.hotkey.selection.option {
-            mods |= Modifiers::ALT;
-        }
-        match letter_to_code(&cfg.hotkey.selection.key) {
-            Some(code) => {
-                let hk = HotKey::new(Some(mods), code);
-                let id = hk.id();
-                match manager.register(hk) {
-                    Ok(()) => (Some(id), false),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "selected-text hotkey registration failed");
-                        (None, true)
-                    }
-                }
-            }
-            None => {
-                tracing::warn!(
-                    key = %cfg.hotkey.selection.key,
-                    "unsupported selection hotkey key; selected-text hotkey disabled"
-                );
-                (None, false)
-            }
-        }
-    } else {
-        (None, false)
-    };
-    let hotkey_in_use = hotkey_in_use || selection_hotkey_in_use;
-
-    // Replace hotkey — copies the current selection, translates it, and replaces inline.
-    let (replace_hotkey_id, replace_hotkey_in_use) = if cfg.hotkey.replace.enabled {
-        let mod_kind = match Modifier::parse(&cfg.hotkey.replace.modifier) {
-            Some(m) => m,
-            None => {
-                tracing::warn!(
-                    modifier = %cfg.hotkey.replace.modifier,
-                    "unknown replace hotkey modifier; replace hotkey disabled"
-                );
-                Modifier::Super
-            }
-        };
-        let mut mods = match mod_kind.resolve_native() {
-            NativeModifier::Ctrl => Modifiers::CONTROL,
-            NativeModifier::Alt => Modifiers::ALT,
-            NativeModifier::Meta => Modifiers::META,
-        };
-        if cfg.hotkey.replace.shift {
-            mods |= Modifiers::SHIFT;
-        }
-        if cfg.hotkey.replace.option {
-            mods |= Modifiers::ALT;
-        }
-        match letter_to_code(&cfg.hotkey.replace.key) {
-            Some(code) => {
-                let hk = HotKey::new(Some(mods), code);
-                let id = hk.id();
-                match manager.register(hk) {
-                    Ok(()) => (Some(id), false),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "replace hotkey registration failed");
-                        (None, true)
-                    }
-                }
-            }
-            None => {
-                tracing::warn!(
-                    key = %cfg.hotkey.replace.key,
-                    "unsupported replace hotkey key; replace hotkey disabled"
-                );
-                (None, false)
-            }
-        }
-    } else {
-        (None, false)
-    };
-    let hotkey_in_use = hotkey_in_use || replace_hotkey_in_use;
-
-    // History hotkey — M5 addition. Failure to register (e.g., already
-    // claimed by another app) is non-fatal; we log warn and the user
-    // can still use the tray-menu "History" item once M7 lands.
-    let history_hotkey_id = if cfg.hotkey.history.enabled {
-        let mod_kind = match Modifier::parse(&cfg.hotkey.history.modifier) {
-            Some(m) => m,
-            None => {
-                tracing::warn!(
-                    modifier = %cfg.hotkey.history.modifier,
-                    "unknown history hotkey modifier; viewer hotkey disabled"
-                );
-                Modifier::Cmd
-            }
-        };
-        let mut mods = match mod_kind.resolve_native() {
-            NativeModifier::Ctrl => Modifiers::CONTROL,
-            NativeModifier::Alt => Modifiers::ALT,
-            NativeModifier::Meta => Modifiers::META,
-        };
-        if cfg.hotkey.history.shift {
-            mods |= Modifiers::SHIFT;
-        }
-        if cfg.hotkey.history.option {
-            mods |= Modifiers::ALT;
-        }
-        match letter_to_code(&cfg.hotkey.history.key) {
-            Some(code) => {
-                let hk = HotKey::new(Some(mods), code);
-                let id = hk.id();
-                match manager.register(hk) {
-                    Ok(()) => Some(id),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "history hotkey registration failed; viewer hotkey unavailable");
-                        None
-                    }
-                }
-            }
-            None => {
-                tracing::warn!(
-                    key = %cfg.hotkey.history.key,
-                    "unsupported history hotkey key; viewer hotkey disabled"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let hotkey_in_use = has_registration_warnings(registration_outcomes);
+    let prompt_hotkey_id = prompt_hotkey.id;
+    let selection_hotkey_id = selection_hotkey.id;
+    let replace_hotkey_id = replace_hotkey.id;
+    let history_hotkey_id = history_hotkey.id;
 
     // Forward hotkey events into our own channel. The handler that fills
     // it is installed later, inside the eframe creator closure, because it
@@ -558,38 +426,6 @@ fn install_hotkey_handler(
             ctx.request_repaint();
         }
     }));
-}
-
-fn letter_to_code(key: &str) -> Option<Code> {
-    match key.to_ascii_uppercase().as_str() {
-        "A" => Some(Code::KeyA),
-        "B" => Some(Code::KeyB),
-        "C" => Some(Code::KeyC),
-        "D" => Some(Code::KeyD),
-        "E" => Some(Code::KeyE),
-        "F" => Some(Code::KeyF),
-        "G" => Some(Code::KeyG),
-        "H" => Some(Code::KeyH),
-        "I" => Some(Code::KeyI),
-        "J" => Some(Code::KeyJ),
-        "K" => Some(Code::KeyK),
-        "L" => Some(Code::KeyL),
-        "M" => Some(Code::KeyM),
-        "N" => Some(Code::KeyN),
-        "O" => Some(Code::KeyO),
-        "P" => Some(Code::KeyP),
-        "Q" => Some(Code::KeyQ),
-        "R" => Some(Code::KeyR),
-        "S" => Some(Code::KeyS),
-        "T" => Some(Code::KeyT),
-        "U" => Some(Code::KeyU),
-        "V" => Some(Code::KeyV),
-        "W" => Some(Code::KeyW),
-        "X" => Some(Code::KeyX),
-        "Y" => Some(Code::KeyY),
-        "Z" => Some(Code::KeyZ),
-        _ => None,
-    }
 }
 
 fn gui_paths(cli: &Cli) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
