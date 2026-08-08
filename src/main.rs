@@ -376,6 +376,9 @@ fn main() -> anyhow::Result<()> {
                 None if cli.settings => {
                     app.with_initial_state(clipt9n::app::InitialState::Settings)
                 }
+                None if cli.glossary => {
+                    app.with_initial_state(clipt9n::app::InitialState::Glossary)
+                }
                 None => app,
             };
             // Make the viewport visible if we're starting in a window
@@ -471,6 +474,7 @@ mod tests {
             show_tray: false,
             config_path: Some(cfg_path.clone()),
             settings: false,
+            glossary: false,
         };
 
         let (resolved_cfg, state_path) = gui_paths(&cli).unwrap();

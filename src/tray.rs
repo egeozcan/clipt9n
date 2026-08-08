@@ -56,6 +56,7 @@ fn install_menu_handler(ctx: &egui::Context) {
 /// literal duplication.
 pub const ID_TRANSLATE: &str = "clipt9n.translate";
 pub const ID_HISTORY: &str = "clipt9n.history";
+pub const ID_GLOSSARY_EDIT: &str = "clipt9n.glossary.edit";
 pub const ID_GLOSSARY_OPEN: &str = "clipt9n.glossary.open";
 pub const ID_GLOSSARY_RELOAD: &str = "clipt9n.glossary.reload";
 pub const ID_ACCESSIBILITY_SETTINGS: &str = "clipt9n.accessibility.settings";
@@ -180,8 +181,15 @@ impl TrayHandle {
         menu.append(&PredefinedMenuItem::separator())
             .map_err(menu_err)?;
         menu.append(&MenuItem::with_id(
+            ID_GLOSSARY_EDIT,
+            "Edit glossary…",
+            true,
+            None,
+        ))
+        .map_err(menu_err)?;
+        menu.append(&MenuItem::with_id(
             ID_GLOSSARY_OPEN,
-            "Open glossary",
+            "Open glossary file",
             true,
             None,
         ))
@@ -405,6 +413,7 @@ mod tests {
         let ids = [
             ID_TRANSLATE,
             ID_HISTORY,
+            ID_GLOSSARY_EDIT,
             ID_GLOSSARY_OPEN,
             ID_GLOSSARY_RELOAD,
             ID_SETTINGS,

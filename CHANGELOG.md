@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Glossary editor: **Edit glossary…** in the menu bar opens a table of
+  glossary entries with add, edit, delete, and search. Save validates
+  before writing, writes atomically, and reloads the live glossary. A
+  malformed `glossary.toml` still opens so it can be repaired in-app.
+  The editor rewrites the file from its entries, so it warns up front
+  when the existing file has comments it cannot preserve; the previous
+  menu item is now **Open glossary file** for editing the TOML directly.
+  Also reachable with `--glossary`, for when the menu bar icon is hidden.
 - Settings window: edit provider, API key, languages, hotkeys, and behavior
   from the GUI. Reachable from the menu bar or with `--settings`. Saving
   validates, persists, and rebuilds the provider in place.

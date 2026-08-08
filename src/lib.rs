@@ -70,6 +70,12 @@ pub struct Cli {
     /// has been hidden.
     #[arg(long = "settings")]
     pub settings: bool,
+
+    /// Launch straight into the glossary editor. Same rationale as
+    /// `--settings`: the tray menu is the normal way in, and this is
+    /// the way back when the icon is hidden.
+    #[arg(long = "glossary")]
+    pub glossary: bool,
 }
 
 impl Cli {

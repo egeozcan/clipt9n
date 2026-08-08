@@ -38,7 +38,11 @@ pub struct GlossaryEntry {
     pub languages: Vec<String>,
     /// Optional free-form note shown after the target in the formatted
     /// glossary block. Spec §5.4 example: `"Always preserve as-is"`.
-    #[serde(default)]
+    ///
+    /// `skip_serializing_if` keeps `to_toml` from emitting a key for a
+    /// note the user never wrote — TOML has no null, so the alternative
+    /// is a serializer error or a stray empty string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
@@ -89,6 +93,26 @@ impl Glossary {
         Ok(g)
     }
 
+    /// Build a glossary from in-memory entries, applying exactly the
+    /// normalization and validation `load_str` applies. The in-app
+    /// editor uses this to reject bad edits *before* anything reaches
+    /// disk, so a rejected save leaves the file untouched.
+    pub fn from_entries(entries: Vec<GlossaryEntry>) -> Result<Self, TranslateError> {
+        let mut g = Self { entries };
+        g.normalize_and_validate()?;
+        Ok(g)
+    }
+
+    /// Serialize back to the `[[entry]]` TOML the loader reads.
+    ///
+    /// This is a structured rewrite: comments and hand formatting in an
+    /// existing file are NOT preserved. The editor warns before the
+    /// first such save (see `contains_comments`).
+    pub fn to_toml(&self) -> Result<String, TranslateError> {
+        toml::to_string_pretty(self)
+            .map_err(|e| TranslateError::Glossary(format!("serializing glossary: {e}")))
+    }
+
     /// Direct access to the loaded entries. Used in tests; production
     /// callers go through `matching_entries` (Task 4).
     pub fn entries(&self) -> &[GlossaryEntry] {
@@ -134,6 +158,36 @@ impl Glossary {
         }
         Ok(())
     }
+}
+
+/// Whether `toml_src` carries `#` comments that a structured rewrite
+/// (`Glossary::to_toml`) would drop. Quote-aware, so a `#` inside a
+/// value — `target = "C# language"` — is not a false positive.
+///
+/// Deliberately biased toward false positives: quote state resets at
+/// each line, so a `#` inside a multi-line string reports as a comment.
+/// Over-warning costs the user one dismissible banner; under-warning
+/// costs them their comments.
+pub fn contains_comments(toml_src: &str) -> bool {
+    for line in toml_src.lines() {
+        let mut in_basic = false; // "…"
+        let mut in_literal = false; // '…'
+        let mut escaped = false;
+        for ch in line.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' if in_basic => escaped = true,
+                '"' if !in_literal => in_basic = !in_basic,
+                '\'' if !in_basic => in_literal = !in_literal,
+                '#' if !in_basic && !in_literal => return true,
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 fn valid_language_scope(language: &str) -> bool {
@@ -516,6 +570,30 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn comment_detection_finds_full_line_and_trailing_comments() {
+        assert!(contains_comments("# product names\n"));
+        assert!(contains_comments("source = \"a\" # keep as-is\n"));
+        assert!(contains_comments("  #indented\n"));
+    }
+
+    #[test]
+    fn comment_detection_ignores_hashes_inside_values() {
+        assert!(!contains_comments("source = \"C# language\"\n"));
+        assert!(!contains_comments("target = 'issue #42'\n"));
+        assert!(!contains_comments(
+            "[[entry]]\nsource = \"a\"\ntarget = \"b\"\n"
+        ));
+        assert!(!contains_comments(""));
+    }
+
+    #[test]
+    fn comment_detection_handles_escaped_quotes() {
+        // The escaped quote must not be read as closing the string, or
+        // the `#` after it would look like a comment.
+        assert!(!contains_comments(r#"source = "say \"hi\" #1""#));
+    }
 
     #[test]
     fn empty_glossary_constructs_cleanly() {

@@ -1,4 +1,5 @@
 pub mod custom_prompt;
+pub mod glossary;
 pub mod history;
 pub mod prompt;
 pub mod result;

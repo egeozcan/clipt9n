@@ -55,8 +55,9 @@ clipt9n runs quietly in the menu bar. From the menu, you can:
 
 - Translate the clipboard.
 - Open history.
-- Open the glossary file.
-- Reload the glossary after editing it.
+- Edit the glossary in a built-in editor.
+- Open the glossary file in your own editor.
+- Reload the glossary after editing the file outside clipt9n.
 - Open settings.
 - Re-run the setup wizard.
 - Hide the menu bar icon.
@@ -85,6 +86,18 @@ History is designed to stay private:
 
 Use the glossary when certain terms must always be translated the same way. This is useful for product names, domain-specific vocabulary, acronyms, customer names, or words that should stay unchanged.
 
+### Editing in the app
+
+Choose **Edit glossary…** from the menu bar, or launch `clipt9n --glossary`. You get a table of your entries with fields for the term, its mandated translation, the language pairs it applies to, and an optional note. Add and delete rows freely — nothing is written until you press Save, and Cancel throws the whole session away.
+
+Save checks your entries first. If something is wrong — an empty term, a language scope like `german->english` instead of `de->en` — the editor tells you and leaves the file alone. Once the file is written, clipt9n reloads it immediately; there is no need to reload by hand.
+
+This editor rewrites `glossary.toml` from the entries in the table, which means **comments in the file are lost when you save**. If your file has comments, the editor says so when it opens, and you can use **Open glossary file** instead to edit the TOML directly.
+
+If the file is currently unparseable, the editor still opens: it shows the parse error and starts with an empty table so you can rebuild the file without leaving the app.
+
+### Editing the file directly
+
 Create or edit `glossary.toml` in the clipt9n config folder:
 
 ```toml
@@ -105,7 +118,7 @@ languages = ["*"]
 note = "Always preserve as-is"
 ```
 
-The app notices matching glossary terms before sending a request and includes them in the instruction to the provider. Use **Reload glossary** from the menu bar after editing the file.
+The app notices matching glossary terms before sending a request and includes them in the instruction to the provider. Use **Reload glossary** from the menu bar after editing the file outside clipt9n.
 
 ## macOS Permissions
 
@@ -177,10 +190,12 @@ key or model takes effect on the next translation. Two changes need a
 relaunch and say so in the window: hotkey edits (registered once at
 startup) and turning history on or off.
 
-If the menu bar icon is hidden, reach the same window with:
+If the menu bar icon is hidden, reach the settings and glossary windows
+with:
 
 ```bash
 clipt9n --settings
+clipt9n --glossary
 ```
 
 Everything the window covers, plus prompt-template overrides, also lives
@@ -257,7 +272,7 @@ Open System Settings, go to Notifications, choose clipt9n, and make sure notific
 
 **Translations are not using my glossary**
 
-Check that `glossary.toml` is valid TOML, that the language pair matches the current translation, and then choose **Reload glossary** from the menu bar.
+Open **Edit glossary…** from the menu bar. It shows a parse error if the file is malformed, and lets you check that each entry's language pairs match the translation you are running. Saving from there reloads the glossary for you; if you edited the file outside clipt9n, choose **Reload glossary** instead.
 
 **The menu bar icon is hidden**
 

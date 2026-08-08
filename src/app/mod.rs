@@ -4,11 +4,14 @@
 //! input handling lives in the sub-modules.
 
 mod channels;
+mod glossary;
 mod history;
 mod prompt;
 mod pure;
 mod settings;
 mod setup;
+#[cfg(test)]
+mod test_support;
 mod translation;
 mod tray;
 
@@ -42,6 +45,9 @@ pub enum InitialState {
     /// built from the app's own config, so unlike `SetupWizard` there's
     /// nothing for the caller to seed.
     Settings,
+    /// `--glossary`: land in the glossary editor. Seeded from the
+    /// glossary file the same way the tray menu item seeds it.
+    Glossary,
 }
 
 /// Top-level UI state machine.
@@ -99,6 +105,12 @@ enum AppState {
     /// most-recent query results plus search/selection state.
     ShowingHistory {
         model: crate::ui::history::HistoryModel,
+    },
+    /// Structured glossary editor is open. The model holds a working
+    /// copy of the entries; nothing reaches `self.glossary` or disk
+    /// until Save validates and writes.
+    ShowingGlossary {
+        model: crate::ui::glossary::GlossaryModel,
     },
     /// First-launch setup wizard is open. Persists the API key into
     /// the keychain (or env-var hint), runs connectivity + sample-
@@ -526,6 +538,7 @@ impl ClipApp {
         match self.app_state {
             AppState::SetupWizard { .. } => Some(crate::ui::setup::SETUP_WIZARD_INNER_SIZE),
             AppState::Settings { .. } => Some(crate::ui::settings::SETTINGS_INNER_SIZE),
+            AppState::ShowingGlossary { .. } => Some(crate::ui::glossary::GLOSSARY_INNER_SIZE),
             _ => None,
         }
     }
@@ -542,6 +555,11 @@ impl ClipApp {
             InitialState::Settings => {
                 self.app_state = AppState::Settings {
                     model: Box::new(self.build_settings_model()),
+                };
+            }
+            InitialState::Glossary => {
+                self.app_state = AppState::ShowingGlossary {
+                    model: self.build_glossary_model(),
                 };
             }
         }
@@ -570,7 +588,7 @@ impl ClipApp {
 fn dismiss_on_blur(state: &AppState) -> bool {
     !matches!(
         state,
-        AppState::Settings { .. } | AppState::SetupWizard { .. }
+        AppState::Settings { .. } | AppState::SetupWizard { .. } | AppState::ShowingGlossary { .. }
     )
 }
 
@@ -663,6 +681,7 @@ impl eframe::App for ClipApp {
                 );
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
+            AppState::ShowingGlossary { model } => self.update_showing_glossary(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
             AppState::Settings { model } => self.update_settings(ctx, model),
             AppState::ShowingResult {
@@ -702,8 +721,15 @@ mod focus_dismiss_tests {
         let settings = AppState::Settings {
             model: Box::new(crate::ui::settings::SettingsModel::default()),
         };
+        let glossary = AppState::ShowingGlossary {
+            model: crate::ui::glossary::GlossaryModel::default(),
+        };
         assert!(!dismiss_on_blur(&setup));
         assert!(!dismiss_on_blur(&settings));
+        assert!(
+            !dismiss_on_blur(&glossary),
+            "the glossary editor holds typed work; blur must not discard it"
+        );
         assert!(dismiss_on_blur(&AppState::Showing));
         assert!(dismiss_on_blur(&AppState::EnteringCustom {
             model: crate::ui::custom_prompt::CustomPromptModel::default(),
