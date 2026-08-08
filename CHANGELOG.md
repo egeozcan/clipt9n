@@ -13,7 +13,7 @@
   and disables the hotkey instead of aborting startup, which left no window
   and no tray icon to correct it from.
 
-## 0.1.0 - 2026-04-29
+## 0.0.1 - 2026-04-29
 
 - M1: CLI walking skeleton and provider abstraction.
 - M2: prompt window, global hotkey, state file.

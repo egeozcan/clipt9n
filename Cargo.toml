@@ -2,9 +2,21 @@
 name = "clipt9n"
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.88"
 description = "Clipboard translation utility — global hotkey, LLM-backed"
 license = "MIT"
+repository = "https://github.com/egeozcan/clipt9n"
+exclude = [
+    ".idea/**",
+    ".pi-subagents/**",
+    ".worktrees/**",
+    "target/**",
+    "fuzz/target/**",
+    "config.toml",
+    "history.db",
+    ".history-key",
+    "api-key",
+]
 
 [lib]
 name = "clipt9n"
@@ -58,7 +70,6 @@ internal-test-helpers = []
 [package.metadata.bundle]
 name = "clipt9n"
 identifier = "dev.egecan.clipt9n"
-version = "0.1.0"
 category = "public.app-category.utilities"
 short_description = "Keyboard-driven clipboard translator"
 long_description = "clipt9n is a menu-bar clipboard translator with hotkeys, glossary support, encrypted history, and setup wizard."

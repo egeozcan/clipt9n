@@ -5,53 +5,145 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  macos-app:
-    runs-on: macos-latest
+  preflight:
+    name: release preflight
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: install cargo-bundle
-        run: cargo install cargo-bundle --locked
-      - name: package app
-        run: scripts/package-macos.sh
-      - name: zip app
-        run: ditto -c -k --keepParent target/release/bundle/osx/clipt9n.app clipt9n-macos.app.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          name: clipt9n-macos-app
-          path: clipt9n-macos.app.zip
-
-  linux-binary:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+          toolchain: 1.97.1
+          components: rustfmt, clippy
       - name: install Linux desktop prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
-      - name: package linux
+      - name: verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          test "$tag" = "$package_version"
+      - name: platform discipline lint
+        run: scripts/lint-platform-discipline.sh
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: cargo test
+        run: cargo test --locked --all-features
+      - name: cargo build --release
+        run: cargo build --locked --release
+
+  macos-app:
+    name: macOS universal app
+    runs-on: macos-15
+    needs: preflight
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: install cargo-bundle
+        run: cargo install cargo-bundle --version 0.11.0 --locked
+      - name: package universal app
+        run: scripts/package-macos.sh
+      - name: verify and archive universal app
+        run: |
+          lipo -info target/release/bundle/osx/clipt9n.app/Contents/MacOS/clipt9n
+          ditto -c -k --keepParent target/release/bundle/osx/clipt9n.app clipt9n-macos-universal.app.zip
+          shasum -a 256 clipt9n-macos-universal.app.zip > clipt9n-macos-universal.app.zip.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: clipt9n-macos-universal
+          path: |
+            clipt9n-macos-universal.app.zip
+            clipt9n-macos-universal.app.zip.sha256
+          if-no-files-found: error
+
+  linux-binary:
+    name: Linux x86_64 package
+    runs-on: ubuntu-24.04
+    needs: preflight
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+          targets: x86_64-unknown-linux-gnu
+      - name: install Linux desktop prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+      - name: package Linux x86_64
         run: scripts/package-linux.sh
-      - name: archive linux package
-        run: tar -C target/release/package-linux -czf clipt9n-linux-x86_64.tar.gz clipt9n
-      - uses: actions/upload-artifact@v4
+      - name: archive Linux package
+        run: |
+          tar -C target/release/package-linux -czf clipt9n-linux-x86_64.tar.gz clipt9n
+          sha256sum clipt9n-linux-x86_64.tar.gz > clipt9n-linux-x86_64.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: clipt9n-linux-x86_64
-          path: clipt9n-linux-x86_64.tar.gz
+          path: |
+            clipt9n-linux-x86_64.tar.gz
+            clipt9n-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
 
   windows-exe:
-    runs-on: windows-latest
+    name: Windows x86_64 package
+    runs-on: windows-2025
+    needs: preflight
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: build release
-        run: cargo build --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+          targets: x86_64-pc-windows-msvc
+      - name: build Windows x86_64 release
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+      - name: archive Windows package and checksum
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/clipt9n.exe -DestinationPath clipt9n-windows-x86_64.zip
+          $hash = (Get-FileHash -Algorithm SHA256 clipt9n-windows-x86_64.zip).Hash.ToLower()
+          "$hash  clipt9n-windows-x86_64.zip" | Out-File -Encoding ascii clipt9n-windows-x86_64.zip.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: clipt9n-windows-x86_64
-          path: target/release/clipt9n.exe
+          path: |
+            clipt9n-windows-x86_64.zip
+            clipt9n-windows-x86_64.zip.sha256
+          if-no-files-found: error
+
+  release-upload:
+    name: publish durable release assets
+    runs-on: ubuntu-24.04
+    needs: [macos-app, linux-binary, windows-exe]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: release-assets
+      - name: attest release archives
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            release-assets/**/*.zip
+            release-assets/**/*.tar.gz
+      - name: create or update GitHub Release
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836 # v2.3.3
+        with:
+          files: release-assets/**/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
