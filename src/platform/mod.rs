@@ -161,14 +161,99 @@ fn cmd_modifier_impl() -> crate::config::NativeModifier {
     crate::config::NativeModifier::Ctrl
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // failure stages are constructed only by cfg(test) injection helpers
+pub(crate) enum SecureWriteFailure {
+    None,
+    Permission,
+    Rename,
+}
+
+/// Atomically replace a regular file with owner-only contents. Platforms
+/// without enforceable owner-only creation semantics fail closed.
+pub(crate) fn secure_atomic_write(
+    path: &std::path::Path,
+    contents: &[u8],
+) -> Result<(), std::io::Error> {
+    secure_atomic_write_impl(path, contents, SecureWriteFailure::None)
+}
+
 #[cfg(unix)]
-pub(crate) fn set_owner_only_permissions(path: &std::path::Path) -> Result<(), std::io::Error> {
-    unix::set_owner_only_permissions(path)
+pub(crate) fn secure_read_file(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
+    unix::secure_read_file(path)
 }
 
 #[cfg(not(unix))]
-pub(crate) fn set_owner_only_permissions(_path: &std::path::Path) -> Result<(), std::io::Error> {
-    Ok(())
+pub(crate) fn secure_read_file(_path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure file-backed secret storage is unavailable on this platform; use the OS keychain",
+    ))
+}
+
+#[cfg(unix)]
+fn secure_atomic_write_impl(
+    path: &std::path::Path,
+    contents: &[u8],
+    failure: SecureWriteFailure,
+) -> Result<(), std::io::Error> {
+    unix::secure_atomic_write(path, contents, failure)
+}
+
+#[cfg(not(unix))]
+fn secure_atomic_write_impl(
+    _path: &std::path::Path,
+    _contents: &[u8],
+    _failure: SecureWriteFailure,
+) -> Result<(), std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure file-backed secret storage is unavailable on this platform; use the OS keychain",
+    ))
+}
+
+#[cfg(unix)]
+pub(crate) fn rename_legacy_key_to_recovery(
+    source: &std::path::Path,
+    recovery: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    unix::rename_legacy_key_to_recovery(source, recovery)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn rename_legacy_key_to_recovery(
+    _source: &std::path::Path,
+    _recovery: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "safe legacy-key recovery rename is unavailable on this platform",
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn secure_atomic_write_with_failure_for_test(
+    path: &std::path::Path,
+    contents: &[u8],
+    failure: SecureWriteFailure,
+) -> Result<(), std::io::Error> {
+    secure_atomic_write_impl(path, contents, failure)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn create_file_symlink_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn create_file_symlink_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    std::os::windows::fs::symlink_file(target, link)
 }
 
 #[cfg(test)]

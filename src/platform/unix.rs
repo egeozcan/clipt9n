@@ -3,6 +3,11 @@
 //! `platform/` per the cross-platform discipline rule (no `cfg(unix)` in
 //! `app.rs` or anywhere else).
 
+use std::fs::{File, OpenOptions};
+use std::io::{Error, ErrorKind, Write};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::path::Path;
+
 use crossbeam_channel::Sender;
 use tokio::runtime::Runtime;
 
@@ -62,10 +67,183 @@ pub(crate) fn install(rt: &Runtime, tx: Sender<()>, wake: impl Fn() + Send + 'st
 /// by `History` after writing the keyfile. On non-Unix platforms the
 /// equivalent caller path no-ops via `cfg(not(unix))` dispatch in
 /// `src/history/crypto.rs`.
-pub(crate) fn set_owner_only_permissions(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+pub(crate) fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "refusing owner-only permissions on symlink {}",
+                path.display()
+            ),
+        ));
+    }
+    if !metadata.file_type().is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "secret destination is not a regular file: {}",
+                path.display()
+            ),
+        ));
+    }
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms)
+}
+
+pub(crate) fn secure_read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    reject_unsafe_destination(path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("secret source is not a regular file: {}", path.display()),
+        ));
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            format!("secret file must be owner-only (0600): {}", path.display()),
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn secure_atomic_write(
+    path: &Path,
+    contents: &[u8],
+    failure: super::SecureWriteFailure,
+) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("secret destination has no parent: {}", path.display()),
+        )
+    })?;
+    reject_unsafe_destination(path)?;
+
+    let file_name = path.file_name().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("secret destination has no file name: {}", path.display()),
+        )
+    })?;
+    let mut random = [0u8; 8];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut random);
+    let suffix = u64::from_ne_bytes(random);
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}-{suffix:016x}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let result = (|| {
+        let mut temp = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temp_path)?;
+        let metadata = temp.metadata()?;
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_block_device()
+            || metadata.file_type().is_char_device()
+            || metadata.file_type().is_fifo()
+            || metadata.file_type().is_socket()
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "temporary secret destination is not a regular file: {}",
+                    temp_path.display()
+                ),
+            ));
+        }
+        if matches!(failure, super::SecureWriteFailure::Permission) {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "injected owner-only permission failure",
+            ));
+        }
+        temp.write_all(contents)?;
+        temp.flush()?;
+        temp.sync_all()?;
+        drop(temp);
+
+        // A destination swapped after the first check must not be followed or
+        // silently replaced. The containing directory is expected to be
+        // private to the user; this second check narrows the remaining race.
+        reject_unsafe_destination(path)?;
+        if matches!(failure, super::SecureWriteFailure::Rename) {
+            return Err(Error::other("injected atomic rename failure"));
+        }
+        std::fs::rename(&temp_path, path)?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+pub(crate) fn rename_legacy_key_to_recovery(source: &Path, recovery: &Path) -> std::io::Result<()> {
+    let source_meta = std::fs::symlink_metadata(source)?;
+    if source_meta.file_type().is_symlink() || !source_meta.file_type().is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("legacy key is not a regular file: {}", source.display()),
+        ));
+    }
+    set_owner_only_permissions(source)?;
+    match std::fs::symlink_metadata(recovery) {
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(Error::new(
+                ErrorKind::AlreadyExists,
+                format!(
+                    "recovery key destination already exists: {}",
+                    recovery.display()
+                ),
+            ))
+        }
+        Err(e) => return Err(e),
+    }
+    std::fs::rename(source, recovery)?;
+    let parent = recovery.parent().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("recovery destination has no parent: {}", recovery.display()),
+        )
+    })?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn reject_unsafe_destination(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("refusing symlink secret destination: {}", path.display()),
+        )),
+        Ok(metadata) if !metadata.file_type().is_file() => Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "secret destination is not a regular file: {}",
+                path.display()
+            ),
+        )),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

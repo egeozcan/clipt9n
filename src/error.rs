@@ -1,60 +1,102 @@
-use thiserror::Error;
+use std::fmt;
+
+/// Maximum number of characters emitted when an error is formatted for a
+/// user-facing surface or structured log field.
+pub const ERROR_DISPLAY_MAX_CHARS: usize = 512;
 
 /// Unified error type for all translator operations.
 ///
-/// Display strings are user-facing — they appear in stderr (CLI) and toast
-/// notifications (later milestones). Keep them short and actionable.
-#[derive(Debug, Error)]
+/// Dynamic values remain available structurally for programmatic handling,
+/// while `Display` is bounded and control-character sanitized because it is
+/// used directly by notifications, stderr, and tracing fields.
+#[derive(Debug)]
 pub enum TranslateError {
-    #[error("clipboard is empty or not text")]
     EmptyOrNonTextClipboard,
-
-    #[error("API key not found: set {env_var} or run setup wizard")]
     MissingApiKey { env_var: String },
-
-    #[error("config error: {0}")]
     Config(String),
-
-    #[error("template error: {0}")]
     Template(String),
-
-    #[error("network error: {0}")]
     Network(String),
-
-    #[error("provider error ({status}): {message}")]
     Provider { status: u16, message: String },
-
-    #[error("rate limited; try again later")]
     RateLimited,
-
-    #[error("translation timed out")]
     Timeout,
-
-    #[error("unsupported language code '{0}'; add a slot to [languages] in config.toml")]
     UnsupportedLanguage(String),
-
-    #[error("invalid clipboard contents: {0}")]
     InvalidClipboard(String),
-
-    #[error("macOS Accessibility permission not granted; the global hotkey cannot be registered without it. Open System Settings → Privacy & Security → Accessibility and enable clipt9n.")]
     AccessibilityPermissionDenied,
-
-    #[error("internal error: {0}")]
     Internal(String),
-
-    #[error("glossary error: {0}")]
     Glossary(String),
-
-    #[error("history error: {0}")]
     History(String),
-
-    #[error("setup wizard error: {0}")]
     SetupWizard(String),
+}
+
+impl fmt::Display for TranslateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let raw = match self {
+            Self::EmptyOrNonTextClipboard => "clipboard is empty or not text".to_string(),
+            Self::MissingApiKey { env_var } => {
+                format!("API key not found: set {env_var} or run setup wizard")
+            }
+            Self::Config(message) => format!("config error: {message}"),
+            Self::Template(message) => format!("template error: {message}"),
+            Self::Network(message) => format!("network error: {message}"),
+            Self::Provider { status, message } => {
+                format!("provider error ({status}): {message}")
+            }
+            Self::RateLimited => "rate limited; try again later".to_string(),
+            Self::Timeout => "translation timed out".to_string(),
+            Self::UnsupportedLanguage(code) => format!(
+                "unsupported language code '{code}'; add a slot to [languages] in config.toml"
+            ),
+            Self::InvalidClipboard(message) => {
+                format!("invalid clipboard contents: {message}")
+            }
+            Self::AccessibilityPermissionDenied => "macOS Accessibility permission not granted; the global hotkey cannot be registered without it. Open System Settings → Privacy & Security → Accessibility and enable clipt9n.".to_string(),
+            Self::Internal(message) => format!("internal error: {message}"),
+            Self::Glossary(message) => format!("glossary error: {message}"),
+            Self::History(message) => format!("history error: {message}"),
+            Self::SetupWizard(message) => format!("setup wizard error: {message}"),
+        };
+        f.write_str(&bounded_sanitized(&raw))
+    }
+}
+
+impl std::error::Error for TranslateError {}
+
+fn bounded_sanitized(text: &str) -> String {
+    let sanitized = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = sanitized.chars();
+    let bounded: String = chars.by_ref().take(ERROR_DISPLAY_MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_display_is_bounded_and_has_no_non_whitespace_controls() {
+        let err = TranslateError::Provider {
+            status: 500,
+            message: format!("{}\u{1b}[31m\u{7}", "x".repeat(100 * 1024)),
+        };
+
+        let displayed = err.to_string();
+
+        assert!(displayed.chars().count() <= ERROR_DISPLAY_MAX_CHARS + 1);
+        assert!(!displayed
+            .chars()
+            .any(|c| c.is_control() && !c.is_whitespace()));
+        assert!(displayed.starts_with("provider error (500):"));
+    }
 
     #[test]
     fn display_strings_are_user_facing() {

@@ -9,7 +9,9 @@
 //! disabled flag, write failure → log + drop, decryption error per row
 //! → log + skip.
 
+use std::ops::Deref;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rusqlite::Connection;
@@ -61,9 +63,30 @@ pub struct QueryFilter {
     pub query: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryHealth {
+    Healthy,
+    Corrupt { skipped_rows: usize },
+}
+
+#[derive(Debug)]
+pub struct HistoryQueryResult {
+    pub entries: Vec<HistoryEntry>,
+    pub health: HistoryHealth,
+}
+
+impl Deref for HistoryQueryResult {
+    type Target = [HistoryEntry];
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
 pub struct History {
     conn: Mutex<Connection>,
     key: Zeroizing<[u8; 32]>,
+    integrity_failed: AtomicBool,
 }
 
 impl std::fmt::Debug for History {
@@ -90,6 +113,7 @@ impl History {
         Ok(Self {
             conn: Mutex::new(conn),
             key,
+            integrity_failed: AtomicBool::new(false),
         })
     }
 
@@ -101,12 +125,14 @@ impl History {
         Ok(Self {
             conn: Mutex::new(conn),
             key,
+            integrity_failed: AtomicBool::new(false),
         })
     }
 
     fn migrate(conn: &Connection) -> Result<(), TranslateError> {
         conn.execute_batch(
             r#"
+            PRAGMA secure_delete = ON;
             CREATE TABLE IF NOT EXISTS entries (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at          INTEGER NOT NULL,
@@ -155,6 +181,11 @@ impl History {
     /// the new row's `id` (test convenience; production callers don't
     /// usually consume it).
     pub fn insert(&self, entry: NewEntry) -> Result<i64, TranslateError> {
+        if self.integrity_failed.load(Ordering::Acquire) {
+            return Err(TranslateError::History(
+                "writes disabled after a history integrity failure".into(),
+            ));
+        }
         let (source_ct, source_nonce) = encrypt_optional(&self.key, entry.source.as_deref())?;
         let (result_ct, result_nonce) = encrypt_optional(&self.key, entry.result.as_deref())?;
         self.with_conn(|conn| {
@@ -215,7 +246,7 @@ impl History {
         &self,
         filter: &QueryFilter,
         limit: usize,
-    ) -> Result<Vec<HistoryEntry>, TranslateError> {
+    ) -> Result<HistoryQueryResult, TranslateError> {
         let rows = self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -248,11 +279,13 @@ impl History {
         })?;
 
         let mut out = Vec::new();
+        let mut skipped_rows = 0usize;
         for raw in rows {
             let source = match decrypt_optional(&self.key, &raw.source_ct, &raw.source_nonce) {
                 Ok(opt) => opt,
                 Err(e) => {
                     tracing::warn!(error = %e, id = raw.id, "history row source decrypt failed; skipping row");
+                    skipped_rows += 1;
                     continue;
                 }
             };
@@ -260,6 +293,7 @@ impl History {
                 Ok(opt) => opt,
                 Err(e) => {
                     tracing::warn!(error = %e, id = raw.id, "history row result decrypt failed; skipping row");
+                    skipped_rows += 1;
                     continue;
                 }
             };
@@ -277,7 +311,16 @@ impl History {
                 out.push(entry);
             }
         }
-        Ok(out)
+        let health = if skipped_rows == 0 {
+            HistoryHealth::Healthy
+        } else {
+            self.integrity_failed.store(true, Ordering::Release);
+            HistoryHealth::Corrupt { skipped_rows }
+        };
+        Ok(HistoryQueryResult {
+            entries: out,
+            health,
+        })
     }
 
     pub fn delete(&self, id: i64) -> Result<(), TranslateError> {
@@ -288,14 +331,22 @@ impl History {
         })
     }
 
-    /// Wipe every row. Spec §7: "Clear all deletes all rows but leaves
-    /// the encryption key in place." The keyfile is untouched.
+    /// Secure-delete every row from the active database, compact it, and
+    /// checkpoint its WAL. The encryption key is untouched. This does not
+    /// make claims about copies in filesystem snapshots or external backups.
     pub fn clear_all(&self) -> Result<(), TranslateError> {
         self.with_conn(|conn| {
-            conn.execute("DELETE FROM entries", [])
-                .map_err(|e| TranslateError::History(format!("clear_all: {e}")))?;
+            conn.execute_batch(
+                "PRAGMA secure_delete = ON;
+                 DELETE FROM entries;
+                 VACUUM;
+                 PRAGMA wal_checkpoint(TRUNCATE);",
+            )
+            .map_err(|e| TranslateError::History(format!("secure clear_all: {e}")))?;
             Ok(())
-        })
+        })?;
+        self.integrity_failed.store(false, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -573,8 +624,10 @@ mod tests {
     }
 
     #[test]
-    fn query_skips_half_null_ciphertext_rows() {
+    fn query_reports_corrupt_rows_and_disables_subsequent_writes() {
         let h = History::in_memory(test_key()).unwrap();
+        h.insert(fixture_entry("translate", "healthy", "row"))
+            .unwrap();
         {
             let conn = h.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
@@ -583,7 +636,7 @@ mod tests {
                   source_ciphertext, source_nonce, result_ciphertext, result_nonce)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL)",
                 rusqlite::params![
-                    1_700_000_000i64,
+                    1_700_000_001i64,
                     "translate",
                     "en",
                     "de",
@@ -594,8 +647,15 @@ mod tests {
             .unwrap();
         }
 
-        let rows = h.query(&QueryFilter::default(), 100).unwrap();
-        assert!(rows.is_empty(), "corrupt half-NULL rows are skipped");
+        let result = h.query(&QueryFilter::default(), 100).unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.health, HistoryHealth::Corrupt { skipped_rows: 1 });
+
+        let err = h
+            .insert(fixture_entry("translate", "must not", "persist"))
+            .unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+        assert_eq!(h.count().unwrap(), 2);
     }
 
     #[test]
@@ -613,18 +673,48 @@ mod tests {
     }
 
     #[test]
-    fn clear_all_removes_every_row_but_preserves_the_db() {
-        let h = History::in_memory(test_key()).unwrap();
+    fn clear_all_securely_removes_rows_and_compacts_database() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("history.db");
+        let h = History::open(&db, test_key()).unwrap();
+        h.with_conn(|conn| {
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+                .map_err(|e| TranslateError::History(format!("enable WAL for test: {e}")))?;
+            assert_eq!(mode.to_lowercase(), "wal");
+            Ok(())
+        })
+        .unwrap();
         for _ in 0..3 {
-            h.insert(fixture_entry("translate", "x", "y")).unwrap();
+            h.insert(fixture_entry(
+                "translate",
+                "recognizable plaintext source",
+                "recognizable plaintext result",
+            ))
+            .unwrap();
         }
         assert_eq!(h.count().unwrap(), 3);
+
         h.clear_all().unwrap();
+
         assert_eq!(h.count().unwrap(), 0);
-        // After clear, new inserts still work.
-        h.insert(fixture_entry("translate", "after", "clear"))
-            .unwrap();
-        assert_eq!(h.count().unwrap(), 1);
+        h.with_conn(|conn| {
+            let secure_delete: i64 = conn
+                .query_row("PRAGMA secure_delete", [], |row| row.get(0))
+                .map_err(|e| TranslateError::History(format!("secure_delete check: {e}")))?;
+            assert_eq!(secure_delete, 1);
+            let (busy, log_frames, checkpointed): (i64, i64, i64) = conn
+                .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(|e| TranslateError::History(format!("checkpoint check: {e}")))?;
+            assert_eq!(busy, 0);
+            assert_eq!(log_frames, checkpointed);
+            conn.execute_batch("VACUUM;")
+                .map_err(|e| TranslateError::History(format!("post-clear vacuum: {e}")))?;
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

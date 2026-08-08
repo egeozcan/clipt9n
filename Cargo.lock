@@ -900,6 +900,7 @@ dependencies = [
  "egui_kittest",
  "global-hotkey",
  "keyring",
+ "libc",
  "minijinja",
  "notify-rust",
  "rand 0.8.6",

@@ -60,27 +60,45 @@ fn main() -> anyhow::Result<()> {
         Option<std::sync::Arc<clipt9n::history::store::History>>,
         bool,
     ) = if cfg.history.enabled {
-        match clipt9n::history::crypto::load_and_derive_with_keychain_fallback(
+        match clipt9n::secrets::provision_history_key(
             &keyfile_path,
             &cfg.provider.api_key.service,
             "history-key",
         ) {
-            Ok(key) => match clipt9n::history::store::History::open(&history_path, key) {
-                Ok(h) => (Some(std::sync::Arc::new(h)), false),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        path = %history_path.display(),
-                        "history open failed; running with history disabled"
-                    );
-                    (None, true)
+            Ok(provisioned) => {
+                match &provisioned.state {
+                    clipt9n::secrets::HistoryKeyProvisionState::MigratedLegacy {
+                        recovery_path,
+                    } => tracing::warn!(
+                        path = %recovery_path.display(),
+                        "history key migrated and legacy key retained as owner-only recovery file"
+                    ),
+                    clipt9n::secrets::HistoryKeyProvisionState::LegacyFallback { reason } => {
+                        tracing::warn!(reason, "history keychain unavailable; using secure legacy key for this session")
+                    }
+                    clipt9n::secrets::HistoryKeyProvisionState::KeychainCreated => {
+                        tracing::info!("new history key provisioned and verified in keychain")
+                    }
+                    clipt9n::secrets::HistoryKeyProvisionState::KeychainPresent => {}
                 }
-            },
+                match clipt9n::history::crypto::derive_key(&provisioned.secret)
+                    .and_then(|key| clipt9n::history::store::History::open(&history_path, key))
+                {
+                    Ok(h) => (Some(std::sync::Arc::new(h)), false),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %history_path.display(),
+                            "history open failed; running with history disabled"
+                        );
+                        (None, true)
+                    }
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    path = %keyfile_path.display(),
-                    "history keyfile load failed; running with history disabled"
+                    "history key provisioning failed; running with history disabled"
                 );
                 (None, true)
             }
@@ -370,22 +388,6 @@ fn main() -> anyhow::Result<()> {
             _ => None,
         }
     };
-
-    // M6: keyfile-to-keychain migration (one-shot, idempotent).
-    if clipt9n::secrets::keychain_probe(&cfg.provider.api_key.service) {
-        match clipt9n::secrets::migrate_keyfile_to_keychain(
-            &keyfile_path,
-            &cfg.provider.api_key.service,
-            "history-key",
-        ) {
-            Ok(true) => tracing::info!(
-                "M5 keyfile migrated to keychain; original file left in place \
-                 (delete manually after verifying the keychain entry)"
-            ),
-            Ok(false) => {} // nothing to do
-            Err(e) => tracing::warn!(error = %e, "keyfile migration failed; M5 path still works"),
-        }
-    }
 
     // M7: Determine tray visibility before entering the eframe closure.
     // We need to load state here (before state_path moves into the closure).

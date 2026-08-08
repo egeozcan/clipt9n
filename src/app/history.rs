@@ -24,8 +24,15 @@ impl super::ClipApp {
                 &crate::history::store::QueryFilter::default(),
                 self.cfg.history.max_entries,
             ) {
-                Ok(rows) => {
-                    model.entries = rows;
+                Ok(result) => {
+                    model.entries = result.entries;
+                    if matches!(
+                        result.health,
+                        crate::history::store::HistoryHealth::Corrupt { .. }
+                    ) {
+                        self.history_disabled
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "history query failed; viewer will show empty");
@@ -193,8 +200,16 @@ impl super::ClipApp {
                 &crate::history::store::QueryFilter::default(),
                 self.cfg.history.max_entries,
             ) {
-                Ok(rows) => {
-                    model.entries = rows;
+                Ok(result) => {
+                    model.entries = result.entries;
+                    if matches!(
+                        result.health,
+                        crate::history::store::HistoryHealth::Corrupt { .. }
+                    ) {
+                        self.history_disabled
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        model.show_corruption_banner = true;
+                    }
                     if model.selected >= model.entries.len() {
                         model.selected = 0;
                     }

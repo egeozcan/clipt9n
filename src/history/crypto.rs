@@ -73,23 +73,28 @@ pub fn decrypt(
 /// caller may still want the existing file's bytes for forensic
 /// purposes even if they're corrupt).
 pub fn load_or_create_keyfile(path: &Path) -> Result<Zeroizing<[u8; 32]>, TranslateError> {
-    if path.exists() {
-        let bytes = std::fs::read(path).map_err(|e| {
-            TranslateError::History(format!("reading keyfile {}: {e}", path.display()))
-        })?;
-        if bytes.len() != 32 {
-            return Err(TranslateError::History(format!(
-                "keyfile at {} has wrong size: expected 32 bytes, got {}",
-                path.display(),
-                bytes.len()
-            )));
+    match crate::platform::secure_read_file(path) {
+        Ok(bytes) => {
+            if bytes.len() != 32 {
+                return Err(TranslateError::History(format!(
+                    "keyfile at {} has wrong size: expected 32 bytes, got {}",
+                    path.display(),
+                    bytes.len()
+                )));
+            }
+            let mut secret = Zeroizing::new([0u8; 32]);
+            secret.copy_from_slice(&bytes);
+            return Ok(secret);
         }
-        let mut secret = Zeroizing::new([0u8; 32]);
-        secret.copy_from_slice(&bytes);
-        return Ok(secret);
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(TranslateError::History(format!(
+                "securely reading keyfile {}: {e}",
+                path.display()
+            )))
+        }
     }
 
-    // Create.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             TranslateError::History(format!("creating parent dir {}: {e}", parent.display()))
@@ -97,20 +102,14 @@ pub fn load_or_create_keyfile(path: &Path) -> Result<Zeroizing<[u8; 32]>, Transl
     }
     let mut secret = Zeroizing::new([0u8; 32]);
     OsRng.fill_bytes(secret.as_mut());
-    std::fs::write(path, secret.as_slice())
-        .map_err(|e| TranslateError::History(format!("writing keyfile {}: {e}", path.display())))?;
-    set_keyfile_permissions(path)?;
+    crate::platform::secure_atomic_write(path, secret.as_slice()).map_err(|e| {
+        TranslateError::History(format!("securely writing keyfile {}: {e}", path.display()))
+    })?;
     tracing::warn!(
         path = %path.display(),
-        "history-key created at {}; M6 will migrate this to OS keychain",
-        path.display()
+        "history key created in legacy owner-only file; migrate it to the OS keychain"
     );
     Ok(secret)
-}
-
-fn set_keyfile_permissions(path: &Path) -> Result<(), TranslateError> {
-    crate::platform::set_owner_only_permissions(path)
-        .map_err(|e| TranslateError::History(format!("chmod 0o600 on {}: {e}", path.display())))
 }
 
 /// Convenience: load (or create) the keyfile and immediately derive
@@ -248,6 +247,16 @@ mod tests {
         let s1 = load_or_create_keyfile(&kf).unwrap();
         let s2 = load_or_create_keyfile(&kf).unwrap();
         assert_eq!(s1.as_slice(), s2.as_slice());
+    }
+
+    #[test]
+    fn keyfile_rejects_symlink_destination() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target");
+        let kf = dir.path().join(".history-key");
+        crate::platform::create_file_symlink_for_test(&target, &kf).unwrap();
+        let err = load_or_create_keyfile(&kf).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
     }
 
     #[test]

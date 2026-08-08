@@ -5,7 +5,7 @@ use crate::{error::TranslateError, platform::Platform};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-const RESULT_PREVIEW_MAX_CHARS: usize = 120;
+const ERROR_PRESENTATION_MAX_CHARS: usize = 512;
 
 static NOTIFICATION_APPLICATION_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -15,19 +15,19 @@ static NOTIFICATION_APPLICATION_RESULT: OnceLock<Result<(), String>> = OnceLock:
 pub fn translation_copied(action_label: &str, translated: &str) -> Result<(), TranslateError> {
     show(
         "Translation copied",
-        &translation_copied_body(action_label, translated),
+        &translation_copied_body(action_label, translated, false),
         3500,
     )
 }
 
 /// Show a translation-failure toast.
 pub fn translation_failed(err: &TranslateError) -> Result<(), TranslateError> {
-    show("Translation failed", &err.to_string(), 4000)
+    show("Translation failed", &error_presentation(err), 4000)
 }
 
 /// Show a selected-text capture failure toast.
 pub fn selection_capture_failed(err: &TranslateError) -> Result<(), TranslateError> {
-    show("No selected text copied", &err.to_string(), 3000)
+    show("No selected text copied", &error_presentation(err), 3000)
 }
 
 /// Show a notification when inline replacement failed because slot is not inlineable.
@@ -59,23 +59,29 @@ fn notification_error<E: std::fmt::Display>(e: E) -> TranslateError {
     TranslateError::Config(format!("notification failed: {e}"))
 }
 
-fn translation_copied_body(action_label: &str, translated: &str) -> String {
-    let preview = notification_preview(translated);
-    if preview.is_empty() {
-        action_label.to_string()
-    } else {
-        format!("{action_label}\n{preview}")
-    }
+fn translation_copied_body(
+    action_label: &str,
+    _translated: &str,
+    _include_preview: bool,
+) -> String {
+    action_label.to_string()
 }
 
-fn notification_preview(text: &str) -> String {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = collapsed.chars();
-    let preview: String = chars.by_ref().take(RESULT_PREVIEW_MAX_CHARS).collect();
+fn error_presentation(err: &TranslateError) -> String {
+    let sanitized = err
+        .to_string()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = sanitized.chars();
+    let bounded: String = chars.by_ref().take(ERROR_PRESENTATION_MAX_CHARS).collect();
     if chars.next().is_some() {
-        format!("{preview}…")
+        format!("{bounded}…")
     } else {
-        preview
+        bounded
     }
 }
 
@@ -112,23 +118,25 @@ mod tests {
     }
 
     #[test]
-    fn translation_copied_body_includes_action_and_result_preview() {
-        let body = super::translation_copied_body(
-            "Translate to Deutsch",
-            "Das ist\n\n eine   kurze Vorschau.",
-        );
-
-        assert_eq!(body, "Translate to Deutsch\nDas ist eine kurze Vorschau.");
+    fn translation_notification_omits_result_text_by_default() {
+        let body =
+            super::translation_copied_body("Translate to Deutsch", "private medical text", false);
+        assert_eq!(body, "Translate to Deutsch");
+        assert!(!body.contains("medical"));
     }
 
     #[test]
-    fn translation_preview_is_truncated_with_ellipsis() {
-        let body = super::translation_copied_body("Rewrite for clarity", &"x".repeat(130));
+    fn error_presentation_is_bounded_and_sanitized() {
+        let message = format!("{}\u{1b}[31m\u{7}", "x".repeat(100 * 1024));
+        let err = crate::error::TranslateError::Provider {
+            status: 500,
+            message,
+        };
+        let presented = super::error_presentation(&err);
 
-        assert_eq!(
-            body.chars().count(),
-            "Rewrite for clarity\n".chars().count() + 121
-        );
-        assert!(body.ends_with('…'));
+        assert!(presented.chars().count() <= super::ERROR_PRESENTATION_MAX_CHARS + 1);
+        assert!(!presented
+            .chars()
+            .any(|c| c.is_control() && !c.is_whitespace()));
     }
 }
