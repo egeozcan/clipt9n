@@ -568,8 +568,8 @@ impl Config {
             .map_err(|e| TranslateError::Config(format!("reading {}: {e}", path.display())))?;
         let mut cfg: Self = toml::from_str(&contents)
             .map_err(|e| TranslateError::Config(format!("parsing {}: {e}", path.display())))?;
-        cfg.validate()?;
         cfg.normalize();
+        cfg.validate()?;
         Ok(cfg)
     }
 
@@ -1268,6 +1268,51 @@ default_slot = 3
         assert_eq!(loaded.hotkey.selection.key, "K");
         assert_eq!(loaded.glossary.matching, "substring");
         assert!(!loaded.history.store_text);
+    }
+
+    #[test]
+    fn load_normalizes_stale_ollama_url_after_switch_to_openai() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[provider]
+type = "openai"
+model = "llama3.2"
+base_url = "http://localhost:11434/v1"
+
+[provider.api_key]
+account = "ollama"
+"#
+        )
+        .unwrap();
+
+        let cfg = Config::load(file.path()).unwrap();
+
+        assert_eq!(cfg.provider.kind, "openai");
+        assert_eq!(cfg.provider.model, "gpt-4o-mini");
+        assert_eq!(cfg.provider.base_url, "https://api.openai.com/v1");
+        assert_eq!(cfg.provider.api_key.account, "openai");
+    }
+
+    #[test]
+    fn load_rejects_custom_loopback_http_for_openai() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[provider]
+type = "openai"
+base_url = "http://localhost:9999/custom"
+"#
+        )
+        .unwrap();
+
+        let err = Config::load(file.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("local provider profiles"),
+            "error: {err}"
+        );
     }
 
     #[test]
