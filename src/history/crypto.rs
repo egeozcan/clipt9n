@@ -226,6 +226,9 @@ mod tests {
 
     #[test]
     fn keyfile_creates_with_owner_only_perms_on_first_open() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let kf = dir.path().join(".history-key");
         assert!(!kf.exists(), "precondition: keyfile must not exist");
@@ -242,6 +245,9 @@ mod tests {
 
     #[test]
     fn keyfile_is_stable_across_reopens() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let kf = dir.path().join(".history-key");
         let s1 = load_or_create_keyfile(&kf).unwrap();
@@ -251,6 +257,9 @@ mod tests {
 
     #[test]
     fn keyfile_rejects_symlink_destination() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("target");
         let kf = dir.path().join(".history-key");
@@ -270,6 +279,9 @@ mod tests {
 
     #[test]
     fn load_or_create_creates_parent_dir_if_missing() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let nested = dir.path().join("does/not/exist/.history-key");
         let _ = load_or_create_keyfile(&nested).unwrap();

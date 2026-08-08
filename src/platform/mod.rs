@@ -191,6 +191,37 @@ pub(crate) fn secure_read_file(_path: &std::path::Path) -> Result<Vec<u8>, std::
     ))
 }
 
+/// Probe an optional legacy secret file without making keychain-only first
+/// run depend on file-backed secret support. `Ok(None)` means the path is
+/// absent; an existing path that cannot be read securely is an error.
+#[cfg(unix)]
+pub(crate) fn probe_secure_legacy_file(
+    path: &std::path::Path,
+) -> Result<Option<Vec<u8>>, std::io::Error> {
+    match secure_read_file(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn probe_secure_legacy_file(
+    path: &std::path::Path,
+) -> Result<Option<Vec<u8>>, std::io::Error> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "legacy secret exists at {} but secure file-backed secret storage is unavailable on this platform; move it to a Unix host for recovery",
+                path.display()
+            ),
+        )),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(unix)]
 fn secure_atomic_write_impl(
     path: &std::path::Path,
@@ -254,6 +285,16 @@ pub(crate) fn create_file_symlink_for_test(
     link: &std::path::Path,
 ) -> Result<(), std::io::Error> {
     std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn secure_file_storage_supported_for_test() -> bool {
+    true
+}
+
+#[cfg(all(test, not(unix)))]
+pub(crate) fn secure_file_storage_supported_for_test() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -360,6 +401,19 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new");
         assert!(!source.exists());
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn optional_legacy_probe_distinguishes_absent_from_unsupported_existing_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".history-key");
+        assert_eq!(probe_secure_legacy_file(&path).unwrap(), None);
+
+        std::fs::write(&path, [7u8; 32]).unwrap();
+        let err = probe_secure_legacy_file(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(err.to_string().contains("legacy secret exists"));
     }
 
     #[test]

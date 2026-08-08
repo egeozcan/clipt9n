@@ -181,34 +181,40 @@ impl History {
     /// the new row's `id` (test convenience; production callers don't
     /// usually consume it).
     pub fn insert(&self, entry: NewEntry) -> Result<i64, TranslateError> {
+        self.insert_with_before_lock(entry, || {})
+    }
+
+    fn insert_with_before_lock(
+        &self,
+        entry: NewEntry,
+        before_lock: impl FnOnce(),
+    ) -> Result<i64, TranslateError> {
         if self.integrity_failed.load(Ordering::Acquire) {
-            return Err(TranslateError::History(
-                "writes disabled after a history integrity failure".into(),
-            ));
+            return Err(writes_disabled_error());
         }
         let (source_ct, source_nonce) = encrypt_optional(&self.key, entry.source.as_deref())?;
         let (result_ct, result_nonce) = encrypt_optional(&self.key, entry.result.as_deref())?;
+        before_lock();
         self.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO entries
-                 (created_at, action, source_lang, target_lang, char_count,
-                  source_ciphertext, source_nonce, result_ciphertext, result_nonce)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                rusqlite::params![
-                    entry.created_at,
-                    entry.action,
-                    entry.source_lang,
-                    entry.target_lang,
-                    entry.char_count,
-                    source_ct,
-                    source_nonce.as_ref().map(|n| &n[..]),
-                    result_ct,
-                    result_nonce.as_ref().map(|n| &n[..]),
-                ],
+            ensure_writes_enabled(&self.integrity_failed)?;
+            insert_encrypted(
+                conn,
+                entry,
+                source_ct,
+                source_nonce,
+                result_ct,
+                result_nonce,
             )
-            .map_err(|e| TranslateError::History(format!("insert: {e}")))?;
-            Ok(conn.last_insert_rowid())
         })
+    }
+
+    #[cfg(test)]
+    fn insert_with_before_lock_for_test(
+        &self,
+        entry: NewEntry,
+        before_lock: impl FnOnce(),
+    ) -> Result<i64, TranslateError> {
+        self.insert_with_before_lock(entry, before_lock)
     }
 
     /// Insert with retention cap. After insert, prune by `created_at`
@@ -220,10 +226,23 @@ impl History {
         entry: NewEntry,
         max_entries: usize,
     ) -> Result<i64, TranslateError> {
-        let id = self.insert(entry)?;
+        if self.integrity_failed.load(Ordering::Acquire) {
+            return Err(writes_disabled_error());
+        }
+        let (source_ct, source_nonce) = encrypt_optional(&self.key, entry.source.as_deref())?;
+        let (result_ct, result_nonce) = encrypt_optional(&self.key, entry.result.as_deref())?;
         self.with_conn(|conn| {
-            // SQLite supports DELETE with subquery; this prunes any entries
-            // beyond the newest `max_entries`.
+            ensure_writes_enabled(&self.integrity_failed)?;
+            let id = insert_encrypted(
+                conn,
+                entry,
+                source_ct,
+                source_nonce,
+                result_ct,
+                result_nonce,
+            )?;
+            // The latch cannot transition while this connection guard is held,
+            // so insert and retention pruning are one integrity-critical region.
             conn.execute(
                 "DELETE FROM entries
                  WHERE id NOT IN (
@@ -234,9 +253,8 @@ impl History {
                 rusqlite::params![max_entries as i64],
             )
             .map_err(|e| TranslateError::History(format!("prune: {e}")))?;
-            Ok(())
-        })?;
-        Ok(id)
+            Ok(id)
+        })
     }
 
     /// Read up to `limit` newest rows that match `filter`. Decryption
@@ -247,7 +265,10 @@ impl History {
         filter: &QueryFilter,
         limit: usize,
     ) -> Result<HistoryQueryResult, TranslateError> {
-        let rows = self.with_conn(|conn| {
+        // Fetch, authenticate/decrypt, and latch corruption under the same
+        // connection guard. This gives the latch transition a clear ordering
+        // against every mutating SQL operation.
+        self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, created_at, action, source_lang, target_lang, char_count,
@@ -275,56 +296,57 @@ impl History {
                 .map_err(|e| TranslateError::History(format!("query: {e}")))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| TranslateError::History(format!("query row: {e}")))?;
-            Ok(rows)
-        })?;
 
-        let mut out = Vec::new();
-        let mut skipped_rows = 0usize;
-        for raw in rows {
-            let source = match decrypt_optional(&self.key, &raw.source_ct, &raw.source_nonce) {
-                Ok(opt) => opt,
-                Err(e) => {
-                    tracing::warn!(error = %e, id = raw.id, "history row source decrypt failed; skipping row");
-                    skipped_rows += 1;
-                    continue;
+            let mut out = Vec::new();
+            let mut skipped_rows = 0usize;
+            for raw in rows {
+                let source = match decrypt_optional(&self.key, &raw.source_ct, &raw.source_nonce) {
+                    Ok(opt) => opt,
+                    Err(e) => {
+                        tracing::warn!(error = %e, id = raw.id, "history row source decrypt failed; skipping row");
+                        skipped_rows += 1;
+                        continue;
+                    }
+                };
+                let result =
+                    match decrypt_optional(&self.key, &raw.result_ct, &raw.result_nonce) {
+                        Ok(opt) => opt,
+                        Err(e) => {
+                            tracing::warn!(error = %e, id = raw.id, "history row result decrypt failed; skipping row");
+                            skipped_rows += 1;
+                            continue;
+                        }
+                    };
+                let entry = HistoryEntry {
+                    id: raw.id,
+                    created_at: raw.created_at,
+                    action: raw.action,
+                    source_lang: raw.source_lang,
+                    target_lang: raw.target_lang,
+                    char_count: raw.char_count,
+                    source,
+                    result,
+                };
+                if filter_matches(&entry, filter) {
+                    out.push(entry);
                 }
-            };
-            let result = match decrypt_optional(&self.key, &raw.result_ct, &raw.result_nonce) {
-                Ok(opt) => opt,
-                Err(e) => {
-                    tracing::warn!(error = %e, id = raw.id, "history row result decrypt failed; skipping row");
-                    skipped_rows += 1;
-                    continue;
-                }
-            };
-            let entry = HistoryEntry {
-                id: raw.id,
-                created_at: raw.created_at,
-                action: raw.action,
-                source_lang: raw.source_lang,
-                target_lang: raw.target_lang,
-                char_count: raw.char_count,
-                source,
-                result,
-            };
-            if filter_matches(&entry, filter) {
-                out.push(entry);
             }
-        }
-        let health = if skipped_rows == 0 {
-            HistoryHealth::Healthy
-        } else {
-            self.integrity_failed.store(true, Ordering::Release);
-            HistoryHealth::Corrupt { skipped_rows }
-        };
-        Ok(HistoryQueryResult {
-            entries: out,
-            health,
+            let health = if skipped_rows == 0 {
+                HistoryHealth::Healthy
+            } else {
+                self.integrity_failed.store(true, Ordering::Release);
+                HistoryHealth::Corrupt { skipped_rows }
+            };
+            Ok(HistoryQueryResult {
+                entries: out,
+                health,
+            })
         })
     }
 
     pub fn delete(&self, id: i64) -> Result<(), TranslateError> {
         self.with_conn(|conn| {
+            ensure_writes_enabled(&self.integrity_failed)?;
             conn.execute("DELETE FROM entries WHERE id = ?1", [id])
                 .map_err(|e| TranslateError::History(format!("delete: {e}")))?;
             Ok(())
@@ -336,6 +358,7 @@ impl History {
     /// make claims about copies in filesystem snapshots or external backups.
     pub fn clear_all(&self) -> Result<(), TranslateError> {
         self.with_conn(|conn| {
+            ensure_writes_enabled(&self.integrity_failed)?;
             conn.execute_batch(
                 "PRAGMA secure_delete = ON;
                  DELETE FROM entries;
@@ -344,10 +367,49 @@ impl History {
             )
             .map_err(|e| TranslateError::History(format!("secure clear_all: {e}")))?;
             Ok(())
-        })?;
-        self.integrity_failed.store(false, Ordering::Release);
+        })
+    }
+}
+
+fn writes_disabled_error() -> TranslateError {
+    TranslateError::History("writes disabled after a history integrity failure".into())
+}
+
+fn ensure_writes_enabled(integrity_failed: &AtomicBool) -> Result<(), TranslateError> {
+    if integrity_failed.load(Ordering::Acquire) {
+        Err(writes_disabled_error())
+    } else {
         Ok(())
     }
+}
+
+fn insert_encrypted(
+    conn: &Connection,
+    entry: NewEntry,
+    source_ct: Option<Vec<u8>>,
+    source_nonce: Option<[u8; 12]>,
+    result_ct: Option<Vec<u8>>,
+    result_nonce: Option<[u8; 12]>,
+) -> Result<i64, TranslateError> {
+    conn.execute(
+        "INSERT INTO entries
+         (created_at, action, source_lang, target_lang, char_count,
+          source_ciphertext, source_nonce, result_ciphertext, result_nonce)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            entry.created_at,
+            entry.action,
+            entry.source_lang,
+            entry.target_lang,
+            entry.char_count,
+            source_ct,
+            source_nonce.as_ref().map(|n| &n[..]),
+            result_ct,
+            result_nonce.as_ref().map(|n| &n[..]),
+        ],
+    )
+    .map_err(|e| TranslateError::History(format!("insert: {e}")))?;
+    Ok(conn.last_insert_rowid())
 }
 
 /// Return type of `encrypt_optional`: (ciphertext, nonce) where both
@@ -502,6 +564,9 @@ mod tests {
 
     #[test]
     fn open_uses_keyfile_via_crypto_module() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         // End-to-end: create keyfile + derive + open. Smoke test that
         // the wiring lines up.
         let dir = TempDir::new().unwrap();
@@ -650,10 +715,69 @@ mod tests {
         let result = h.query(&QueryFilter::default(), 100).unwrap();
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.health, HistoryHealth::Corrupt { skipped_rows: 1 });
+        let healthy_id = result.entries[0].id;
 
         let err = h
             .insert(fixture_entry("translate", "must not", "persist"))
             .unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+        assert!(h
+            .insert_with_cap(fixture_entry("translate", "also must not", "persist"), 100)
+            .unwrap_err()
+            .to_string()
+            .contains("disabled"));
+        assert!(h
+            .delete(healthy_id)
+            .unwrap_err()
+            .to_string()
+            .contains("disabled"));
+        assert!(h.clear_all().unwrap_err().to_string().contains("disabled"));
+        assert_eq!(h.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn insert_waiting_for_connection_rechecks_integrity_latch_before_write() {
+        let h = std::sync::Arc::new(History::in_memory(test_key()).unwrap());
+        h.insert(fixture_entry("translate", "healthy", "row"))
+            .unwrap();
+        {
+            let conn = h.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "INSERT INTO entries
+                 (created_at, action, source_lang, target_lang, char_count,
+                  source_ciphertext, source_nonce, result_ciphertext, result_nonce)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL)",
+                rusqlite::params![
+                    1_700_000_001i64,
+                    "translate",
+                    "en",
+                    "de",
+                    15i64,
+                    b"corrupt".as_slice(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let inserting = std::sync::Arc::clone(&h);
+        let insert_thread = std::thread::spawn(move || {
+            inserting.insert_with_before_lock_for_test(
+                fixture_entry("translate", "must not", "persist"),
+                || {
+                    ready_tx.send(()).unwrap();
+                    continue_rx.recv().unwrap();
+                },
+            )
+        });
+        ready_rx.recv().unwrap();
+
+        let result = h.query(&QueryFilter::default(), 100).unwrap();
+        assert_eq!(result.health, HistoryHealth::Corrupt { skipped_rows: 1 });
+        continue_tx.send(()).unwrap();
+
+        let err = insert_thread.join().unwrap().unwrap_err();
         assert!(err.to_string().contains("disabled"));
         assert_eq!(h.count().unwrap(), 2);
     }
@@ -752,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_undecryptable_with_wrong_key_are_silently_skipped() {
+    fn rows_undecryptable_with_wrong_key_report_corrupt_health() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("history.db");
         {
@@ -763,12 +887,12 @@ mod tests {
         // Reopen with a different key — decrypts fail per row.
         let other_key = derive_key(&Zeroizing::new([99u8; 32])).unwrap();
         let h = History::open(&db, other_key).unwrap();
-        let rows = h.query(&QueryFilter::default(), 100).unwrap();
-        // Per cross-cutting decision §6: per-row decrypt errors → log
-        // warn + skip. Either zero rows returned, or rows with None
-        // source/result. We accept either pattern; choose the simpler
-        // (zero rows = full skip) for M5.
-        assert_eq!(rows.len(), 0, "rows that fail to decrypt are skipped");
+        let result = h.query(&QueryFilter::default(), 100).unwrap();
+        assert!(
+            result.entries.is_empty(),
+            "rows that fail to decrypt are skipped"
+        );
+        assert_eq!(result.health, HistoryHealth::Corrupt { skipped_rows: 1 });
     }
 
     #[test]

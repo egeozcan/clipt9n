@@ -73,6 +73,12 @@ fn main() -> anyhow::Result<()> {
                         path = %recovery_path.display(),
                         "history key migrated and legacy key retained as owner-only recovery file"
                     ),
+                    clipt9n::secrets::HistoryKeyProvisionState::KeychainPresentLegacyRecovered {
+                        recovery_path,
+                    } => tracing::warn!(
+                        path = %recovery_path.display(),
+                        "existing keychain key matched legacy key; legacy key retained as owner-only recovery file"
+                    ),
                     clipt9n::secrets::HistoryKeyProvisionState::LegacyFallback { reason } => {
                         tracing::warn!(reason, "history keychain unavailable; using secure legacy key for this session")
                     }

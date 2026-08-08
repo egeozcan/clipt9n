@@ -69,12 +69,14 @@ fn bounded_sanitized(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let mut chars = sanitized.chars();
-    let bounded: String = chars.by_ref().take(ERROR_DISPLAY_MAX_CHARS).collect();
-    if chars.next().is_some() {
-        format!("{bounded}…")
+    if sanitized.chars().count() <= ERROR_DISPLAY_MAX_CHARS {
+        sanitized
     } else {
-        bounded
+        let bounded: String = sanitized
+            .chars()
+            .take(ERROR_DISPLAY_MAX_CHARS.saturating_sub(1))
+            .collect();
+        format!("{bounded}…")
     }
 }
 
@@ -91,7 +93,7 @@ mod tests {
 
         let displayed = err.to_string();
 
-        assert!(displayed.chars().count() <= ERROR_DISPLAY_MAX_CHARS + 1);
+        assert_eq!(displayed.chars().count(), ERROR_DISPLAY_MAX_CHARS);
         assert!(!displayed
             .chars()
             .any(|c| c.is_control() && !c.is_whitespace()));

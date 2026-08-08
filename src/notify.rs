@@ -76,12 +76,14 @@ fn error_presentation(err: &TranslateError) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let mut chars = sanitized.chars();
-    let bounded: String = chars.by_ref().take(ERROR_PRESENTATION_MAX_CHARS).collect();
-    if chars.next().is_some() {
-        format!("{bounded}…")
+    if sanitized.chars().count() <= ERROR_PRESENTATION_MAX_CHARS {
+        sanitized
     } else {
-        bounded
+        let bounded: String = sanitized
+            .chars()
+            .take(ERROR_PRESENTATION_MAX_CHARS.saturating_sub(1))
+            .collect();
+        format!("{bounded}…")
     }
 }
 
@@ -134,7 +136,10 @@ mod tests {
         };
         let presented = super::error_presentation(&err);
 
-        assert!(presented.chars().count() <= super::ERROR_PRESENTATION_MAX_CHARS + 1);
+        assert_eq!(
+            presented.chars().count(),
+            super::ERROR_PRESENTATION_MAX_CHARS
+        );
         assert!(!presented
             .chars()
             .any(|c| c.is_control() && !c.is_whitespace()));

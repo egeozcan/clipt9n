@@ -139,6 +139,7 @@ impl Secrets for KeychainSecrets {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryKeyProvisionState {
     KeychainPresent,
+    KeychainPresentLegacyRecovered { recovery_path: std::path::PathBuf },
     KeychainCreated,
     MigratedLegacy { recovery_path: std::path::PathBuf },
     LegacyFallback { reason: String },
@@ -187,8 +188,9 @@ impl HistoryKeyStore for KeyringHistoryKeyStore {
 }
 
 /// Provision the history secret before the database is opened. Existing
-/// keychain material wins. A legacy file is migrated only after exact
-/// keychain readback and is retained as an owner-only recovery file.
+/// keychain material is used only after any retained legacy file is securely
+/// compared. Matching legacy material is moved to an owner-only recovery
+/// file; mismatch or unsafe file state fails closed and preserves the source.
 pub fn provision_history_key(
     keyfile_path: &std::path::Path,
     service: &str,
@@ -205,46 +207,76 @@ fn provision_history_key_with_store(
     keyfile_path: &std::path::Path,
     store: &dyn HistoryKeyStore,
 ) -> Result<ProvisionedHistoryKey, TranslateError> {
-    match store.read() {
-        Ok(Some(bytes)) => Ok(ProvisionedHistoryKey {
-            secret: history_secret_from_bytes(&bytes)?,
-            state: HistoryKeyProvisionState::KeychainPresent,
-        }),
-        Ok(None) => provision_missing_keychain_entry(keyfile_path, store),
-        Err(keychain_error) => match crate::platform::secure_read_file(keyfile_path) {
-            Ok(bytes) => Ok(ProvisionedHistoryKey {
+    provision_history_key_with_store_and_probe(
+        keyfile_path,
+        store,
+        crate::platform::probe_secure_legacy_file,
+    )
+}
+
+fn provision_history_key_with_store_and_probe(
+    keyfile_path: &std::path::Path,
+    store: &dyn HistoryKeyStore,
+    probe_legacy: impl FnOnce(&std::path::Path) -> Result<Option<Vec<u8>>, std::io::Error>,
+) -> Result<ProvisionedHistoryKey, TranslateError> {
+    let keychain = store.read();
+    let legacy = probe_legacy(keyfile_path).map_err(|e| {
+        TranslateError::History(format!(
+            "legacy history key cannot be inspected securely: {e}"
+        ))
+    })?;
+
+    match keychain {
+        Ok(Some(bytes)) => provision_with_existing_keychain(keyfile_path, &bytes, legacy),
+        Ok(None) => provision_missing_keychain_entry(keyfile_path, store, legacy),
+        Err(keychain_error) => match legacy {
+            Some(bytes) => Ok(ProvisionedHistoryKey {
                 secret: history_secret_from_bytes(&bytes)?,
                 state: HistoryKeyProvisionState::LegacyFallback {
                     reason: keychain_error.to_string(),
                 },
             }),
-            Err(file_error) if file_error.kind() == std::io::ErrorKind::NotFound => {
-                Err(TranslateError::History(format!(
-                    "history keychain unavailable and no secure legacy key exists: {keychain_error}"
-                )))
-            }
-            Err(file_error) => Err(TranslateError::History(format!(
-                "history keychain unavailable and legacy key cannot be read securely: {file_error}"
+            None => Err(TranslateError::History(format!(
+                "history keychain unavailable and no secure legacy key exists: {keychain_error}"
             ))),
         },
     }
 }
 
+fn provision_with_existing_keychain(
+    keyfile_path: &std::path::Path,
+    keychain_bytes: &[u8],
+    legacy: Option<Vec<u8>>,
+) -> Result<ProvisionedHistoryKey, TranslateError> {
+    let secret = history_secret_from_bytes(keychain_bytes)?;
+    let state = match legacy {
+        None => HistoryKeyProvisionState::KeychainPresent,
+        Some(legacy_bytes) => {
+            let legacy_secret = history_secret_from_bytes(&legacy_bytes)?;
+            if legacy_secret.as_slice() != secret.as_slice() {
+                return Err(TranslateError::History(
+                    "legacy history key does not match the existing keychain entry; original file preserved"
+                        .into(),
+                ));
+            }
+            let recovery_path = recover_legacy_keyfile(keyfile_path)?;
+            HistoryKeyProvisionState::KeychainPresentLegacyRecovered { recovery_path }
+        }
+    };
+    Ok(ProvisionedHistoryKey { secret, state })
+}
+
 fn provision_missing_keychain_entry(
     keyfile_path: &std::path::Path,
     store: &dyn HistoryKeyStore,
+    legacy: Option<Vec<u8>>,
 ) -> Result<ProvisionedHistoryKey, TranslateError> {
-    let (secret, had_legacy) = match crate::platform::secure_read_file(keyfile_path) {
-        Ok(bytes) => (history_secret_from_bytes(&bytes)?, true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let (secret, had_legacy) = match legacy {
+        Some(bytes) => (history_secret_from_bytes(&bytes)?, true),
+        None => {
             let mut secret = Zeroizing::new([0u8; 32]);
             rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, secret.as_mut());
             (secret, false)
-        }
-        Err(e) => {
-            return Err(TranslateError::History(format!(
-                "legacy history key cannot be read securely: {e}"
-            )))
         }
     };
 
@@ -259,26 +291,30 @@ fn provision_missing_keychain_entry(
     }
 
     let state = if had_legacy {
-        let recovery_path = keyfile_path.with_file_name(format!(
-            "{}.recovery",
-            keyfile_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(".history-key")
-        ));
-        crate::platform::rename_legacy_key_to_recovery(keyfile_path, &recovery_path).map_err(
-            |e| {
-                TranslateError::History(format!(
-                    "history key migrated but legacy recovery rename failed: {e}"
-                ))
-            },
-        )?;
-        HistoryKeyProvisionState::MigratedLegacy { recovery_path }
+        HistoryKeyProvisionState::MigratedLegacy {
+            recovery_path: recover_legacy_keyfile(keyfile_path)?,
+        }
     } else {
         HistoryKeyProvisionState::KeychainCreated
     };
 
     Ok(ProvisionedHistoryKey { secret, state })
+}
+
+fn recover_legacy_keyfile(
+    keyfile_path: &std::path::Path,
+) -> Result<std::path::PathBuf, TranslateError> {
+    let recovery_path = keyfile_path.with_file_name(format!(
+        "{}.recovery",
+        keyfile_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(".history-key")
+    ));
+    crate::platform::rename_legacy_key_to_recovery(keyfile_path, &recovery_path).map_err(|e| {
+        TranslateError::History(format!("legacy history key recovery rename failed: {e}"))
+    })?;
+    Ok(recovery_path)
 }
 
 /// Read a 32-byte binary history secret from the OS keychain.
@@ -528,6 +564,9 @@ mod tests {
 
     #[test]
     fn api_key_file_is_owner_only_immediately_after_creation() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("api-key");
         FileSecrets::new(path.clone())
@@ -538,6 +577,9 @@ mod tests {
 
     #[test]
     fn api_key_write_rejects_symlink_destination() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let target = dir.path().join("target");
         let link = dir.path().join("api-key");
@@ -550,6 +592,9 @@ mod tests {
 
     #[test]
     fn api_key_write_rejects_non_regular_destination() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("api-key");
         std::fs::create_dir(&path).unwrap();
@@ -561,6 +606,9 @@ mod tests {
 
     #[test]
     fn api_key_write_propagates_injected_permission_failure() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let file = FileSecrets::new(dir.path().join("api-key"));
         let err = file
@@ -574,6 +622,9 @@ mod tests {
 
     #[test]
     fn api_key_write_propagates_injected_rename_failure() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let file = FileSecrets::new(dir.path().join("api-key"));
         let err = file
@@ -632,7 +683,101 @@ mod tests {
     }
 
     #[test]
+    fn history_key_provision_creates_keychain_key_when_legacy_is_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join(".history-key");
+        let store = FakeHistoryKeyStore {
+            secret: std::sync::Mutex::new(None),
+            unavailable: false,
+            readback_override: None,
+        };
+
+        let provisioned =
+            provision_history_key_with_store_and_probe(&legacy, &store, |_| Ok(None)).unwrap();
+
+        assert_eq!(provisioned.state, HistoryKeyProvisionState::KeychainCreated);
+        assert_eq!(
+            store.secret.lock().unwrap().as_deref(),
+            Some(provisioned.secret.as_slice())
+        );
+    }
+
+    #[test]
+    fn history_key_provision_recovers_matching_legacy_when_keychain_present() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join(".history-key");
+        crate::platform::secure_atomic_write(&legacy, &[7u8; 32]).unwrap();
+        let store = FakeHistoryKeyStore {
+            secret: std::sync::Mutex::new(Some(vec![7u8; 32])),
+            unavailable: false,
+            readback_override: None,
+        };
+
+        let provisioned = provision_history_key_with_store(&legacy, &store).unwrap();
+        let recovery = dir.path().join(".history-key.recovery");
+
+        assert_eq!(
+            provisioned.state,
+            HistoryKeyProvisionState::KeychainPresentLegacyRecovered {
+                recovery_path: recovery.clone(),
+            }
+        );
+        assert!(!legacy.exists());
+        assert_eq!(
+            crate::platform::secure_read_file(&recovery).unwrap(),
+            vec![7u8; 32]
+        );
+    }
+
+    #[test]
+    fn history_key_provision_rejects_mismatched_legacy_when_keychain_present() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join(".history-key");
+        crate::platform::secure_atomic_write(&legacy, &[8u8; 32]).unwrap();
+        let store = FakeHistoryKeyStore {
+            secret: std::sync::Mutex::new(Some(vec![7u8; 32])),
+            unavailable: false,
+            readback_override: None,
+        };
+
+        let err = provision_history_key_with_store(&legacy, &store).unwrap_err();
+
+        assert!(err.to_string().contains("does not match"));
+        assert!(legacy.exists());
+        assert!(!dir.path().join(".history-key.recovery").exists());
+    }
+
+    #[test]
+    fn history_key_provision_rejects_unsafe_legacy_when_keychain_present() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join(".history-key");
+        std::fs::create_dir(&legacy).unwrap();
+        let store = FakeHistoryKeyStore {
+            secret: std::sync::Mutex::new(Some(vec![7u8; 32])),
+            unavailable: false,
+            readback_override: None,
+        };
+
+        let err = provision_history_key_with_store(&legacy, &store).unwrap_err();
+
+        assert!(err.to_string().contains("securely"));
+        assert!(legacy.is_dir());
+    }
+
+    #[test]
     fn history_key_provision_migrates_legacy_only_after_verified_readback() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let legacy = dir.path().join(".history-key");
         crate::platform::secure_atomic_write(&legacy, &[8u8; 32]).unwrap();
@@ -661,6 +806,9 @@ mod tests {
 
     #[test]
     fn history_key_provision_uses_secure_legacy_when_keychain_unavailable() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let legacy = dir.path().join(".history-key");
         crate::platform::secure_atomic_write(&legacy, &[9u8; 32]).unwrap();
@@ -682,6 +830,9 @@ mod tests {
 
     #[test]
     fn history_key_migration_keeps_legacy_when_keychain_readback_mismatches() {
+        if !crate::platform::secure_file_storage_supported_for_test() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let legacy = dir.path().join(".history-key");
         crate::platform::secure_atomic_write(&legacy, &[10u8; 32]).unwrap();
