@@ -4,35 +4,27 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use crate::error::TranslateError;
-use crate::platform::Platform;
+use crate::platform::{DestinationIdentity, Platform};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesktopTarget(TargetIdentity);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TargetIdentity {
-    Process(i32),
-    Unsupported,
-}
+pub struct DesktopTarget(Option<DestinationIdentity>);
 
 impl DesktopTarget {
-    fn from_pid(pid: Option<i32>) -> Self {
-        match pid {
-            Some(pid) => Self(TargetIdentity::Process(pid)),
-            None => Self(TargetIdentity::Unsupported),
-        }
+    fn from_identity(identity: Option<DestinationIdentity>) -> Self {
+        Self(identity)
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(id: u64) -> Self {
-        Self(TargetIdentity::Process(
-            id.try_into().expect("test target fits i32"),
-        ))
+    pub(crate) fn for_test(process_id: i32, destination_id: u64) -> Self {
+        Self(Some(DestinationIdentity::for_test(
+            process_id,
+            destination_id,
+        )))
     }
 
     #[cfg(test)]
     pub(crate) fn unsupported() -> Self {
-        Self(TargetIdentity::Unsupported)
+        Self(None)
     }
 }
 
@@ -228,7 +220,7 @@ fn capture_selection_with<C: DesktopClipboard, P: Platform>(
 ) -> Result<SelectionSnapshot, TranslateError> {
     // Destination identity must be captured before Copy: Copy itself can
     // trigger focus changes in applications with custom clipboard handling.
-    let target = DesktopTarget::from_pid(platform.frontmost_app_pid());
+    let target = DesktopTarget::from_identity(platform.active_destination_identity());
     let original = clipboard.snapshot()?;
     let original_text = original.text().map(String::from);
     let before_change_count = platform.clipboard_change_count();
@@ -257,13 +249,13 @@ fn paste_if_target_current_with<P: Platform>(
     platform: &P,
     target: &DesktopTarget,
 ) -> Result<PasteDisposition, TranslateError> {
-    let TargetIdentity::Process(expected_pid) = target.0 else {
+    let Some(expected_destination) = target.0.as_ref() else {
         return Ok(PasteDisposition::Unsupported);
     };
-    let Some(current_pid) = platform.frontmost_app_pid() else {
+    let Some(current_destination) = platform.active_destination_identity() else {
         return Ok(PasteDisposition::Unsupported);
     };
-    if current_pid != expected_pid {
+    if &current_destination != expected_destination {
         return Ok(PasteDisposition::TargetChanged);
     }
 
@@ -274,8 +266,8 @@ fn paste_if_target_current_with<P: Platform>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::Platform;
-    use std::cell::Cell;
+    use crate::platform::{DestinationIdentity, Platform};
+    use std::cell::{Cell, RefCell};
     use std::time::Duration;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -352,7 +344,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakePlatform {
-        current_pid: Cell<Option<i32>>,
+        current_destination: RefCell<Option<DestinationIdentity>>,
         paste_count: Cell<usize>,
         change_count: Cell<i64>,
         suppress_copy_change: Cell<bool>,
@@ -371,8 +363,8 @@ mod tests {
             Ok(())
         }
 
-        fn frontmost_app_pid(&self) -> Option<i32> {
-            self.current_pid.get()
+        fn active_destination_identity(&self) -> Option<DestinationIdentity> {
+            self.current_destination.borrow().clone()
         }
 
         fn clipboard_change_count(&self) -> Option<i64> {
@@ -384,10 +376,7 @@ mod tests {
     fn capture_restores_original_clipboard_when_selected_text_is_empty() {
         let mut clipboard = FakeClipboard::with_text("saved");
         clipboard.copy_result = Ok(String::new());
-        let platform = FakePlatform {
-            current_pid: Cell::new(Some(41)),
-            ..Default::default()
-        };
+        let platform = FakePlatform::default();
 
         let result = capture_selection_with(&mut clipboard, &platform, Duration::ZERO);
 
@@ -452,14 +441,14 @@ mod tests {
     fn capture_returns_text_and_originating_target() {
         let mut clipboard = FakeClipboard::with_text("saved");
         let platform = FakePlatform {
-            current_pid: Cell::new(Some(41)),
+            current_destination: RefCell::new(Some(DestinationIdentity::for_test(41, 7))),
             ..Default::default()
         };
 
         let snapshot = capture_selection_with(&mut clipboard, &platform, Duration::ZERO).unwrap();
 
         assert_eq!(snapshot.selected_text, "selected");
-        assert_eq!(snapshot.target, DesktopTarget::for_test(41));
+        assert_eq!(snapshot.target, DesktopTarget::for_test(41, 7));
     }
 
     #[test]
@@ -493,12 +482,12 @@ mod tests {
     }
 
     #[test]
-    fn paste_is_refused_after_target_changes() {
+    fn paste_is_refused_after_same_process_destination_changes() {
         let platform = FakePlatform {
-            current_pid: Cell::new(Some(99)),
+            current_destination: RefCell::new(Some(DestinationIdentity::for_test(41, 99))),
             ..Default::default()
         };
-        let original = DesktopTarget::for_test(41);
+        let original = DesktopTarget::for_test(41, 7);
 
         let result = paste_if_target_current_with(&platform, &original).unwrap();
 
@@ -509,10 +498,10 @@ mod tests {
     #[test]
     fn paste_succeeds_for_same_target() {
         let platform = FakePlatform {
-            current_pid: Cell::new(Some(41)),
+            current_destination: RefCell::new(Some(DestinationIdentity::for_test(41, 7))),
             ..Default::default()
         };
-        let original = DesktopTarget::for_test(41);
+        let original = DesktopTarget::for_test(41, 7);
 
         let result = paste_if_target_current_with(&platform, &original).unwrap();
 

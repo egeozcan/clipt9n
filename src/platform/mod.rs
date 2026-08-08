@@ -4,6 +4,39 @@
 
 use crate::error::TranslateError;
 
+/// Opaque identity for the exact desktop destination that currently owns
+/// keyboard focus. On macOS this retains the Accessibility focused-window and
+/// focused-UI-element identities. Platforms that cannot provide a reliable
+/// identity return `None` instead of constructing this value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DestinationIdentity(DestinationIdentityInner);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DestinationIdentityInner {
+    #[cfg(target_os = "macos")]
+    MacOs(macos::MacOsDestinationIdentity),
+    #[cfg(test)]
+    Test {
+        process_id: i32,
+        destination_id: u64,
+    },
+}
+
+impl DestinationIdentity {
+    #[cfg(target_os = "macos")]
+    fn from_macos(identity: macos::MacOsDestinationIdentity) -> Self {
+        Self(DestinationIdentityInner::MacOs(identity))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(process_id: i32, destination_id: u64) -> Self {
+        Self(DestinationIdentityInner::Test {
+            process_id,
+            destination_id,
+        })
+    }
+}
+
 /// Behavior an OS may need to provide to the rest of the app. Per-OS impls
 /// in `macos.rs`, `linux.rs`, `windows.rs`. Defaults are no-ops.
 pub trait Platform {
@@ -84,6 +117,13 @@ pub trait Platform {
     /// NSPasteboard.changeCount, which lets selection capture distinguish
     /// "copy produced the same text" from "copy did nothing".
     fn clipboard_change_count(&self) -> Option<i64> {
+        None
+    }
+
+    /// Identity of the exact focused paste destination, when it can be
+    /// captured and revalidated reliably. Returning `None` makes inline
+    /// replacement clipboard-only; callers must never fall back to a PID.
+    fn active_destination_identity(&self) -> Option<DestinationIdentity> {
         None
     }
 

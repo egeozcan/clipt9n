@@ -12,13 +12,21 @@ use std::ffi::c_void;
 use std::os::raw::{c_char, c_long};
 use std::process::Command;
 
-use super::Platform;
+use super::{DestinationIdentity, Platform};
 use crate::error::TranslateError;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    fn AXUIElementCreateSystemWide() -> *const c_void;
+    fn AXUIElementGetPid(element: *const c_void, pid: *mut i32) -> i32;
+    fn AXUIElementGetTypeID() -> usize;
+    fn AXUIElementCopyAttributeValue(
+        element: *const c_void,
+        attribute: *const c_void,
+        value: *mut *const c_void,
+    ) -> i32;
     fn CGEventCreateKeyboardEvent(
         source: *const c_void,
         virtual_key: u16,
@@ -30,7 +38,15 @@ extern "C" {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
+    fn CFEqual(first: *const c_void, second: *const c_void) -> u8;
+    fn CFGetTypeID(cf: *const c_void) -> usize;
+    fn CFRetain(cf: *const c_void) -> *const c_void;
     fn CFRelease(cf: *const c_void);
+    fn CFStringCreateWithCString(
+        allocator: *const c_void,
+        bytes: *const c_char,
+        encoding: u32,
+    ) -> *const c_void;
     fn CFDictionaryCreate(
         allocator: *const c_void,
         keys: *const *const c_void,
@@ -133,6 +149,10 @@ impl Platform for MacOsPlatform {
         unsafe { pasteboard_change_count() }
     }
 
+    fn active_destination_identity(&self) -> Option<DestinationIdentity> {
+        unsafe { focused_destination_identity().map(DestinationIdentity::from_macos) }
+    }
+
     fn configure_notifications(&self) -> Result<(), TranslateError> {
         notify_rust::set_application(notification_bundle_identifier())
             .map_err(|e| TranslateError::Config(format!("notification failed: {e}")))
@@ -162,6 +182,134 @@ const NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY: c_long = 1;
 type Id = *mut c_void;
 type Sel = *mut c_void;
 type Class = *mut c_void;
+
+/// Exact macOS paste destination. Accessibility elements are retained rather
+/// than reduced to hashes or labels: `CFEqual` can therefore revalidate the
+/// same focused window and focused UI element without collision-prone tokens.
+pub(super) struct MacOsDestinationIdentity {
+    process_id: i32,
+    focused_window: RetainedAxElement,
+    focused_ui_element: RetainedAxElement,
+}
+
+impl Clone for MacOsDestinationIdentity {
+    fn clone(&self) -> Self {
+        Self {
+            process_id: self.process_id,
+            focused_window: self.focused_window.clone(),
+            focused_ui_element: self.focused_ui_element.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for MacOsDestinationIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MacOsDestinationIdentity")
+            .field("process_id", &self.process_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for MacOsDestinationIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.process_id == other.process_id
+            && self.focused_window == other.focused_window
+            && self.focused_ui_element == other.focused_ui_element
+    }
+}
+
+impl Eq for MacOsDestinationIdentity {}
+
+struct RetainedAxElement(*const c_void);
+
+impl Clone for RetainedAxElement {
+    fn clone(&self) -> Self {
+        unsafe {
+            CFRetain(self.0);
+        }
+        Self(self.0)
+    }
+}
+
+impl PartialEq for RetainedAxElement {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe { CFEqual(self.0, other.0) != 0 }
+    }
+}
+
+impl Eq for RetainedAxElement {}
+
+impl Drop for RetainedAxElement {
+    fn drop(&mut self) {
+        unsafe {
+            CFRelease(self.0);
+        }
+    }
+}
+
+// AXUIElement is an immutable CFType reference. Accessibility queries may run
+// from any thread, and Core Foundation retain/release is thread-safe. The
+// identity is carried through the Send translation outcome but only compared
+// by the main-thread desktop adapter.
+unsafe impl Send for RetainedAxElement {}
+unsafe impl Sync for RetainedAxElement {}
+
+/// Capture both the focused window and the focused UI element. If either is
+/// unavailable (including missing Accessibility permission), refuse to create
+/// an identity so inline replacement degrades to clipboard-only.
+unsafe fn focused_destination_identity() -> Option<MacOsDestinationIdentity> {
+    let system_wide = RetainedAxElement::from_created(AXUIElementCreateSystemWide())?;
+    let application = copy_ax_element_attribute(&system_wide, c"AXFocusedApplication".as_ptr())?;
+    let mut process_id = 0;
+    if AXUIElementGetPid(application.0, &mut process_id) != 0 || process_id <= 0 {
+        return None;
+    }
+    let focused_window = copy_ax_element_attribute(&application, c"AXFocusedWindow".as_ptr())?;
+    let focused_ui_element =
+        copy_ax_element_attribute(&application, c"AXFocusedUIElement".as_ptr())?;
+
+    Some(MacOsDestinationIdentity {
+        process_id,
+        focused_window,
+        focused_ui_element,
+    })
+}
+
+impl RetainedAxElement {
+    unsafe fn from_created(element: *const c_void) -> Option<Self> {
+        if element.is_null() || CFGetTypeID(element) != AXUIElementGetTypeID() {
+            if !element.is_null() {
+                CFRelease(element);
+            }
+            return None;
+        }
+        Some(Self(element))
+    }
+}
+
+unsafe fn copy_ax_element_attribute(
+    element: &RetainedAxElement,
+    attribute_name: *const c_char,
+) -> Option<RetainedAxElement> {
+    // kCFStringEncodingUTF8 from CFString.h. AX attribute constants are
+    // CFSTR macros rather than exported symbols, so construct their exact
+    // string values here.
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    let attribute =
+        CFStringCreateWithCString(std::ptr::null(), attribute_name, K_CF_STRING_ENCODING_UTF8);
+    if attribute.is_null() {
+        return None;
+    }
+
+    let mut value = std::ptr::null();
+    let result = AXUIElementCopyAttributeValue(element.0, attribute, &mut value);
+    CFRelease(attribute);
+    if result != 0 {
+        return None;
+    }
+    RetainedAxElement::from_created(value)
+}
 
 /// Resolve `[NSApplication sharedApplication]`. Safe to call from any
 /// thread (lazily creates the singleton if missing), but anything
@@ -416,5 +564,12 @@ mod tests {
     #[test]
     fn macos_reduced_motion_does_not_panic() {
         let _ = MacOsPlatform.reduced_motion();
+    }
+
+    #[test]
+    fn focused_destination_capture_is_safe_when_available_or_unsupported() {
+        if let Some(identity) = MacOsPlatform.active_destination_identity() {
+            assert_eq!(identity, identity.clone());
+        }
     }
 }

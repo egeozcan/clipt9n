@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 const ERROR_PRESENTATION_MAX_CHARS: usize = 512;
+const INLINE_MANUAL_PASTE_BODY: &str =
+    "The original destination could not be verified. Paste the result manually.";
 
 static NOTIFICATION_APPLICATION_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -30,13 +32,10 @@ pub fn selection_capture_failed(err: &TranslateError) -> Result<(), TranslateErr
     show("No selected text copied", &error_presentation(err), 3000)
 }
 
-/// Tell the user an inline result is ready but its original target is no longer safe.
+/// Tell the user an inline result is ready but its original target could not
+/// be verified safely (either it changed or verification is unsupported).
 pub fn inline_result_ready_for_manual_paste() -> Result<(), TranslateError> {
-    show(
-        "Inline result copied",
-        "The original app is no longer active. Paste the result manually.",
-        4000,
-    )
+    show("Inline result copied", INLINE_MANUAL_PASTE_BODY, 4000)
 }
 
 /// Show a notification when inline replacement failed because slot is not inlineable.
@@ -152,5 +151,13 @@ mod tests {
         assert!(!presented
             .chars()
             .any(|c| c.is_control() && !c.is_whitespace()));
+    }
+
+    #[test]
+    fn inline_manual_paste_copy_is_neutral_about_why_verification_failed() {
+        assert_eq!(
+            super::INLINE_MANUAL_PASTE_BODY,
+            "The original destination could not be verified. Paste the result manually."
+        );
     }
 }

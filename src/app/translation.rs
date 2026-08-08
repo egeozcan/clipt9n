@@ -623,7 +623,7 @@ mod tests {
             code: "es".to_string(),
         };
         let ctx = egui::Context::default();
-        let target = DesktopTarget::for_test(41);
+        let target = DesktopTarget::for_test(41, 7);
 
         app.start_translation_inline(
             "Hello World".to_string(),
@@ -664,7 +664,7 @@ mod tests {
     fn test_handle_translation_done_inline_writes_clipboard_and_pastes() {
         let (desktop_io, recording) = fake_desktop_io(PasteDisposition::Pasted);
         let mut app = test_app(desktop_io);
-        let target = DesktopTarget::for_test(41);
+        let target = DesktopTarget::for_test(41, 7);
         set_inline_state(&mut app, target.clone());
 
         app.handle_translation_done(inline_outcome(target), &egui::Context::default());
@@ -681,7 +681,7 @@ mod tests {
     fn changed_target_keeps_result_on_clipboard_without_pasting() {
         let (desktop_io, recording) = fake_desktop_io(PasteDisposition::TargetChanged);
         let mut app = test_app(desktop_io);
-        let target = DesktopTarget::for_test(41);
+        let target = DesktopTarget::for_test(41, 7);
         set_inline_state(&mut app, target.clone());
 
         app.handle_translation_done(inline_outcome(target), &egui::Context::default());
