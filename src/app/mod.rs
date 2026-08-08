@@ -229,6 +229,11 @@ pub struct ClipApp {
     /// hotkey path still works. Set via `attach_tray` after `new()`.
     tray: Option<crate::tray::TrayHandle>,
 
+    /// Test-only status sink that makes tray refresh calls observable without
+    /// constructing an OS tray icon in a headless unit test.
+    #[cfg(test)]
+    tray_status_observer: Option<Box<dyn FnMut(crate::tray::TrayStatus)>>,
+
     /// Setup-wizard check results channel. The connectivity + sample-
     /// translation tasks send `(VerificationId, SetupCheck, Result)` here;
     /// `update_setup_wizard` drains it on every frame.
@@ -389,6 +394,8 @@ impl ClipApp {
             history_warned: std::sync::atomic::AtomicBool::new(false),
             secrets,
             tray: None,
+            #[cfg(test)]
+            tray_status_observer: None,
             setup_check_tx,
             setup_check_rx,
             setup_verification_gen: 0,

@@ -560,6 +560,7 @@ mod tests {
             history_warned: std::sync::atomic::AtomicBool::new(false),
             secrets: Box::new(crate::secrets::EnvSecrets::new("DUMMY")),
             tray: None,
+            tray_status_observer: None,
             setup_check_tx: setup_tx,
             setup_check_rx: setup_rx,
             setup_verification_gen: 0,

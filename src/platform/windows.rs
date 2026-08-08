@@ -13,6 +13,96 @@ const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
 #[cfg(target_os = "windows")]
 const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 
+const VK_CONTROL_VALUE: u16 = 0x11;
+const VK_C_VALUE: u16 = 0x43;
+const VK_V_VALUE: u16 = 0x56;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KeyboardInputSpec {
+    virtual_key: u16,
+    key_up: bool,
+}
+
+impl KeyboardInputSpec {
+    const fn key_down(virtual_key: u16) -> Self {
+        Self {
+            virtual_key,
+            key_up: false,
+        }
+    }
+
+    const fn key_up(virtual_key: u16) -> Self {
+        Self {
+            virtual_key,
+            key_up: true,
+        }
+    }
+}
+
+fn keyboard_chord_inputs(key: u16) -> [KeyboardInputSpec; 4] {
+    [
+        KeyboardInputSpec::key_down(VK_CONTROL_VALUE),
+        KeyboardInputSpec::key_down(key),
+        KeyboardInputSpec::key_up(key),
+        KeyboardInputSpec::key_up(VK_CONTROL_VALUE),
+    ]
+}
+
+fn copy_chord_inputs() -> [KeyboardInputSpec; 4] {
+    keyboard_chord_inputs(VK_C_VALUE)
+}
+
+fn paste_chord_inputs() -> [KeyboardInputSpec; 4] {
+    keyboard_chord_inputs(VK_V_VALUE)
+}
+
+fn send_keyboard_inputs(inputs: &[KeyboardInputSpec]) -> Result<(), crate::error::TranslateError> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        };
+
+        let native_inputs: Vec<INPUT> = inputs
+            .iter()
+            .map(|input| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: input.virtual_key,
+                        wScan: 0,
+                        dwFlags: if input.key_up { KEYEVENTF_KEYUP } else { 0 },
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            })
+            .collect();
+        // SAFETY: `native_inputs` is a contiguous initialized INPUT array and
+        // remains alive for the duration of the call.
+        let inserted = unsafe {
+            SendInput(
+                native_inputs.len() as u32,
+                native_inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if inserted == native_inputs.len() as u32 {
+            Ok(())
+        } else {
+            Err(crate::error::TranslateError::Internal(format!(
+                "SendInput inserted {inserted} of {} keyboard events",
+                native_inputs.len()
+            )))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = inputs;
+        unreachable!("Windows keyboard input is only active on Windows")
+    }
+}
+
 fn wide_null_terminated(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -99,49 +189,54 @@ impl Platform for WindowsPlatform {
     }
 
     fn copy_selection_to_clipboard(&self) -> Result<(), crate::error::TranslateError> {
-        std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "$wshell = New-Object -ComObject wscript.shell; $wshell.SendKeys('^c')",
-            ])
-            .status()
-            .map_err(|e| crate::error::TranslateError::Internal(format!("powershell: {e}")))
-            .and_then(|status| {
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(crate::error::TranslateError::Internal(format!(
-                        "powershell exited with status {status}"
-                    )))
-                }
-            })
+        send_keyboard_inputs(&copy_chord_inputs())
     }
 
     fn paste_from_clipboard(&self) -> Result<(), crate::error::TranslateError> {
-        std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "$wshell = New-Object -ComObject wscript.shell; $wshell.SendKeys('^v')",
-            ])
-            .status()
-            .map_err(|e| crate::error::TranslateError::Internal(format!("powershell: {e}")))
-            .and_then(|status| {
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(crate::error::TranslateError::Internal(format!(
-                        "powershell exited with status {status}"
-                    )))
-                }
-            })
+        send_keyboard_inputs(&paste_chord_inputs())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_chord_constructs_balanced_native_keyboard_inputs() {
+        assert_eq!(
+            copy_chord_inputs(),
+            [
+                KeyboardInputSpec::key_down(VK_CONTROL_VALUE),
+                KeyboardInputSpec::key_down(VK_C_VALUE),
+                KeyboardInputSpec::key_up(VK_C_VALUE),
+                KeyboardInputSpec::key_up(VK_CONTROL_VALUE),
+            ]
+        );
+    }
+
+    #[test]
+    fn paste_chord_constructs_balanced_native_keyboard_inputs() {
+        assert_eq!(
+            paste_chord_inputs(),
+            [
+                KeyboardInputSpec::key_down(VK_CONTROL_VALUE),
+                KeyboardInputSpec::key_down(VK_V_VALUE),
+                KeyboardInputSpec::key_up(VK_V_VALUE),
+                KeyboardInputSpec::key_up(VK_CONTROL_VALUE),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_desktop_io_has_no_process_launch_path() {
+        let source = include_str!("windows.rs");
+        let process_launch = ["Command", "::new"].concat();
+        let legacy_shell = ["power", "shell"].concat();
+        let command_shell = ["cmd", ".exe"].concat();
+        assert!(!source.contains(&process_launch));
+        assert!(!source.contains(&legacy_shell));
+        assert!(!source.contains(&command_shell));
+    }
 
     #[test]
     fn shell_execute_path_preserves_shell_metacharacters_as_data() {

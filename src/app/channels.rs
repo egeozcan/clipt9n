@@ -333,6 +333,7 @@ mod tests {
             history_warned: std::sync::atomic::AtomicBool::new(false),
             secrets: Box::new(crate::secrets::EnvSecrets::new("CLIPT9N_TEST_KEY")),
             tray: None,
+            tray_status_observer: None,
             setup_check_tx,
             setup_check_rx,
             setup_verification_gen: 0,
@@ -398,6 +399,11 @@ mod tests {
         )
         .unwrap();
         let mut app = test_app(glossary_path);
+        let observed_statuses = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_statuses_for_sink = Arc::clone(&observed_statuses);
+        app.set_tray_status_observer_for_test(move |status| {
+            observed_statuses_for_sink.lock().unwrap().push(status);
+        });
 
         app.dispatch_reload_glossary();
 
@@ -406,6 +412,9 @@ mod tests {
             crate::glossary::Glossary::read_shared(&app.glossary).len(),
             1
         );
-        assert_eq!(app.compute_tray_status(), crate::tray::TrayStatus::Ready);
+        assert_eq!(
+            *observed_statuses.lock().unwrap(),
+            vec![crate::tray::TrayStatus::Ready]
+        );
     }
 }

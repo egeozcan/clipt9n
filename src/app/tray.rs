@@ -97,9 +97,23 @@ impl super::ClipApp {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Install a test status sink so refresh behavior is observable without
+    /// constructing a native tray icon.
+    #[cfg(test)]
+    pub(super) fn set_tray_status_observer_for_test(
+        &mut self,
+        observer: impl FnMut(crate::tray::TrayStatus) + 'static,
+    ) {
+        self.tray_status_observer = Some(Box::new(observer));
+    }
+
     /// Push the current status to the tray. No-op if no tray.
     pub(super) fn refresh_tray_status(&mut self) {
         let status = self.compute_tray_status();
+        #[cfg(test)]
+        if let Some(observer) = self.tray_status_observer.as_mut() {
+            observer(status);
+        }
         if let Some(tray) = self.tray.as_mut() {
             if let Err(e) = tray.set_status(status) {
                 tracing::warn!(error = %e, "tray status refresh failed");
