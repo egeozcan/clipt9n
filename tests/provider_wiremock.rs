@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use clipt9n::config::ProviderEndpoint;
 use clipt9n::error::TranslateError;
 use clipt9n::llm::anthropic::AnthropicProvider;
 use clipt9n::llm::openai::OpenAiCompatibleProvider;
@@ -23,7 +24,7 @@ fn fast_backoffs() -> Vec<Duration> {
 
 fn anthropic_provider(server: &MockServer) -> AnthropicProvider {
     AnthropicProvider::new(
-        server.uri(),
+        ProviderEndpoint::parse(&server.uri(), true).unwrap(),
         Zeroizing::new("sk-ant-test".into()),
         "claude-haiku-4-5",
         Duration::from_secs(10),
@@ -34,13 +35,61 @@ fn anthropic_provider(server: &MockServer) -> AnthropicProvider {
 
 fn openai_provider(server: &MockServer) -> OpenAiCompatibleProvider {
     OpenAiCompatibleProvider::new(
-        server.uri(),
+        ProviderEndpoint::parse(&server.uri(), true).unwrap(),
         Zeroizing::new("sk-test".into()),
         "gpt-5",
         Duration::from_secs(10),
     )
     .unwrap()
     .with_backoffs(fast_backoffs())
+}
+
+#[tokio::test]
+async fn openai_redirect_does_not_send_request_to_another_origin() {
+    let destination = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/sink"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(OPENAI_SUCCESS_BODY))
+        .mount(&destination)
+        .await;
+    let source = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("Location", format!("{}/sink", destination.uri())),
+        )
+        .expect(1)
+        .mount(&source)
+        .await;
+
+    let _ = openai_provider(&source).complete("system", "user").await;
+
+    assert!(destination.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn anthropic_redirect_does_not_send_request_to_another_origin() {
+    let destination = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/sink"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(ANTHROPIC_SUCCESS_BODY))
+        .mount(&destination)
+        .await;
+    let source = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("Location", format!("{}/sink", destination.uri())),
+        )
+        .expect(1)
+        .mount(&source)
+        .await;
+
+    let _ = anthropic_provider(&source).complete("system", "user").await;
+
+    assert!(destination.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -162,6 +211,64 @@ async fn anthropic_403_body_is_preserved() {
             assert!(message.contains("permission denied"), "message: {message}");
         }
         other => panic!("expected Provider 403, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn openai_error_body_is_read_and_reported_with_fixed_bounds() {
+    let server = MockServer::start().await;
+    let oversized = format!("{}SECRET_AFTER_LIMIT", "x".repeat(16 * 1024));
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(oversized))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    match openai_provider(&server)
+        .complete("system", "user")
+        .await
+        .unwrap_err()
+    {
+        TranslateError::Provider { status, message } => {
+            assert_eq!(status, 400);
+            assert!(
+                message.chars().count() <= 2_000,
+                "length: {}",
+                message.len()
+            );
+            assert!(!message.contains("SECRET_AFTER_LIMIT"));
+        }
+        other => panic!("expected Provider error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn anthropic_error_body_strips_controls_but_preserves_newline_and_tab() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_string("denied\u{1b}[31m\u{7}\nretry\tcarefully"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    match anthropic_provider(&server)
+        .complete("system", "user")
+        .await
+        .unwrap_err()
+    {
+        TranslateError::Provider { status, message } => {
+            assert_eq!(status, 403);
+            assert!(message.contains('\n'));
+            assert!(message.contains('\t'));
+            assert!(!message.chars().any(|character| {
+                character.is_control() && character != '\n' && character != '\t'
+            }));
+        }
+        other => panic!("expected Provider error, got {other:?}"),
     }
 }
 

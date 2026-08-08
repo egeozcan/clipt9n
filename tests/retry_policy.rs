@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use clipt9n::config::ProviderEndpoint;
 use clipt9n::error::TranslateError;
 use clipt9n::llm::anthropic::AnthropicProvider;
 use clipt9n::llm::LlmProvider;
@@ -24,7 +25,7 @@ fn fast_backoffs() -> Vec<Duration> {
 
 fn provider(server: &MockServer) -> AnthropicProvider {
     AnthropicProvider::new(
-        server.uri(),
+        ProviderEndpoint::parse(&server.uri(), true).unwrap(),
         Zeroizing::new("sk-ant-test".into()),
         "claude-haiku-4-5",
         Duration::from_secs(10),
@@ -139,7 +140,7 @@ const OPENAI_SUCCESS_BODY: &str = r#"{
 
 fn openai_provider(server: &MockServer) -> OpenAiCompatibleProvider {
     OpenAiCompatibleProvider::new(
-        server.uri(),
+        ProviderEndpoint::parse(&server.uri(), true).unwrap(),
         Zeroizing::new("sk-test".into()),
         "gpt-5",
         Duration::from_secs(10),

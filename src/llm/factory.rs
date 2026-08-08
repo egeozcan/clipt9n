@@ -33,15 +33,16 @@ pub fn build_provider(
     let timeout = Duration::from_secs(cfg.provider.timeout_seconds);
     let base_url = base_url_override.unwrap_or(&cfg.provider.base_url);
     let profile = provider_profile(&cfg.provider.kind)?;
+    let endpoint = crate::config::ProviderEndpoint::parse(base_url, profile.allow_loopback_http)?;
     let provider: Arc<dyn LlmProvider> = match profile.implementation {
         ProviderImplementation::Anthropic => Arc::new(AnthropicProvider::new(
-            base_url,
+            endpoint,
             key,
             &cfg.provider.model,
             timeout,
         )?),
         ProviderImplementation::OpenAiCompatible => Arc::new(OpenAiCompatibleProvider::new(
-            base_url,
+            endpoint,
             key,
             &cfg.provider.model,
             timeout,
@@ -73,6 +74,16 @@ mod tests {
             let key = Zeroizing::new("sk-test".to_string());
             let p = build_provider(&cfg, key, None).expect("should build for openai-compat kinds");
             assert_eq!(Arc::strong_count(&p), 1);
+        }
+    }
+
+    #[test]
+    fn factory_rejects_non_local_profile_using_loopback_http() {
+        let mut cfg = Config::default();
+        cfg.provider.base_url = "http://127.0.0.1:11434/v1".into();
+        match build_provider(&cfg, Zeroizing::new("sk-test".into()), None) {
+            Ok(_) => panic!("expected unsafe endpoint rejection"),
+            Err(error) => assert!(error.to_string().contains("local provider profiles")),
         }
     }
 

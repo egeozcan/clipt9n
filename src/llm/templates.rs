@@ -192,7 +192,7 @@ fn load_one(
     let Some(rel) = rel_path.filter(|s| !s.is_empty()) else {
         return Ok(kind.built_in_source().to_string());
     };
-    let abs = config_dir.join(rel);
+    let abs = crate::config::resolve_confined_path(config_dir, rel)?;
     if !abs.exists() {
         return Ok(kind.built_in_source().to_string());
     }
@@ -373,6 +373,96 @@ mod tests {
     }
 
     // ---- override loader ----
+
+    #[test]
+    fn template_override_rejects_parent_escape() {
+        let config_dir = tempdir().unwrap();
+        let outside_name = format!(
+            "{}-outside-template.j2",
+            config_dir.path().file_name().unwrap().to_string_lossy()
+        );
+        let outside = config_dir.path().parent().unwrap().join(&outside_name);
+        std::fs::write(&outside, "OUTSIDE {{ target_language }}").unwrap();
+        let cfg = TemplatesConfig {
+            translate: Some(format!("../{outside_name}")),
+            ..TemplatesConfig::default()
+        };
+
+        let err = Templates::load(config_dir.path(), &cfg).unwrap_err();
+        assert!(err.to_string().contains("outside"), "error: {err}");
+        std::fs::remove_file(outside).unwrap();
+    }
+
+    #[test]
+    fn template_override_rejects_absolute_path() {
+        let config_dir = tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "OUTSIDE {{ target_language }}").unwrap();
+        let cfg = TemplatesConfig {
+            translate: Some(outside.path().to_string_lossy().into_owned()),
+            ..TemplatesConfig::default()
+        };
+
+        let err = Templates::load(config_dir.path(), &cfg).unwrap_err();
+        assert!(err.to_string().contains("relative"), "error: {err}");
+    }
+
+    #[test]
+    fn template_override_rejects_symlink_escape() {
+        let config_dir = tempdir().unwrap();
+        let templates_dir = config_dir.path().join("templates");
+        std::fs::create_dir(&templates_dir).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "OUTSIDE {{ target_language }}").unwrap();
+        crate::platform::create_file_symlink_for_test(
+            outside.path(),
+            &templates_dir.join("escape.j2"),
+        )
+        .unwrap();
+        let cfg = TemplatesConfig {
+            translate: Some("templates/escape.j2".into()),
+            ..TemplatesConfig::default()
+        };
+
+        let err = Templates::load(config_dir.path(), &cfg).unwrap_err();
+        assert!(err.to_string().contains("outside"), "error: {err}");
+    }
+
+    #[test]
+    fn template_override_accepts_valid_nested_file() {
+        let config_dir = tempdir().unwrap();
+        let nested = config_dir.path().join("templates/nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("translate.j2"), "NESTED {{ target_language }}").unwrap();
+        let cfg = TemplatesConfig {
+            translate: Some("templates/nested/translate.j2".into()),
+            ..TemplatesConfig::default()
+        };
+
+        let templates = Templates::load(config_dir.path(), &cfg).unwrap();
+        let rendered = render(
+            &templates,
+            TemplateKind::Translate,
+            &TemplateContext::for_translate("German", ""),
+        )
+        .unwrap();
+        assert_eq!(rendered, "NESTED German");
+    }
+
+    #[test]
+    fn missing_configuration_directory_preserves_built_in_fallback() {
+        let parent = tempdir().unwrap();
+        let missing_config_dir = parent.path().join("not-created-yet");
+
+        let templates = Templates::load(&missing_config_dir, &TemplatesConfig::default()).unwrap();
+        let rendered = render(
+            &templates,
+            TemplateKind::Translate,
+            &TemplateContext::for_translate("German", ""),
+        )
+        .unwrap();
+        assert!(rendered.contains("Translate the user's text into German."));
+    }
 
     #[test]
     fn missing_template_files_fall_back_to_built_ins() {

@@ -9,11 +9,12 @@ use zeroize::Zeroizing;
 
 use super::client::{default_backoffs, with_retry, AttemptOutcome};
 use super::LlmProvider;
+use crate::config::ProviderEndpoint;
 use crate::error::TranslateError;
 
 pub struct AnthropicProvider {
     http: Client,
-    base_url: String,
+    endpoint: ProviderEndpoint,
     api_key: Zeroizing<String>,
     model: String,
     backoffs: Vec<Duration>,
@@ -21,19 +22,15 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(
-        base_url: impl Into<String>,
+        endpoint: ProviderEndpoint,
         api_key: Zeroizing<String>,
         model: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, TranslateError> {
-        let http = Client::builder()
-            .timeout(timeout)
-            .user_agent(concat!("clipt9n/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| TranslateError::Network(format!("building HTTP client: {e}")))?;
+        let http = super::client::provider_http_client(timeout)?;
         Ok(Self {
             http,
-            base_url: base_url.into(),
+            endpoint,
             api_key,
             model: model.into(),
             backoffs: default_backoffs(),
@@ -77,7 +74,7 @@ struct AnthropicContent {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn complete(&self, system: &str, user: &str) -> Result<String, TranslateError> {
-        let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
+        let url = self.endpoint.request_url("messages");
         let body = AnthropicRequest {
             model: &self.model,
             max_tokens: 4096,
@@ -99,7 +96,7 @@ impl LlmProvider for AnthropicProvider {
             let http = self.http.clone();
             async move {
                 match http
-                    .post(&url)
+                    .post(url)
                     .header("x-api-key", &**api_key)
                     .header("anthropic-version", "2023-06-01")
                     .header("content-type", "application/json")
@@ -136,12 +133,12 @@ impl LlmProvider for AnthropicProvider {
                         } else if status.is_server_error() {
                             AttemptOutcome::Retry(TranslateError::Provider {
                                 status: status.as_u16(),
-                                message: resp.text().await.unwrap_or_default(),
+                                message: super::client::bounded_provider_error(resp).await,
                             })
                         } else {
                             AttemptOutcome::Fatal(TranslateError::Provider {
                                 status: status.as_u16(),
-                                message: resp.text().await.unwrap_or_default(),
+                                message: super::client::bounded_provider_error(resp).await,
                             })
                         }
                     }

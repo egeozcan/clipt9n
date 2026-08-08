@@ -1,6 +1,6 @@
 //! End-to-end CLI smoke test.
 //!
-//! Spawns `clipt9n` as a subprocess against a wiremock-backed Anthropic
+//! Spawns `clipt9n` as a subprocess against a wiremock-backed local-provider
 //! endpoint, asserting that the binary exits 0 on a successful translation.
 //! This is M1's exit criterion 1 verified in CI.
 //!
@@ -34,15 +34,15 @@ fn show_tray_flag_parses() {
 }
 
 const SUCCESS_BODY: &str = r#"{
-    "content": [{"type": "text", "text": "Hallo, Welt."}]
+    "choices": [{"message": {"content": "Hallo, Welt."}}]
 }"#;
 
 #[tokio::test]
 async fn cli_translate_succeeds_end_to_end() {
-    // 1. Start mock Anthropic server
+    // 1. Start a mock loopback server using the local-provider profile.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/messages"))
+        .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_string(SUCCESS_BODY))
         .mount(&server)
         .await;
@@ -53,8 +53,8 @@ async fn cli_translate_succeeds_end_to_end() {
         cfg_file,
         r#"
 [provider]
-type = "anthropic"
-model = "claude-haiku-4-5"
+type = "ollama"
+model = "llama3.2"
 base_url = "{}"
 timeout_seconds = 5
 
@@ -73,7 +73,7 @@ env_var = "CLIPT9N_E2E_KEY"
         .arg("--translate-to=de")
         .arg("--config")
         .arg(cfg_file.path())
-        .env("CLIPT9N_E2E_KEY", "sk-ant-fake")
+        .env("CLIPT9N_E2E_KEY", "local-test-key")
         .env("CLIPT9N_TEST_INPUT", "Hello, world.")
         .env("CLIPT9N_TEST_PRINT_RESULT", "1")
         .output()
@@ -96,7 +96,7 @@ env_var = "CLIPT9N_E2E_KEY"
 async fn cli_exits_with_error_on_missing_api_key() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/messages"))
+        .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_string(SUCCESS_BODY))
         .mount(&server)
         .await;
@@ -106,7 +106,7 @@ async fn cli_exits_with_error_on_missing_api_key() {
         cfg_file,
         r#"
 [provider]
-type = "anthropic"
+type = "ollama"
 base_url = "{}"
 
 [provider.api_key]

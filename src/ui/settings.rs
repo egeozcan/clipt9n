@@ -109,6 +109,8 @@ pub struct SettingsModel {
     /// Drives the "leave blank to keep the stored key" hint versus the
     /// "no key stored yet" warning.
     pub has_stored_key: bool,
+    /// Explicit acknowledgement required when the provider origin changes.
+    pub provider_origin_change_confirmed: bool,
     /// Populated by the App when a save fails validation, key
     /// persistence, or provider construction.
     pub err_msg: String,
@@ -225,10 +227,24 @@ pub fn unsupported_hotkey_keys(cfg: &Config) -> Vec<String> {
     .collect()
 }
 
+/// Whether the edited provider base URL has a different origin from the
+/// configuration snapshot opened by the settings window.
+pub fn provider_origin_changed(model: &SettingsModel) -> bool {
+    match (
+        model.original.provider_endpoint(),
+        model.cfg.provider_endpoint(),
+    ) {
+        (Ok(original), Ok(candidate)) => !original.same_origin(&candidate),
+        _ => model.original.provider.base_url != model.cfg.provider.base_url,
+    }
+}
+
 /// Whether Save should be clickable. Blocked only by things the editor
 /// can detect locally; provider/key errors surface after the attempt.
 pub fn save_enabled(model: &SettingsModel) -> bool {
-    hotkey_conflicts(&model.cfg).is_empty() && unsupported_hotkey_keys(&model.cfg).is_empty()
+    hotkey_conflicts(&model.cfg).is_empty()
+        && unsupported_hotkey_keys(&model.cfg).is_empty()
+        && (!provider_origin_changed(model) || model.provider_origin_change_confirmed)
 }
 
 /// Paint the settings window. Returns at most one outcome per frame.
@@ -356,6 +372,7 @@ fn draw_provider_tab(
                         model.cfg.provider.base_url = profile.default_base_url.to_string();
                         model.cfg.provider.api_key.account = profile.account.to_string();
                         model.cfg.provider.api_key.env_var = profile.env_var.to_string();
+                        model.provider_origin_change_confirmed = false;
                     }
                 }
             });
@@ -369,12 +386,23 @@ fn draw_provider_tab(
         );
     });
     field_row(ui, "Base URL", |ui| {
-        ui.add(
-            TextEdit::singleline(&mut model.cfg.provider.base_url)
-                .desired_width(340.0)
-                .hint_text("https://…"),
-        );
+        if ui
+            .add(
+                TextEdit::singleline(&mut model.cfg.provider.base_url)
+                    .desired_width(340.0)
+                    .hint_text("https://…"),
+            )
+            .changed()
+        {
+            model.provider_origin_change_confirmed = false;
+        }
     });
+    if provider_origin_changed(model) {
+        ui.checkbox(
+            &mut model.provider_origin_change_confirmed,
+            "I confirm sending API credentials and text to this new provider origin",
+        );
+    }
     field_row(ui, "Timeout", |ui| {
         ui.add(
             egui::DragValue::new(&mut model.cfg.provider.timeout_seconds)
@@ -986,6 +1014,27 @@ mod tests {
         cfg.hotkey.history.key = cfg.hotkey.key.clone();
         cfg.hotkey.history.enabled = false;
         assert!(hotkey_conflicts(&cfg).is_empty());
+    }
+
+    #[test]
+    fn provider_origin_change_requires_dedicated_confirmation() {
+        let mut model = model_with(Config::default());
+        model.cfg.provider.base_url = "https://proxy.example.com/v1".into();
+
+        assert!(provider_origin_changed(&model));
+        assert!(!save_enabled(&model));
+
+        model.provider_origin_change_confirmed = true;
+        assert!(save_enabled(&model));
+    }
+
+    #[test]
+    fn provider_path_change_on_same_origin_needs_no_confirmation() {
+        let mut model = model_with(Config::default());
+        model.cfg.provider.base_url = "https://api.anthropic.com/alternate".into();
+
+        assert!(!provider_origin_changed(&model));
+        assert!(save_enabled(&model));
     }
 
     #[test]

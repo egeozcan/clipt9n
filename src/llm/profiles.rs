@@ -16,6 +16,7 @@ pub struct ProviderProfile {
     pub default_base_url: &'static str,
     pub account: &'static str,
     pub env_var: &'static str,
+    pub allow_loopback_http: bool,
 }
 
 pub static PROVIDER_PROFILES: &[ProviderProfile] = &[
@@ -26,6 +27,7 @@ pub static PROVIDER_PROFILES: &[ProviderProfile] = &[
         default_base_url: "https://api.anthropic.com/v1",
         account: "anthropic",
         env_var: "ANTHROPIC_API_KEY",
+        allow_loopback_http: false,
     },
     ProviderProfile {
         id: "openai",
@@ -34,6 +36,7 @@ pub static PROVIDER_PROFILES: &[ProviderProfile] = &[
         default_base_url: "https://api.openai.com/v1",
         account: "openai",
         env_var: "OPENAI_API_KEY",
+        allow_loopback_http: false,
     },
     ProviderProfile {
         id: "gemini",
@@ -42,6 +45,7 @@ pub static PROVIDER_PROFILES: &[ProviderProfile] = &[
         default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
         account: "gemini",
         env_var: "GEMINI_API_KEY",
+        allow_loopback_http: false,
     },
     ProviderProfile {
         id: "ollama",
@@ -50,6 +54,7 @@ pub static PROVIDER_PROFILES: &[ProviderProfile] = &[
         default_base_url: "http://localhost:11434/v1",
         account: "ollama",
         env_var: "OLLAMA_API_KEY",
+        allow_loopback_http: true,
     },
     ProviderProfile {
         id: "deepseek",
@@ -58,6 +63,7 @@ pub static PROVIDER_PROFILES: &[ProviderProfile] = &[
         default_base_url: "https://api.deepseek.com/v1",
         account: "deepseek",
         env_var: "DEEPSEEK_API_KEY",
+        allow_loopback_http: false,
     },
 ];
 
@@ -135,6 +141,7 @@ mod tests {
             assert_eq!(profile.default_base_url, base_url);
             assert_eq!(profile.account, account);
             assert_eq!(profile.env_var, env_var);
+            assert_eq!(profile.allow_loopback_http, id == "ollama");
         }
     }
 

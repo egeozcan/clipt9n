@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
         &cfg.templates,
     )?);
     // Glossary: graceful load — fall back to empty on error.
-    let glossary_path = config_dir.join(&cfg.glossary.file);
+    let glossary_path = clipt9n::glossary::resolve_path(&config_dir, &cfg.glossary.file)?;
     let load_result = clipt9n::glossary::Glossary::load(&glossary_path);
     let glossary_malformed_at_startup = load_result.is_err();
     let glossary_inner = match load_result {

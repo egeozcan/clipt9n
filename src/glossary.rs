@@ -15,6 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::TranslateError;
 
+/// Resolve the configured glossary path beneath `config_dir`.
+pub fn resolve_path(
+    config_dir: &Path,
+    configured_path: &str,
+) -> Result<std::path::PathBuf, TranslateError> {
+    crate::config::resolve_confined_path(config_dir, configured_path)
+}
+
 /// A single glossary entry per spec §5.4.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct GlossaryEntry {
@@ -515,6 +523,47 @@ mod tests {
         assert!(g.is_empty());
         assert_eq!(g.len(), 0);
         assert_eq!(g.entries().len(), 0);
+    }
+
+    #[test]
+    fn glossary_path_rejects_parent_escape() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let err = resolve_path(config_dir.path(), "../glossary.toml").unwrap_err();
+        assert!(err.to_string().contains("outside"), "error: {err}");
+    }
+
+    #[test]
+    fn glossary_path_rejects_absolute_path() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let outside = NamedTempFile::new().unwrap();
+        let err = resolve_path(config_dir.path(), &outside.path().to_string_lossy()).unwrap_err();
+        assert!(err.to_string().contains("relative"), "error: {err}");
+    }
+
+    #[test]
+    fn glossary_path_rejects_symlink_escape() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let outside = NamedTempFile::new().unwrap();
+        crate::platform::create_file_symlink_for_test(
+            outside.path(),
+            &config_dir.path().join("escape.toml"),
+        )
+        .unwrap();
+
+        let err = resolve_path(config_dir.path(), "escape.toml").unwrap_err();
+        assert!(err.to_string().contains("outside"), "error: {err}");
+    }
+
+    #[test]
+    fn glossary_path_accepts_nested_and_missing_paths() {
+        let config_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(config_dir.path().join("glossaries")).unwrap();
+        let canonical_root = std::fs::canonicalize(config_dir.path()).unwrap();
+        let nested = resolve_path(config_dir.path(), "glossaries/terms.toml").unwrap();
+        assert_eq!(nested, canonical_root.join("glossaries/terms.toml"));
+
+        let missing = resolve_path(config_dir.path(), "missing.toml").unwrap();
+        assert_eq!(missing, canonical_root.join("missing.toml"));
     }
 
     #[test]

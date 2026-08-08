@@ -9,6 +9,64 @@
 use reqwest::header::HeaderValue;
 use std::time::Duration;
 
+use crate::error::TranslateError;
+
+/// Build the credential-bearing HTTP client shared by provider adapters.
+/// Redirects are disabled so authorization headers and request bodies are
+/// never replayed to a different origin.
+pub fn provider_http_client(timeout: Duration) -> Result<reqwest::Client, TranslateError> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("clipt9n/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| TranslateError::Network(format!("building HTTP client: {e}")))
+}
+
+const PROVIDER_ERROR_BODY_BUDGET_BYTES: usize = 8 * 1024;
+const PROVIDER_ERROR_MESSAGE_MAX_CHARS: usize = 2_000;
+
+/// Read a bounded portion of a provider error response and sanitize it before
+/// storing it in a structured error. Newline and tab remain available for
+/// readable provider diagnostics; all other control characters are stripped.
+pub async fn bounded_provider_error(mut response: reqwest::Response) -> String {
+    let mut body = Vec::with_capacity(PROVIDER_ERROR_BODY_BUDGET_BYTES);
+    while body.len() < PROVIDER_ERROR_BODY_BUDGET_BYTES {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = PROVIDER_ERROR_BODY_BUDGET_BYTES - body.len();
+                let retained = remaining.min(chunk.len());
+                body.extend_from_slice(&chunk[..retained]);
+                if retained < chunk.len() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => {
+                let detail = format!("reading provider error response: {error}");
+                let remaining = PROVIDER_ERROR_BODY_BUDGET_BYTES - body.len();
+                body.extend_from_slice(&detail.as_bytes()[..detail.len().min(remaining)]);
+                break;
+            }
+        }
+    }
+
+    let sanitized: String = String::from_utf8_lossy(&body)
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n' || *character == '\t')
+        .collect();
+    if sanitized.chars().count() <= PROVIDER_ERROR_MESSAGE_MAX_CHARS {
+        sanitized
+    } else {
+        let mut bounded: String = sanitized
+            .chars()
+            .take(PROVIDER_ERROR_MESSAGE_MAX_CHARS - 1)
+            .collect();
+        bounded.push('…');
+        bounded
+    }
+}
+
 /// Outcome of a single retryable attempt.
 pub enum AttemptOutcome<T, E> {
     /// Operation succeeded; return the value.

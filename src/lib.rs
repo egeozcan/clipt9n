@@ -124,7 +124,7 @@ pub async fn run() -> Result<(), TranslateError> {
         &config_dir,
         &cfg.templates,
     )?);
-    let glossary_path = config_dir.join(&cfg.glossary.file);
+    let glossary_path = crate::glossary::resolve_path(&config_dir, &cfg.glossary.file)?;
     let glossary = match crate::glossary::Glossary::load(&glossary_path) {
         Ok(g) => g,
         Err(e) => {

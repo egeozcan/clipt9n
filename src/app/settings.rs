@@ -127,6 +127,14 @@ impl super::ClipApp {
             .ok_or_else(|| TranslateError::Config("config path has no parent".into()))?
             .to_path_buf();
 
+        if crate::ui::settings::provider_origin_changed(model)
+            && !model.provider_origin_change_confirmed
+        {
+            return Err(TranslateError::Config(
+                "confirm the provider origin change before saving".into(),
+            ));
+        }
+
         let mut new_cfg = model.cfg.clone();
         new_cfg.provider.api_key.source = model.key_storage.as_source().into();
         if model.key_storage == KeyStorage::File && new_cfg.provider.api_key.path.trim().is_empty()
@@ -136,6 +144,7 @@ impl super::ClipApp {
                 .into_owned();
         }
         new_cfg.validate()?;
+        let new_glossary_path = crate::glossary::resolve_path(&config_dir, &new_cfg.glossary.file)?;
 
         // Resolve the key and credential write plan before constructing
         // the provider. Environment storage is read-only: a typed key is
@@ -172,7 +181,6 @@ impl super::ClipApp {
         // Point the glossary at its (possibly new) file and re-read it.
         // `reload_glossary` keeps the previous entries on a parse error,
         // so a typo'd filename degrades rather than emptying the glossary.
-        let new_glossary_path = config_dir.join(&new_cfg.glossary.file);
         if new_glossary_path != self.glossary_path {
             self.glossary_path = new_glossary_path;
             self.reload_glossary();
@@ -182,6 +190,7 @@ impl super::ClipApp {
         self.provider = Some(new_provider);
         model.api_key.clear();
         model.original = self.cfg.clone();
+        model.provider_origin_change_confirmed = false;
         model.config_mtime = config_mtime(&cfg_path);
         // Re-probe rather than assuming: with env storage the typed key
         // was never written anywhere, so "a key is stored" may still be

@@ -442,10 +442,7 @@ async fn run_connectivity_check(
     key: &str,
 ) -> Result<(), TranslateError> {
     let (url, headers) = crate::ui::setup::connectivity_request(provider, base_url, key);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| TranslateError::Network(e.to_string()))?;
+    let client = crate::llm::client::provider_http_client(std::time::Duration::from_secs(10))?;
     let mut req = client.get(&url);
     for (k, v) in headers {
         req = req.header(&k, &v);
@@ -474,6 +471,7 @@ async fn run_connectivity_check(
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::llm::LlmProvider;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -624,11 +622,15 @@ mod tests {
 
         let cfg = Config::default();
         assert_eq!(cfg.provider.kind, "anthropic");
-        let check_cfg = sample_check_config(&cfg, "openai", &server.uri()).unwrap();
-        let provider = crate::llm::factory::build_provider(
-            &check_cfg,
+        let check_cfg =
+            sample_check_config(&cfg, "openai", crate::ui::setup::default_base_url("openai"))
+                .unwrap();
+        assert_eq!(check_cfg.provider.kind, "openai");
+        let provider = crate::llm::openai::OpenAiCompatibleProvider::new(
+            crate::config::ProviderEndpoint::parse(&server.uri(), true).unwrap(),
             zeroize::Zeroizing::new("sk-test".into()),
-            None,
+            &check_cfg.provider.model,
+            std::time::Duration::from_secs(10),
         )
         .unwrap();
 

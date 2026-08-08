@@ -72,6 +72,26 @@ fn save_button_dispatches_save_outcome() {
 }
 
 #[test]
+fn provider_origin_change_requires_visible_confirmation_before_save() {
+    let mut m = model_on(SettingsTab::Provider);
+    m.cfg.provider.base_url = "https://proxy.example.com/v1".into();
+    let (mut harness, _model, outcome) = harness_for(m);
+    harness.run();
+
+    let confirmation = "I confirm sending API credentials and text to this new provider origin";
+    assert!(label_exists(&harness, confirmation));
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(*outcome.lock().unwrap(), None);
+
+    harness.get_by_label(confirmation).click();
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(*outcome.lock().unwrap(), Some(SettingsOutcome::Save));
+}
+
+#[test]
 fn open_config_button_dispatches_open_config_outcome() {
     let (mut harness, _model, outcome) = harness_for(model_on(SettingsTab::Provider));
     harness.run();

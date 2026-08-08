@@ -1,18 +1,236 @@
 //! `config.toml` loader. Reads the spec §6 schema. M1–M3 only consumed
 //! `[provider]`, `[provider.api_key]`, `[languages]`, `[hotkey]`, `[ui]`.
 //! M4 added `[glossary]` and `[templates]`. M5 adds `[history]` and the
-//! nested `[hotkey.history]` sub-table. `[tray]` and `[logging]` are
-//! still loaded but unused pending later milestones. Defaults applied
-//! when fields are absent.
+//! nested `[hotkey.history]` sub-table. Defaults apply when fields are
+//! absent; unknown user-authored fields are rejected so typos fail closed.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::TranslateError;
 
+/// Resolve a user-authored path beneath the configuration directory.
+///
+/// Absolute paths and parent traversal are rejected lexically. Existing
+/// targets (or the nearest existing ancestor of a missing target) are then
+/// canonicalized so symlinks cannot escape the configuration directory.
+pub fn resolve_confined_path(
+    config_dir: &Path,
+    configured_path: &str,
+) -> Result<PathBuf, TranslateError> {
+    let authored = Path::new(configured_path);
+    if authored.is_absolute() {
+        return Err(TranslateError::Config(format!(
+            "configured path must be relative to the configuration directory: {configured_path}"
+        )));
+    }
+
+    let mut relative = PathBuf::new();
+    for component in authored.components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(TranslateError::Config(format!(
+                    "configured path resolves outside the configuration directory: {configured_path}"
+                )));
+            }
+        }
+    }
+
+    let root = match std::fs::symlink_metadata(config_dir) {
+        Ok(_) => std::fs::canonicalize(config_dir).map_err(|e| {
+            TranslateError::Config(format!(
+                "resolving configuration directory {}: {e}",
+                config_dir.display()
+            ))
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if config_dir
+                .components()
+                .any(|component| component == Component::ParentDir)
+            {
+                return Err(TranslateError::Config(format!(
+                    "missing configuration directory must not contain parent traversal: {}",
+                    config_dir.display()
+                )));
+            }
+            let absolute = if config_dir.is_absolute() {
+                config_dir.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| {
+                        TranslateError::Config(format!("resolving current directory: {e}"))
+                    })?
+                    .join(config_dir)
+            };
+            let mut existing = absolute.as_path();
+            let mut missing_components = Vec::new();
+            loop {
+                match std::fs::symlink_metadata(existing) {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let component = existing.file_name().ok_or_else(|| {
+                            TranslateError::Config(format!(
+                                "could not resolve missing configuration directory {}",
+                                config_dir.display()
+                            ))
+                        })?;
+                        missing_components.push(component.to_os_string());
+                        existing = existing.parent().ok_or_else(|| {
+                            TranslateError::Config(format!(
+                                "could not resolve missing configuration directory {}",
+                                config_dir.display()
+                            ))
+                        })?;
+                    }
+                    Err(e) => {
+                        return Err(TranslateError::Config(format!(
+                            "checking configuration directory {}: {e}",
+                            config_dir.display()
+                        )));
+                    }
+                }
+            }
+            let mut missing_root = std::fs::canonicalize(existing).map_err(|e| {
+                TranslateError::Config(format!(
+                    "resolving configuration directory ancestor {}: {e}",
+                    existing.display()
+                ))
+            })?;
+            for component in missing_components.into_iter().rev() {
+                missing_root.push(component);
+            }
+            return Ok(missing_root.join(relative));
+        }
+        Err(e) => {
+            return Err(TranslateError::Config(format!(
+                "checking configuration directory {}: {e}",
+                config_dir.display()
+            )));
+        }
+    };
+    let candidate = root.join(relative);
+
+    let mut existing = candidate.as_path();
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or_else(|| {
+                    TranslateError::Config(format!(
+                        "configured path resolves outside the configuration directory: {configured_path}"
+                    ))
+                })?;
+            }
+            Err(e) => {
+                return Err(TranslateError::Config(format!(
+                    "checking configured path {}: {e}",
+                    candidate.display()
+                )));
+            }
+        }
+    }
+
+    let target_exists = existing == candidate;
+    let unresolved_suffix = candidate
+        .strip_prefix(existing)
+        .expect("existing path is an ancestor of the configured candidate")
+        .to_path_buf();
+    let resolved_existing = std::fs::canonicalize(existing).map_err(|e| {
+        TranslateError::Config(format!(
+            "resolving configured path {}: {e}",
+            existing.display()
+        ))
+    })?;
+    if !resolved_existing.starts_with(&root) {
+        return Err(TranslateError::Config(format!(
+            "configured path resolves outside the configuration directory: {configured_path}"
+        )));
+    }
+
+    if target_exists {
+        Ok(resolved_existing)
+    } else {
+        Ok(resolved_existing.join(unresolved_suffix))
+    }
+}
+
+/// Parsed and validated provider base URL.
+#[derive(Debug, Clone)]
+pub struct ProviderEndpoint {
+    url: reqwest::Url,
+}
+
+impl ProviderEndpoint {
+    /// Parse a provider endpoint. HTTPS is always required for remote hosts;
+    /// HTTP is accepted only for loopback hosts when the provider profile
+    /// explicitly opts into local HTTP.
+    pub fn parse(value: &str, allow_loopback_http: bool) -> Result<Self, TranslateError> {
+        let mut url = reqwest::Url::parse(value).map_err(|e| {
+            TranslateError::Config(format!("provider.base_url is not a valid URL: {e}"))
+        })?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(TranslateError::Config(
+                "provider.base_url must not contain embedded credentials".into(),
+            ));
+        }
+        let host = url.host_str().ok_or_else(|| {
+            TranslateError::Config("provider.base_url must include a host".into())
+        })?;
+        let host_without_brackets = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        let loopback = host.eq_ignore_ascii_case("localhost")
+            || host_without_brackets
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+        match url.scheme() {
+            "https" => {}
+            "http" if allow_loopback_http && loopback => {}
+            "http" if loopback => {
+                return Err(TranslateError::Config(
+                    "provider.base_url permits loopback HTTP only for local provider profiles"
+                        .into(),
+                ));
+            }
+            "http" => {
+                return Err(TranslateError::Config(
+                    "provider.base_url must use HTTPS for remote hosts".into(),
+                ));
+            }
+            scheme => {
+                return Err(TranslateError::Config(format!(
+                    "provider.base_url must use HTTP or HTTPS; got {scheme}"
+                )));
+            }
+        }
+
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        Ok(Self { url })
+    }
+
+    pub fn request_url(&self, relative_path: &str) -> reqwest::Url {
+        self.url
+            .join(relative_path.trim_start_matches('/'))
+            .expect("provider request paths are valid URL path segments")
+    }
+
+    pub fn same_origin(&self, other: &Self) -> bool {
+        self.url.scheme() == other.url.scheme()
+            && self.url.host_str().map(str::to_ascii_lowercase)
+                == other.url.host_str().map(str::to_ascii_lowercase)
+            && self.url.port_or_known_default() == other.url.port_or_known_default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub provider: ProviderConfig,
     pub languages: LanguagesConfig,
@@ -24,7 +242,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
     /// One of: "anthropic", "openai", "gemini", "ollama", "deepseek".
     /// gemini, ollama, and deepseek route through the OpenAI-compatible provider.
@@ -51,7 +269,7 @@ impl Default for ProviderConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ApiKeyConfig {
     /// "keychain" | "env" | "file" | "prompt". M1 only honored "env"; M6
     /// added "keychain"; M8 added "file" as the macOS dev fallback when
@@ -82,7 +300,7 @@ impl Default for ApiKeyConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LanguagesConfig {
     pub slot_1: LanguageSlot,
     pub slot_2: LanguageSlot,
@@ -119,13 +337,14 @@ impl Default for LanguagesConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LanguageSlot {
     pub label: String,
     pub code: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HotkeyConfig {
     /// "cmd" → Cmd on macOS, Ctrl on Linux/Windows. "ctrl" → Ctrl on every OS.
     /// "alt" / "super" allowed but unmapped (passthrough).
@@ -164,7 +383,7 @@ impl Default for HotkeyConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HistoryHotkeyConfig {
     pub modifier: String,
     pub option: bool,
@@ -186,7 +405,7 @@ impl Default for HistoryHotkeyConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SelectionHotkeyConfig {
     pub modifier: String,
     pub option: bool,
@@ -210,7 +429,7 @@ impl Default for SelectionHotkeyConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ReplaceHotkeyConfig {
     pub modifier: String,
     pub option: bool,
@@ -236,7 +455,7 @@ impl Default for ReplaceHotkeyConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
     /// "normal" or "compact". Drives prompt window width (520 vs 460).
     pub density: String,
@@ -257,7 +476,7 @@ impl Default for UiConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GlossaryConfig {
     /// When false, the glossary loader is bypassed entirely and
     /// `{{ glossary_block }}` always renders empty.
@@ -289,7 +508,7 @@ impl Default for GlossaryConfig {
 /// point at the conventional `templates/<action>.j2` paths; the
 /// override loader treats those as opt-in (file must exist).
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TemplatesConfig {
     pub translate: Option<String>,
     pub fix_grammar: Option<String>,
@@ -311,7 +530,7 @@ impl Default for TemplatesConfig {
 /// `[history]` block per spec §6 + §7. M5 wires this into the
 /// `History` opener and the per-translation insert path.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HistoryConfig {
     /// When false, history is fully disabled — the SQLite file is
     /// neither opened at startup nor written to. The viewer hotkey
@@ -359,6 +578,8 @@ impl Config {
     /// edited config to disk — the GUI must fail the same way the file
     /// loader would, or a save could produce a config that won't load.
     pub fn validate(&self) -> Result<(), TranslateError> {
+        self.provider_endpoint()?;
+
         match self.provider.api_key.source.as_str() {
             "keychain" | "env" | "prompt" | "file" => {}
             other => {
@@ -384,6 +605,11 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    pub fn provider_endpoint(&self) -> Result<ProviderEndpoint, TranslateError> {
+        let profile = crate::llm::profiles::provider_profile(&self.provider.kind)?;
+        ProviderEndpoint::parse(&self.provider.base_url, profile.allow_loopback_http)
     }
 
     /// Auto-correct stale provider defaults when the user changes `type`
@@ -1159,6 +1385,82 @@ code = "fr"
         cfg.normalize();
         assert_eq!(cfg.languages.slot_3.label, "Français");
         assert_eq!(cfg.languages.slot_3.code, "fr");
+    }
+
+    #[test]
+    fn rejects_unknown_fields_in_user_authored_config_sections() {
+        for contents in [
+            "[history]\nstore_txt = false\n",
+            "[provider]\nmodle = \"typo\"\n",
+            "[hotkey.history]\nshfit = true\n",
+            "[templates]\ntransalte = \"templates/translate.j2\"\n",
+            "[glossary]\nmatcing = \"auto\"\n",
+        ] {
+            let mut file = NamedTempFile::new().unwrap();
+            write!(file, "{contents}").unwrap();
+
+            let err = Config::load(file.path()).unwrap_err();
+            assert!(err.to_string().contains("unknown field"), "error: {err}");
+        }
+    }
+
+    #[test]
+    fn provider_endpoint_accepts_https_and_loopback_http_when_allowed() {
+        assert!(ProviderEndpoint::parse("https://api.openai.com/v1", false).is_ok());
+        for endpoint in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
+            assert!(
+                ProviderEndpoint::parse(endpoint, true).is_ok(),
+                "endpoint: {endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_endpoint_rejects_unsafe_or_invalid_urls() {
+        for (endpoint, allow_loopback) in [
+            ("http://example.com/v1", false),
+            ("http://example.com/v1", true),
+            ("http://127.0.0.1:11434/v1", false),
+            ("https://user@example.com/v1", false),
+            ("https://user:password@example.com/v1", false),
+            ("not a url", false),
+            ("file:///tmp/socket", false),
+        ] {
+            assert!(
+                ProviderEndpoint::parse(endpoint, allow_loopback).is_err(),
+                "endpoint should be rejected: {endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_endpoint_builds_request_urls_and_compares_origins() {
+        let endpoint = ProviderEndpoint::parse("https://api.example.com/v1", false).unwrap();
+        assert_eq!(
+            endpoint.request_url("chat/completions").as_str(),
+            "https://api.example.com/v1/chat/completions"
+        );
+        let same = ProviderEndpoint::parse("https://api.example.com/other", false).unwrap();
+        let changed = ProviderEndpoint::parse("https://other.example.com/v1", false).unwrap();
+        assert!(endpoint.same_origin(&same));
+        assert!(!endpoint.same_origin(&changed));
+    }
+
+    #[test]
+    fn config_allows_loopback_http_only_for_local_provider_profile() {
+        let mut cfg = Config::default();
+        cfg.provider.base_url = "http://127.0.0.1:11434/v1".into();
+        assert!(cfg.validate().is_err());
+
+        cfg.provider.kind = "ollama".into();
+        assert!(cfg.validate().is_ok());
+
+        cfg.provider.base_url = "http://example.com/v1".into();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

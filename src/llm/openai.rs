@@ -13,11 +13,12 @@ use zeroize::Zeroizing;
 
 use super::client::{default_backoffs, with_retry, AttemptOutcome};
 use super::LlmProvider;
+use crate::config::ProviderEndpoint;
 use crate::error::TranslateError;
 
 pub struct OpenAiCompatibleProvider {
     http: Client,
-    base_url: String,
+    endpoint: ProviderEndpoint,
     api_key: Zeroizing<String>,
     model: String,
     backoffs: Vec<Duration>,
@@ -25,19 +26,15 @@ pub struct OpenAiCompatibleProvider {
 
 impl OpenAiCompatibleProvider {
     pub fn new(
-        base_url: impl Into<String>,
+        endpoint: ProviderEndpoint,
         api_key: Zeroizing<String>,
         model: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, TranslateError> {
-        let http = Client::builder()
-            .timeout(timeout)
-            .user_agent(concat!("clipt9n/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| TranslateError::Network(format!("building HTTP client: {e}")))?;
+        let http = super::client::provider_http_client(timeout)?;
         Ok(Self {
             http,
-            base_url: base_url.into(),
+            endpoint,
             api_key,
             model: model.into(),
             backoffs: default_backoffs(),
@@ -84,7 +81,7 @@ struct OpenAiResponseMessage {
 #[async_trait]
 impl LlmProvider for OpenAiCompatibleProvider {
     async fn complete(&self, system: &str, user: &str) -> Result<String, TranslateError> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = self.endpoint.request_url("chat/completions");
         let body = OpenAiRequest {
             model: &self.model,
             messages: vec![
@@ -110,7 +107,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             let http = self.http.clone();
             async move {
                 match http
-                    .post(&url)
+                    .post(url)
                     .header("authorization", format!("Bearer {}", &**api_key))
                     .header("content-type", "application/json")
                     .body(body_bytes)
@@ -144,12 +141,12 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         } else if status.is_server_error() {
                             AttemptOutcome::Retry(TranslateError::Provider {
                                 status: status.as_u16(),
-                                message: resp.text().await.unwrap_or_default(),
+                                message: super::client::bounded_provider_error(resp).await,
                             })
                         } else {
                             AttemptOutcome::Fatal(TranslateError::Provider {
                                 status: status.as_u16(),
-                                message: resp.text().await.unwrap_or_default(),
+                                message: super::client::bounded_provider_error(resp).await,
                             })
                         }
                     }
