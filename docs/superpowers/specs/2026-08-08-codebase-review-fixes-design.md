@@ -1,7 +1,7 @@
 # Codebase Review Fixes Design
 
-**Date:** 2026-08-08  
-**Status:** Approved for planning  
+**Date:** 2026-08-08
+**Status:** Approved for planning
 **Base:** `main` at `d6903eb`
 
 ## Objective
@@ -30,7 +30,7 @@ Use staged integration rather than unrestricted fanout:
 
 ## Lane 1: Desktop I/O Safety
 
-**Branch:** `fix/desktop-io`  
+**Branch:** `fix/desktop-io`
 **Primary ownership:** `src/app/prompt.rs`, `src/app/translation.rs`, desktop clipboard/focus/paste interfaces, and their tests.
 
 ### Required behavior
@@ -50,7 +50,7 @@ This seam must remain narrow: selection snapshot/restore, result write, destinat
 
 ## Lane 2: Setup, Settings, and Provider Profiles
 
-**Branch:** `fix/setup-settings`  
+**Branch:** `fix/setup-settings`
 **Primary ownership:** `src/app/setup.rs`, `src/app/settings.rs`, `src/ui/setup.rs`, provider construction/default metadata, and focused tests.
 
 ### Required behavior
@@ -73,7 +73,7 @@ Create one configuration-commit interface shared by Setup and Settings. It accep
 
 ## Lane 3: Secrets, History, and Notification Privacy
 
-**Branch:** `fix/secrets-history`  
+**Branch:** `fix/secrets-history`
 **Primary ownership:** `src/secrets.rs`, `src/history/crypto.rs`, `src/history/store.rs`, `src/notify.rs`, and focused tests.
 
 ### Required behavior
@@ -93,7 +93,7 @@ The fixes protect credentials and retained translations from other local users, 
 
 ## Lane 4: Runtime, Hotkeys, Tray, State, and Platform Adapters
 
-**Branch:** `fix/runtime-platform`  
+**Branch:** `fix/runtime-platform`
 **Primary ownership:** `src/main.rs`, hotkey configuration/registration support, `src/app/channels.rs`, `src/state.rs`, `src/platform/*`, and focused tests.
 
 ### Required behavior
@@ -116,7 +116,7 @@ Platform adapters continue to own all target-specific code. Cross-platform app m
 
 ## Lane 5: Release, CI, Packaging, Fuzzing, and Repository Hygiene
 
-**Branch:** `fix/release-ci`  
+**Branch:** `fix/release-ci`
 **Primary ownership:** `Cargo.toml`, `Cargo.lock`, `.github/workflows/*`, packaging scripts, fuzz targets, `TESTING.md`, benchmark/release documentation, README installation metadata, and package include/exclude policy.
 
 ### Required behavior
@@ -137,7 +137,7 @@ Platform adapters continue to own all target-specific code. Cross-platform app m
 
 ## Lane 6: Configuration and Provider Boundary Security
 
-**Branch:** `fix/config-security`  
+**Branch:** `fix/config-security`
 **Start point:** integrated Wave 1 branch after provider-profile work.
 
 **Primary ownership:** configuration validation, template/glossary path resolution, provider HTTP clients, and focused tests.
