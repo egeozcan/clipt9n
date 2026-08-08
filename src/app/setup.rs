@@ -4,7 +4,6 @@
 
 use crate::error::TranslateError;
 use crate::platform::Platform;
-use crate::secrets::Secrets;
 use crate::ui::prompt_default_inner_size;
 
 impl super::ClipApp {
@@ -14,33 +13,24 @@ impl super::ClipApp {
         mut model: crate::ui::setup::SetupWizardModel,
     ) {
         // First, drain any check results sitting on our channel.
-        while let Ok((check, result)) = self.setup_check_rx.try_recv() {
-            match (check, result) {
-                (crate::ui::setup::SetupCheck::Connectivity, Ok(())) => {
-                    model.check1 = crate::ui::setup::CheckStatus::Ok;
-                    if !model.test_translation {
-                        // Skip check2; advance to Done.
-                        model.phase = crate::ui::setup::WizardPhase::Done;
-                    } else {
-                        // Kick off check2.
-                        model.check2 = crate::ui::setup::CheckStatus::Running;
-                        self.spawn_sample_translation_check(&model.provider, model.key.clone());
-                    }
-                }
-                (crate::ui::setup::SetupCheck::Connectivity, Err(msg)) => {
-                    model.check1 = crate::ui::setup::CheckStatus::Fail;
-                    model.err_msg = msg;
-                    model.phase = crate::ui::setup::WizardPhase::Error;
-                }
-                (crate::ui::setup::SetupCheck::SampleTranslation, Ok(())) => {
-                    model.check2 = crate::ui::setup::CheckStatus::Ok;
-                    model.phase = crate::ui::setup::WizardPhase::Done;
-                }
-                (crate::ui::setup::SetupCheck::SampleTranslation, Err(msg)) => {
-                    model.check2 = crate::ui::setup::CheckStatus::Fail;
-                    model.err_msg = msg;
-                    model.phase = crate::ui::setup::WizardPhase::Error;
-                }
+        while let Ok((verification_id, check, result)) = self.setup_check_rx.try_recv() {
+            let start_sample = verification_id == model.verification_id
+                && check == crate::ui::setup::SetupCheck::Connectivity
+                && result.is_ok()
+                && model.test_translation;
+            if !apply_setup_result(&mut model, verification_id, check, result) {
+                tracing::debug!(
+                    ?verification_id,
+                    "discarding stale setup verification result"
+                );
+                continue;
+            }
+            if start_sample {
+                self.spawn_sample_translation_check(
+                    verification_id,
+                    &model.provider,
+                    model.verification_key.clone(),
+                );
             }
         }
 
@@ -49,14 +39,26 @@ impl super::ClipApp {
         match outcome {
             Some(crate::ui::setup::SetupOutcome::Cancel) => {
                 tracing::warn!("setup wizard cancelled — no API key persisted");
+                invalidate_setup_verification(&mut self.setup_verification_gen, &mut model);
                 self.dismiss_setup_to_idle(ctx);
             }
             Some(crate::ui::setup::SetupOutcome::Verify) => {
+                let key = match verification_key(&model) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        model.err_msg = e.to_string();
+                        model.phase = crate::ui::setup::WizardPhase::Error;
+                        self.app_state = super::AppState::SetupWizard { model };
+                        return;
+                    }
+                };
+                seed_setup_verification(&mut self.setup_verification_gen, &mut model);
+                model.verification_key = key.clone();
                 model.phase = crate::ui::setup::WizardPhase::Verifying;
                 model.check1 = crate::ui::setup::CheckStatus::Running;
                 model.check2 = crate::ui::setup::CheckStatus::Idle;
                 model.err_msg.clear();
-                self.spawn_connectivity_check(&model.provider, model.key.clone());
+                self.spawn_connectivity_check(model.verification_id, &model.provider, key);
                 self.app_state = super::AppState::SetupWizard { model };
             }
             Some(crate::ui::setup::SetupOutcome::SaveAndStart) => {
@@ -89,7 +91,12 @@ impl super::ClipApp {
         }
     }
 
-    fn spawn_connectivity_check(&self, provider: &str, key: zeroize::Zeroizing<String>) {
+    fn spawn_connectivity_check(
+        &self,
+        verification_id: crate::ui::setup::VerificationId,
+        provider: &str,
+        key: zeroize::Zeroizing<String>,
+    ) {
         // Use the wizard-selected provider's default base URL — the
         // live cfg.provider.base_url may not match the wizard's
         // selection until Save-and-start rewrites the config.
@@ -110,6 +117,7 @@ impl super::ClipApp {
                 result
             };
             let _ = tx.send((
+                verification_id,
                 crate::ui::setup::SetupCheck::Connectivity,
                 final_result.map_err(|e| e.to_string()),
             ));
@@ -117,7 +125,12 @@ impl super::ClipApp {
         });
     }
 
-    fn spawn_sample_translation_check(&self, provider_kind: &str, key: zeroize::Zeroizing<String>) {
+    fn spawn_sample_translation_check(
+        &self,
+        verification_id: crate::ui::setup::VerificationId,
+        provider_kind: &str,
+        key: zeroize::Zeroizing<String>,
+    ) {
         // The wizard's selected provider may differ from the running
         // self.provider (which was built from the cfg at startup, possibly
         // with a placeholder key). Build a fresh provider from the
@@ -133,24 +146,28 @@ impl super::ClipApp {
         let ctx = self.repaint_ctx.clone();
         let runtime = self.runtime.handle().clone();
         runtime.spawn(async move {
-            let base_url_override = crate::ui::setup::default_base_url(&provider_kind);
-            // Build a config with the wizard's selected provider kind so the
-            // factory routes to the right provider type. The base URL override
-            // ensures we use the per-provider default (from
-            // setup::default_base_url), not cfg.provider.base_url, because the
-            // user might be configuring a fresh provider whose base_url hasn't
-            // been persisted yet.
-            let mut check_cfg = cfg.clone();
-            check_cfg.provider.kind = provider_kind.clone();
-            let provider_result = crate::llm::factory::build_provider(
-                &check_cfg,
-                key.clone(),
-                Some(base_url_override),
-            );
+            let check_cfg = match sample_check_config(
+                &cfg,
+                &provider_kind,
+                crate::ui::setup::default_base_url(&provider_kind),
+            ) {
+                Ok(check_cfg) => check_cfg,
+                Err(e) => {
+                    let _ = tx.send((
+                        verification_id,
+                        crate::ui::setup::SetupCheck::SampleTranslation,
+                        Err(e.to_string()),
+                    ));
+                    return;
+                }
+            };
+            let provider_result =
+                crate::llm::factory::build_provider(&check_cfg, key.clone(), None);
             let provider = match provider_result {
                 Ok(p) => p,
                 Err(e) => {
                     let _ = tx.send((
+                        verification_id,
                         crate::ui::setup::SetupCheck::SampleTranslation,
                         Err(e.to_string()),
                     ));
@@ -177,6 +194,7 @@ impl super::ClipApp {
                 result
             };
             let _ = tx.send((
+                verification_id,
                 crate::ui::setup::SetupCheck::SampleTranslation,
                 final_result.map(|_| ()).map_err(|e| e.to_string()),
             ));
@@ -196,111 +214,159 @@ impl super::ClipApp {
         &mut self,
         model: &crate::ui::setup::SetupWizardModel,
     ) -> Result<(), TranslateError> {
-        // Update in-memory config.
-        let prev_kind = self.cfg.provider.kind.clone();
-        self.cfg.provider.kind = model.provider.clone();
-        // Auto-select sensible defaults when switching providers.
-        if self.cfg.provider.kind != prev_kind {
-            self.cfg.provider.model = crate::ui::setup::default_model(&model.provider).to_string();
-            self.cfg.provider.base_url =
-                crate::ui::setup::default_base_url(&model.provider).to_string();
+        let profile = crate::llm::profiles::provider_profile(&model.provider)?;
+        let mut candidate = self.cfg.clone();
+        let provider_changed = candidate.provider.kind != profile.id;
+        candidate.provider.kind = profile.id.to_string();
+        if provider_changed {
+            candidate.provider.model = profile.default_model.to_string();
+            candidate.provider.base_url = profile.default_base_url.to_string();
         }
-        let new_source = match model.storage {
+        candidate.provider.api_key.source = match model.storage {
             crate::ui::setup::Storage::Keychain => "keychain",
             crate::ui::setup::Storage::Env => "env",
-        };
-        self.cfg.provider.api_key.source = new_source.into();
-        self.cfg.provider.api_key.account = model.provider.clone();
-        // Update env-var name for the env case so the user knows what
-        // to export.
-        let (_, _, env_var) = crate::ui::setup::provider_meta(&model.provider);
-        self.cfg.provider.api_key.env_var = env_var.into();
+        }
+        .into();
+        candidate.provider.api_key.account = profile.account.to_string();
+        candidate.provider.api_key.env_var = profile.env_var.to_string();
+        candidate.validate()?;
 
-        // Persist config to disk.
-        let cfg_path = self.config_path().to_path_buf();
-        self.cfg.persist(&cfg_path)?;
-
-        // Persist the key to the chosen backend. Env-storage logs a
-        // warning that the user must set the env var manually — the
-        // wizard already showed them the variable name.
-        match model.storage {
-            crate::ui::setup::Storage::Keychain => {
-                // Build a fresh KeychainSecrets from the just-updated
-                // cfg so the key lands in the correct slot when the
-                // user switches providers in the wizard. self.secrets
-                // was constructed at startup from the OLD account and
-                // would write to the stale slot.
-                let fresh = crate::secrets::KeychainSecrets::new(
-                    &self.cfg.provider.api_key.service,
-                    &self.cfg.provider.api_key.account,
-                );
-                fresh.set_api_key(model.key.clone())?;
-                // Read-back self-test: macOS silently fails to persist
-                // keychain items written by unsigned / ad-hoc-signed
-                // binaries (SecItemAdd reports success, the item is
-                // never findable). Detect that here and auto-fallback
-                // to a 0600 keyfile under the config dir so the user's
-                // wizard run still produces a key that survives a
-                // restart instead of throwing them back into the
-                // wizard on every launch.
-                let verify = crate::secrets::KeychainSecrets::new(
-                    &self.cfg.provider.api_key.service,
-                    &self.cfg.provider.api_key.account,
-                );
-                let readback_ok = matches!(
-                    verify.get_api_key(),
-                    Ok(read) if *read == *model.key
-                );
-                if !readback_ok {
-                    let config_dir = cfg_path.parent().ok_or_else(|| {
-                        TranslateError::Config("config path has no parent".into())
-                    })?;
-                    let keyfile = crate::secrets::FileSecrets::keyfile_path(config_dir);
-                    let file_secrets = crate::secrets::FileSecrets::new(keyfile.clone());
-                    file_secrets.set_api_key(model.key.clone())?;
-                    self.cfg.provider.api_key.source = "file".into();
-                    self.cfg.provider.api_key.path = keyfile.to_string_lossy().into_owned();
-                    self.cfg.persist(&cfg_path)?;
-                    tracing::warn!(
-                        path = %keyfile.display(),
-                        "keychain write didn't persist; fell back to 0600 keyfile"
-                    );
-                }
-            }
+        let (key, credential) = match model.storage {
+            crate::ui::setup::Storage::Keychain => (
+                model.key.clone(),
+                crate::config_commit::Credential::Store(model.key.clone()),
+            ),
             crate::ui::setup::Storage::Env => {
-                tracing::warn!(
-                    env_var = %env_var,
-                    "setup wizard: storage=env — user must set the env var manually before next launch"
-                );
+                if !model.key.is_empty() {
+                    return Err(TranslateError::Config(format!(
+                        "cannot save a typed API key to environment storage; set {} and clear the key field",
+                        profile.env_var
+                    )));
+                }
+                let key = crate::secrets::resolve(&candidate.provider.api_key)
+                    .get_api_key()
+                    .map_err(|_| {
+                        TranslateError::Config(format!(
+                            "environment storage requires {}; export it before Save",
+                            profile.env_var
+                        ))
+                    })?;
+                (key, crate::config_commit::Credential::Keep)
             }
-        }
+        };
 
-        // M7 Task 10 (Q6): live provider rebuild — replaces self.provider
-        // so the next translation uses the just-saved key without
-        // requiring a restart. The wizard's Verify gate already proved
-        // the key works at the network level; if build_provider fails
-        // here, the constraint is config-shape (e.g., a malformed URL).
-        // Wipe self.provider so the next translation surfaces the
-        // failure rather than using the stale provider.
-        match crate::llm::factory::build_provider(&self.cfg, model.key.clone(), None) {
-            Ok(new_provider) => {
-                self.provider = Some(new_provider);
-                tracing::info!("setup wizard: provider rebuilt with new key");
-            }
-            Err(e) => {
-                self.provider = None;
-                tracing::error!(error = %e, "setup wizard: provider rebuild failed; next translation will surface this");
-                return Err(e);
-            }
-        }
+        // Provider construction is the final non-I/O gate. Neither live
+        // state nor config.toml has changed if it rejects the candidate.
+        let new_provider = crate::llm::factory::build_provider(&candidate, key, None)?;
+        let cfg_path = self.config_path().to_path_buf();
+        let config_dir = cfg_path
+            .parent()
+            .ok_or_else(|| TranslateError::Config("config path has no parent".into()))?;
+        let committed = crate::config_commit::ConfigCommitter::new(
+            crate::config_commit::DiskAtomicConfig::new(&cfg_path),
+            crate::config_commit::SystemCredentialStore::new(config_dir),
+        )
+        .commit(candidate, credential)?;
 
+        self.cfg = committed.config;
+        self.provider = Some(new_provider);
+        tracing::info!("setup wizard: configuration committed and provider rebuilt");
         Ok(())
     }
 }
 
 // -----------------------------------------------------------------------
-// Async helpers
+// Pure verification helpers and async checks
 // -----------------------------------------------------------------------
+
+fn verification_key(
+    model: &crate::ui::setup::SetupWizardModel,
+) -> Result<zeroize::Zeroizing<String>, TranslateError> {
+    if !model.key.is_empty() {
+        return Ok(model.key.clone());
+    }
+    let profile = crate::llm::profiles::provider_profile(&model.provider)?;
+    if model.storage != crate::ui::setup::Storage::Env {
+        return Err(TranslateError::Config(
+            "enter an API key before Verify".into(),
+        ));
+    }
+    std::env::var(profile.env_var)
+        .map(zeroize::Zeroizing::new)
+        .map_err(|_| {
+            TranslateError::Config(format!(
+                "environment verification requires {}; export it before Verify",
+                profile.env_var
+            ))
+        })
+}
+
+pub(super) fn seed_setup_verification(
+    generation: &mut u64,
+    model: &mut crate::ui::setup::SetupWizardModel,
+) {
+    *generation = generation.wrapping_add(1);
+    model.verification_id = crate::ui::setup::VerificationId(*generation);
+}
+
+fn invalidate_setup_verification(
+    generation: &mut u64,
+    model: &mut crate::ui::setup::SetupWizardModel,
+) {
+    seed_setup_verification(generation, model);
+}
+
+fn apply_setup_result(
+    model: &mut crate::ui::setup::SetupWizardModel,
+    verification_id: crate::ui::setup::VerificationId,
+    check: crate::ui::setup::SetupCheck,
+    result: Result<(), String>,
+) -> bool {
+    if verification_id != model.verification_id {
+        return false;
+    }
+
+    match (check, result) {
+        (crate::ui::setup::SetupCheck::Connectivity, Ok(())) => {
+            model.check1 = crate::ui::setup::CheckStatus::Ok;
+            if model.test_translation {
+                model.check2 = crate::ui::setup::CheckStatus::Running;
+            } else {
+                model.phase = crate::ui::setup::WizardPhase::Done;
+            }
+        }
+        (crate::ui::setup::SetupCheck::Connectivity, Err(msg)) => {
+            model.check1 = crate::ui::setup::CheckStatus::Fail;
+            model.err_msg = msg;
+            model.phase = crate::ui::setup::WizardPhase::Error;
+        }
+        (crate::ui::setup::SetupCheck::SampleTranslation, Ok(())) => {
+            model.check2 = crate::ui::setup::CheckStatus::Ok;
+            model.phase = crate::ui::setup::WizardPhase::Done;
+        }
+        (crate::ui::setup::SetupCheck::SampleTranslation, Err(msg)) => {
+            model.check2 = crate::ui::setup::CheckStatus::Fail;
+            model.err_msg = msg;
+            model.phase = crate::ui::setup::WizardPhase::Error;
+        }
+    }
+    true
+}
+
+fn sample_check_config(
+    cfg: &crate::config::Config,
+    provider_kind: &str,
+    base_url: &str,
+) -> Result<crate::config::Config, TranslateError> {
+    let profile = crate::llm::profiles::provider_profile(provider_kind)?;
+    let mut check_cfg = cfg.clone();
+    check_cfg.provider.kind = profile.id.to_string();
+    check_cfg.provider.model = profile.default_model.to_string();
+    check_cfg.provider.base_url = base_url.to_string();
+    check_cfg.provider.api_key.account = profile.account.to_string();
+    check_cfg.provider.api_key.env_var = profile.env_var.to_string();
+    Ok(check_cfg)
+}
 
 async fn run_connectivity_check(
     provider: &str,
@@ -333,5 +399,115 @@ async fn run_connectivity_check(
             status: status.as_u16(),
             message: status.canonical_reason().unwrap_or("provider error").into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn stale_verification_result_cannot_advance_current_wizard() {
+        let mut model = crate::ui::setup::SetupWizardModel {
+            verification_id: crate::ui::setup::VerificationId(2),
+            phase: crate::ui::setup::WizardPhase::Verifying,
+            check1: crate::ui::setup::CheckStatus::Running,
+            ..Default::default()
+        };
+
+        assert!(!apply_setup_result(
+            &mut model,
+            crate::ui::setup::VerificationId(1),
+            crate::ui::setup::SetupCheck::Connectivity,
+            Ok(()),
+        ));
+        assert_eq!(model.phase, crate::ui::setup::WizardPhase::Verifying);
+        assert_eq!(model.check1, crate::ui::setup::CheckStatus::Running);
+
+        assert!(apply_setup_result(
+            &mut model,
+            crate::ui::setup::VerificationId(2),
+            crate::ui::setup::SetupCheck::Connectivity,
+            Ok(()),
+        ));
+        assert_eq!(model.check1, crate::ui::setup::CheckStatus::Ok);
+    }
+
+    #[test]
+    fn cancel_and_reopen_invalidate_prior_verification_results() {
+        let mut generation = 0;
+        let mut cancelled = crate::ui::setup::SetupWizardModel::default();
+        seed_setup_verification(&mut generation, &mut cancelled);
+        let cancelled_id = cancelled.verification_id;
+        invalidate_setup_verification(&mut generation, &mut cancelled);
+        assert_ne!(cancelled.verification_id, cancelled_id);
+
+        let mut reopened = crate::ui::setup::SetupWizardModel::default();
+        seed_setup_verification(&mut generation, &mut reopened);
+        reopened.phase = crate::ui::setup::WizardPhase::Verifying;
+        reopened.check1 = crate::ui::setup::CheckStatus::Running;
+        assert!(!apply_setup_result(
+            &mut reopened,
+            cancelled_id,
+            crate::ui::setup::SetupCheck::Connectivity,
+            Ok(()),
+        ));
+        assert_eq!(reopened.check1, crate::ui::setup::CheckStatus::Running);
+    }
+
+    #[test]
+    fn environment_verification_resolves_the_profile_variable() {
+        let variable = "OPENAI_API_KEY";
+        let previous = std::env::var_os(variable);
+        std::env::set_var(variable, "sk-from-env");
+        let model = crate::ui::setup::SetupWizardModel {
+            provider: "openai".into(),
+            storage: crate::ui::setup::Storage::Env,
+            ..Default::default()
+        };
+        let key = verification_key(&model).unwrap();
+        if let Some(previous) = previous {
+            std::env::set_var(variable, previous);
+        } else {
+            std::env::remove_var(variable);
+        }
+        assert_eq!(&*key, "sk-from-env");
+        assert!(model.key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_switch_sample_request_uses_selected_profile_model() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "Hello, world."}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "Hallo, Welt."}}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = Config::default();
+        assert_eq!(cfg.provider.kind, "anthropic");
+        let check_cfg = sample_check_config(&cfg, "openai", &server.uri()).unwrap();
+        let provider = crate::llm::factory::build_provider(
+            &check_cfg,
+            zeroize::Zeroizing::new("sk-test".into()),
+            None,
+        )
+        .unwrap();
+
+        let result = provider.complete("system", "Hello, world.").await.unwrap();
+        assert_eq!(result, "Hallo, Welt.");
     }
 }

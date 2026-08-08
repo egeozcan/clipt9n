@@ -230,10 +230,13 @@ pub struct ClipApp {
     tray: Option<crate::tray::TrayHandle>,
 
     /// Setup-wizard check results channel. The connectivity + sample-
-    /// translation tasks send `(SetupCheck, Result<(), String>)` here;
+    /// translation tasks send `(VerificationId, SetupCheck, Result)` here;
     /// `update_setup_wizard` drains it on every frame.
     setup_check_tx: std::sync::mpsc::Sender<crate::ui::setup::SetupCheckResult>,
     setup_check_rx: std::sync::mpsc::Receiver<crate::ui::setup::SetupCheckResult>,
+    /// Monotonic source for setup verification IDs. Bumped for every
+    /// seeded wizard, Verify click, and Cancel.
+    setup_verification_gen: u64,
 
     /// Captured at startup. The runtime tray-status computation
     /// preserves these warning surfaces unless they're superseded by
@@ -388,6 +391,7 @@ impl ClipApp {
             tray: None,
             setup_check_tx,
             setup_check_rx,
+            setup_verification_gen: 0,
             accessibility_revoked,
             hotkey_in_use,
             prompt_hotkey_id,
@@ -528,7 +532,8 @@ impl ClipApp {
     pub fn with_initial_state(mut self, state_kind: InitialState) -> Self {
         match state_kind {
             InitialState::Idle => {} // already the default
-            InitialState::SetupWizard(model) => {
+            InitialState::SetupWizard(mut model) => {
+                setup::seed_setup_verification(&mut self.setup_verification_gen, &mut model);
                 self.app_state = AppState::SetupWizard { model };
             }
             InitialState::Settings => {
@@ -557,6 +562,13 @@ impl ClipApp {
         let mut cb = ArboardClipboard::new()?;
         cb.write_text(text)
     }
+}
+
+fn dismiss_on_blur(state: &AppState) -> bool {
+    !matches!(
+        state,
+        AppState::Settings { .. } | AppState::SetupWizard { .. }
+    )
 }
 
 impl eframe::App for ClipApp {
@@ -594,13 +606,12 @@ impl eframe::App for ClipApp {
         // Clear `previous_app_pid` before dismissing — the user deliberately
         // clicked away to another app, so we must not yank them back.
         //
-        // The settings editor opts out: it's a form, not a Spotlight
-        // overlay. Users routinely tab away mid-edit (to a password
-        // manager for an API key, or to check a model id), and
-        // dismissing to Idle would throw away everything they typed
-        // with no way to get it back. It closes on Esc / Cancel / Save.
+        // Settings and SetupWizard opt out: they are forms, not Spotlight
+        // overlays. Users routinely tab away mid-edit (to a password
+        // manager for an API key, or to check a model id), and dismissing
+        // would throw away everything they typed. They close explicitly.
         let focused = ctx.input(|i| i.focused);
-        let dismiss_on_blur = !matches!(self.app_state, AppState::Settings { .. });
+        let dismiss_on_blur = dismiss_on_blur(&self.app_state);
         if dismiss_on_blur && pure::update_focus_loss_latch(focused, &mut self.has_been_focused) {
             self.previous_app_pid = None;
             self.dismiss_to_idle(ctx);
@@ -672,5 +683,26 @@ impl eframe::App for ClipApp {
         }
 
         self.refresh_tray_status();
+    }
+}
+
+#[cfg(test)]
+mod focus_dismiss_tests {
+    use super::*;
+
+    #[test]
+    fn forms_survive_focus_changes_but_transient_prompts_dismiss() {
+        let setup = AppState::SetupWizard {
+            model: crate::ui::setup::SetupWizardModel::default(),
+        };
+        let settings = AppState::Settings {
+            model: Box::new(crate::ui::settings::SettingsModel::default()),
+        };
+        assert!(!dismiss_on_blur(&setup));
+        assert!(!dismiss_on_blur(&settings));
+        assert!(dismiss_on_blur(&AppState::Showing));
+        assert!(dismiss_on_blur(&AppState::EnteringCustom {
+            model: crate::ui::custom_prompt::CustomPromptModel::default(),
+        }));
     }
 }

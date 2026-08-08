@@ -224,13 +224,14 @@ impl super::ClipApp {
         } else {
             crate::ui::setup::Storage::Env
         };
-        let model = crate::ui::setup::SetupWizardModel {
+        let mut model = crate::ui::setup::SetupWizardModel {
             provider: self.cfg.provider.kind.clone(),
             keychain_available,
             storage,
             test_translation: keychain_available, // env-only mode skips the live test
             ..Default::default()
         };
+        super::setup::seed_setup_verification(&mut self.setup_verification_gen, &mut model);
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             crate::ui::setup::SETUP_WIZARD_INNER_SIZE,
         ));

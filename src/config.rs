@@ -38,10 +38,12 @@ pub struct ProviderConfig {
 
 impl Default for ProviderConfig {
     fn default() -> Self {
+        let profile = crate::llm::profiles::provider_profile("anthropic")
+            .expect("anthropic provider profile");
         Self {
-            kind: "anthropic".into(),
-            model: "claude-haiku-4-5-20251001".into(),
-            base_url: "https://api.anthropic.com/v1".into(),
+            kind: profile.id.into(),
+            model: profile.default_model.into(),
+            base_url: profile.default_base_url.into(),
             timeout_seconds: 30,
             api_key: ApiKeyConfig::default(),
         }
@@ -67,11 +69,13 @@ pub struct ApiKeyConfig {
 
 impl Default for ApiKeyConfig {
     fn default() -> Self {
+        let profile = crate::llm::profiles::provider_profile("anthropic")
+            .expect("anthropic provider profile");
         Self {
             source: "env".into(),
             service: "clipboard-translator".into(),
-            account: "anthropic".into(),
-            env_var: "ANTHROPIC_API_KEY".into(),
+            account: profile.account.into(),
+            env_var: profile.env_var.into(),
             path: String::new(),
         }
     }
@@ -469,15 +473,8 @@ impl Config {
     /// config.toml is small. Other sections are preserved (we
     /// re-serialize the full Config).
     pub fn persist(&self, path: &Path) -> Result<(), TranslateError> {
-        let toml_str = toml::to_string_pretty(self)
-            .map_err(|e| TranslateError::Config(format!("serializing config: {e}")))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                TranslateError::Config(format!("creating {}: {e}", parent.display()))
-            })?;
-        }
-        std::fs::write(path, toml_str)
-            .map_err(|e| TranslateError::Config(format!("writing {}: {e}", path.display())))
+        use crate::config_commit::AtomicConfigStore;
+        crate::config_commit::DiskAtomicConfig::new(path).replace(self)
     }
 }
 

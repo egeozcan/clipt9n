@@ -338,7 +338,7 @@ fn draw_provider_tab(
             .selected_text(current_label)
             .width(260.0)
             .show_ui(ui, |ui| {
-                for (id, label, env_var) in &providers {
+                for (id, label, _env_var) in &providers {
                     let mut selected = model.cfg.provider.kind.clone();
                     if ui
                         .selectable_value(&mut selected, (*id).to_string(), *label)
@@ -349,12 +349,13 @@ fn draw_provider_tab(
                         // it — same courtesy the setup wizard extends,
                         // and it keeps `Config::normalize` from having
                         // to guess on the next load.
+                        let profile = crate::llm::profiles::provider_profile(id)
+                            .expect("settings providers come from provider profiles");
                         model.cfg.provider.kind = selected;
-                        model.cfg.provider.model = crate::ui::setup::default_model(id).to_string();
-                        model.cfg.provider.base_url =
-                            crate::ui::setup::default_base_url(id).to_string();
-                        model.cfg.provider.api_key.account = (*id).to_string();
-                        model.cfg.provider.api_key.env_var = (*env_var).to_string();
+                        model.cfg.provider.model = profile.default_model.to_string();
+                        model.cfg.provider.base_url = profile.default_base_url.to_string();
+                        model.cfg.provider.api_key.account = profile.account.to_string();
+                        model.cfg.provider.api_key.env_var = profile.env_var.to_string();
                     }
                 }
             });

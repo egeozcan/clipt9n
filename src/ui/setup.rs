@@ -42,6 +42,14 @@ pub struct SetupWizardModel {
     /// Cached at construction; the wizard hides the Keychain radio if
     /// false. The probe runs in `KeychainSecrets::keychain_available`.
     pub keychain_available: bool,
+    /// Identifies the currently active verification run. Results from
+    /// older runs (including a cancelled/reopened wizard) are ignored.
+    pub verification_id: VerificationId,
+    /// Key captured for the active verification run. Environment-backed
+    /// verification resolves into this field without populating the typed
+    /// key input, so Save can still enforce read-only env storage.
+    #[doc(hidden)]
+    pub verification_key: Zeroizing<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -147,6 +155,10 @@ pub fn default_model(provider_kind: &str) -> &'static str {
         .default_model
 }
 
+/// Monotonic identifier scoped to one setup verification run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VerificationId(pub u64);
+
 /// Which check produced a result. The App receives this in a channel
 /// and flips the corresponding `check1` / `check2` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +170,7 @@ pub enum SetupCheck {
 /// Outcome of a single check. `Ok(())` flips the corresponding row to
 /// `CheckStatus::Ok`; `Err(msg)` flips to `Fail` and stores the
 /// message in `model.err_msg`.
-pub type SetupCheckResult = (SetupCheck, Result<(), String>);
+pub type SetupCheckResult = (VerificationId, SetupCheck, Result<(), String>);
 
 /// Construct the connectivity-check URL + auth header set for the
 /// configured provider. Returns (url, auth_kind) where auth_kind is
@@ -191,7 +203,8 @@ pub fn save_enabled(model: &SetupWizardModel) -> bool {
 /// Whether the Verify button is enabled. Mirrors `!key || phase ==
 /// "verifying"` from jsx (negated).
 pub fn verify_enabled(model: &SetupWizardModel) -> bool {
-    !model.key.is_empty() && !matches!(model.phase, WizardPhase::Verifying)
+    (!model.key.is_empty() || model.storage == Storage::Env)
+        && !matches!(model.phase, WizardPhase::Verifying)
 }
 
 /// Paint the wizard. Returns at most one outcome per frame.
@@ -688,6 +701,16 @@ mod tests {
         assert!(verify_enabled(&m));
         m.phase = WizardPhase::Verifying;
         assert!(!verify_enabled(&m), "verifying disables re-click");
+    }
+
+    #[test]
+    fn environment_storage_can_verify_without_a_typed_key() {
+        let model = SetupWizardModel {
+            provider: "openai".into(),
+            storage: Storage::Env,
+            ..Default::default()
+        };
+        assert!(verify_enabled(&model));
     }
 
     #[test]

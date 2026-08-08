@@ -6,7 +6,6 @@ use std::time::SystemTime;
 
 use crate::error::TranslateError;
 use crate::platform::Platform;
-use crate::secrets::Secrets;
 use crate::ui::prompt_default_inner_size;
 use crate::ui::settings::{KeyStorage, SettingsModel, SettingsOutcome};
 
@@ -140,19 +139,11 @@ impl super::ClipApp {
         }
         new_cfg.validate()?;
 
-        // The key the rebuilt provider will carry: the freshly typed
-        // one, or whatever the new storage settings already resolve to.
+        // Resolve the key and credential write plan before constructing
+        // the provider. Environment storage is read-only: a typed key is
+        // rejected and the named variable must already resolve.
         let typed_key = (!model.api_key.is_empty()).then(|| model.api_key.clone());
-        let key = match &typed_key {
-            Some(k) => k.clone(),
-            None => crate::secrets::resolve(&new_cfg.provider.api_key)
-                .get_api_key()
-                .map_err(|e| {
-                    TranslateError::Config(format!(
-                        "no API key available for the selected storage ({e}) — enter one above"
-                    ))
-                })?,
-        };
+        let (key, credential) = credential_plan(&new_cfg, typed_key)?;
 
         // Construct before committing. This is local work (URL parsing,
         // header assembly) — no network call, so it is cheap and safe to
@@ -173,28 +164,12 @@ impl super::ClipApp {
             ));
         }
 
-        // ---- everything below is effectful ----
-        //
-        // These steps can still fail on I/O (a read-only config dir, a
-        // keychain that refuses the write). They run before `self` is
-        // touched, so a failure leaves the app's in-memory state still
-        // matching the old config.
-        //
-        // Config first, key second — same order as the wizard. The
-        // reverse would let a failed config write leave a *replaced*
-        // secret behind, destroying a working key to no purpose.
-        new_cfg.persist(&cfg_path)?;
-        if let Some(key) = typed_key {
-            let before = new_cfg.provider.api_key.clone();
-            self.store_api_key(&mut new_cfg, &config_dir, key)?;
-            // The keychain read-back test can redirect storage to a
-            // keyfile; that redirection has to reach disk too.
-            if new_cfg.provider.api_key.source != before.source
-                || new_cfg.provider.api_key.path != before.path
-            {
-                new_cfg.persist(&cfg_path)?;
-            }
-        }
+        let committed = crate::config_commit::ConfigCommitter::new(
+            crate::config_commit::DiskAtomicConfig::new(&cfg_path),
+            crate::config_commit::SystemCredentialStore::new(&config_dir),
+        )
+        .commit(new_cfg, credential)?;
+        let new_cfg = committed.config;
 
         // Point the glossary at its (possibly new) file and re-read it.
         // `reload_glossary` keeps the previous entries on a parse error,
@@ -226,64 +201,49 @@ impl super::ClipApp {
         Ok(())
     }
 
-    /// Write the key to the storage the user picked, updating `cfg` if
-    /// the write has to fall back. Mirrors the wizard's keychain
-    /// read-back self-test: on macOS an unsigned or ad-hoc-signed binary
-    /// gets a success from `SecItemAdd` for an item that is never
-    /// findable again, so a write that doesn't read back lands in a 0600
-    /// keyfile instead of silently evaporating by the next launch.
-    fn store_api_key(
-        &self,
-        cfg: &mut crate::config::Config,
-        config_dir: &std::path::Path,
-        key: zeroize::Zeroizing<String>,
-    ) -> Result<(), TranslateError> {
-        match KeyStorage::from_source(&cfg.provider.api_key.source) {
-            KeyStorage::Keychain => {
-                let entry = crate::secrets::KeychainSecrets::new(
-                    &cfg.provider.api_key.service,
-                    &cfg.provider.api_key.account,
-                );
-                entry.set_api_key(key.clone())?;
-                let verify = crate::secrets::KeychainSecrets::new(
-                    &cfg.provider.api_key.service,
-                    &cfg.provider.api_key.account,
-                );
-                let readback_ok = matches!(verify.get_api_key(), Ok(read) if *read == *key);
-                if !readback_ok {
-                    let keyfile = crate::secrets::FileSecrets::keyfile_path(config_dir);
-                    crate::secrets::FileSecrets::new(keyfile.clone()).set_api_key(key)?;
-                    cfg.provider.api_key.source = "file".into();
-                    cfg.provider.api_key.path = keyfile.to_string_lossy().into_owned();
-                    tracing::warn!(
-                        path = %keyfile.display(),
-                        "keychain write didn't persist; fell back to 0600 keyfile"
-                    );
-                }
-                Ok(())
-            }
-            KeyStorage::File => {
-                let path = std::path::PathBuf::from(&cfg.provider.api_key.path);
-                crate::secrets::FileSecrets::new(path).set_api_key(key)
-            }
-            KeyStorage::Env => {
-                // Nothing to write — the user owns the variable. The
-                // editor already showed them its name.
-                tracing::warn!(
-                    env_var = %cfg.provider.api_key.env_var,
-                    "settings: storage=env — the typed key is not persisted; export the variable instead"
-                );
-                Ok(())
-            }
-        }
-    }
-
     fn dismiss_settings_to_idle(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(prompt_default_inner_size(
             &self.cfg.ui,
         )));
         self.app_state = super::AppState::Idle;
         self.set_window_visible(ctx, false);
+    }
+}
+
+fn credential_plan(
+    cfg: &crate::config::Config,
+    typed_key: Option<zeroize::Zeroizing<String>>,
+) -> Result<(zeroize::Zeroizing<String>, crate::config_commit::Credential), TranslateError> {
+    if cfg.provider.api_key.source == "env" || cfg.provider.api_key.source == "prompt" {
+        if typed_key.is_some() {
+            return Err(TranslateError::Config(format!(
+                "cannot save a typed API key to environment storage; set {} and clear the key field",
+                cfg.provider.api_key.env_var
+            )));
+        }
+        let key = crate::secrets::resolve(&cfg.provider.api_key)
+            .get_api_key()
+            .map_err(|_| {
+                TranslateError::Config(format!(
+                    "environment storage requires {}; export it before Save",
+                    cfg.provider.api_key.env_var
+                ))
+            })?;
+        return Ok((key, crate::config_commit::Credential::Keep));
+    }
+
+    match typed_key {
+        Some(key) => Ok((key.clone(), crate::config_commit::Credential::Store(key))),
+        None => {
+            let key = crate::secrets::resolve(&cfg.provider.api_key)
+                .get_api_key()
+                .map_err(|e| {
+                    TranslateError::Config(format!(
+                        "no API key available for the selected storage ({e}) — enter one above"
+                    ))
+                })?;
+            Ok((key, crate::config_commit::Credential::Keep))
+        }
     }
 }
 
@@ -310,6 +270,30 @@ fn config_changed_since(path: &Path, opened_at: Option<SystemTime>) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn environment_storage_rejects_typed_key_and_names_variable() {
+        let mut cfg = crate::config::Config::default();
+        cfg.provider.api_key.source = "env".into();
+        cfg.provider.api_key.env_var = "CLIPT9N_TYPED_ENV_REJECTED".into();
+        let err =
+            credential_plan(&cfg, Some(zeroize::Zeroizing::new("sk-typed".into()))).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("CLIPT9N_TYPED_ENV_REJECTED"), "{message}");
+    }
+
+    #[test]
+    fn environment_storage_requires_resolved_variable() {
+        let mut cfg = crate::config::Config::default();
+        cfg.provider.api_key.source = "env".into();
+        cfg.provider.api_key.env_var = "CLIPT9N_REQUIRED_ENV_MISSING".into();
+        std::env::remove_var(&cfg.provider.api_key.env_var);
+        let err = credential_plan(&cfg, None).unwrap_err();
+        assert!(
+            err.to_string().contains("CLIPT9N_REQUIRED_ENV_MISSING"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn unchanged_file_is_not_flagged() {
