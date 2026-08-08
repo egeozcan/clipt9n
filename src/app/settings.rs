@@ -31,12 +31,15 @@ impl super::ClipApp {
         // in-flight verification checks whose results would land in a
         // later wizard session and advance it on the wrong key — and
         // with no working key there is nothing for a Save to rebuild a
-        // provider from anyway.
+        // provider from anyway. The glossary editor holds a working copy
+        // of the user's entries that only Save writes — replacing it
+        // here would discard typed work with no way back.
         let busy = match &self.app_state {
             super::AppState::Translating { .. } | super::AppState::TranslatingInline { .. } => {
                 Some("a translation is in flight")
             }
             super::AppState::SetupWizard { .. } => Some("the setup wizard is open"),
+            super::AppState::ShowingGlossary { .. } => Some("the glossary editor is open"),
             _ => None,
         };
         if let Some(reason) = busy {

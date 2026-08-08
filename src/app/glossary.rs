@@ -416,6 +416,53 @@ languages = ["de->en"]
         );
     }
 
+    /// An editor session with one unsaved edit in it.
+    fn app_with_open_editor() -> (tempfile::TempDir, crate::app::ClipApp) {
+        let (dir, mut app, _path) = app_with_glossary(Some(""));
+        let mut model = app.build_glossary_model();
+        model.entries.push(entry("unsaved", "work"));
+        assert!(model.dirty());
+        app.app_state = crate::app::AppState::ShowingGlossary { model };
+        (dir, app)
+    }
+
+    fn still_editing(app: &crate::app::ClipApp) -> bool {
+        match &app.app_state {
+            crate::app::AppState::ShowingGlossary { model } => model.dirty(),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn opening_settings_does_not_clobber_the_open_glossary_editor() {
+        let (_dir, mut app) = app_with_open_editor();
+        app.dispatch_open_settings(&egui::Context::default());
+        assert!(
+            still_editing(&app),
+            "the settings editor must not replace unsaved glossary entries"
+        );
+    }
+
+    #[test]
+    fn rerunning_the_wizard_does_not_clobber_the_open_glossary_editor() {
+        let (_dir, mut app) = app_with_open_editor();
+        app.dispatch_rerun_wizard(&egui::Context::default());
+        assert!(
+            still_editing(&app),
+            "the wizard has no stake in the glossary; it must not discard these edits"
+        );
+    }
+
+    #[test]
+    fn reopening_the_editor_keeps_the_session_it_already_has() {
+        let (_dir, mut app) = app_with_open_editor();
+        app.dispatch_edit_glossary(&egui::Context::default());
+        assert!(
+            still_editing(&app),
+            "a second Edit glossary… should refocus, not reseed from disk"
+        );
+    }
+
     #[test]
     fn saving_an_empty_table_writes_an_empty_glossary() {
         let (_dir, mut app, path) =

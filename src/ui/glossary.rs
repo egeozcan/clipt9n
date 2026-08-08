@@ -478,14 +478,10 @@ fn row_term(term: &str) -> String {
     }
 }
 
+/// Paint the fields for the row under edit. `draw` only mounts this
+/// panel when `editing` is set, so the `None` case just bails.
 fn draw_edit_panel(ui: &mut egui::Ui, model: &mut GlossaryModel) {
-    ui.add_space(10.0);
     let Some(index) = model.editing else {
-        ui.label(
-            RichText::new("Select a row's ✎ to edit it.")
-                .color(theme::INK_3)
-                .size(11.5),
-        );
         return;
     };
     if index >= model.entries.len() {

@@ -250,6 +250,18 @@ impl super::ClipApp {
             crate::platform::current().activate_app();
             return;
         }
+        // The glossary editor holds unsaved entries, and unlike the
+        // settings editor it has no stake in the provider the wizard
+        // exists to fix — so there is no reason for the wizard to win
+        // here, and every reason not to destroy the user's typing.
+        if matches!(self.app_state, AppState::ShowingGlossary { .. }) {
+            tracing::info!(
+                reason = "the glossary editor is open",
+                "setup wizard request ignored"
+            );
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            return;
+        }
         // Probe the platform directly — same reason as main.rs's
         // first-launch path: an EnvSecrets-backed `self.secrets`
         // always reports `false` regardless of whether the OS
