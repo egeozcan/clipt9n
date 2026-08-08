@@ -4,3 +4,5 @@
 *.swp
 /fuzz/target
 /fuzz/corpus
+/.worktrees/
+/.pi-subagents/
