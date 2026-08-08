@@ -50,6 +50,33 @@ pub struct SetupWizardModel {
     /// key input, so Save can still enforce read-only env storage.
     #[doc(hidden)]
     pub verification_key: Zeroizing<String>,
+    /// Immutable form inputs captured when Verify starts. A Done phase is
+    /// saveable only while the current form still matches this snapshot.
+    #[doc(hidden)]
+    pub verification_scope: Option<SetupVerificationScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupVerificationScope {
+    provider: String,
+    key: Zeroizing<String>,
+    storage: Storage,
+    test_translation: bool,
+}
+
+impl SetupVerificationScope {
+    pub fn capture(model: &SetupWizardModel) -> Self {
+        Self {
+            provider: model.provider.clone(),
+            key: model.key.clone(),
+            storage: model.storage,
+            test_translation: model.test_translation,
+        }
+    }
+
+    pub fn matches(&self, model: &SetupWizardModel) -> bool {
+        self == &Self::capture(model)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -83,7 +110,7 @@ pub enum SetupOutcome {
     Cancel,
     /// "Verify →" button — kick off check1 + (optional) check2.
     Verify,
-    /// "Save and start ✓" button (only enabled when phase=Done).
+    /// "Save and start ✓" button (enabled after Done while inputs still match).
     SaveAndStart,
     /// Error-recovery "Open config" button.
     OpenConfig,
@@ -108,7 +135,7 @@ pub fn provider_key_url(provider_kind: &str) -> &'static str {
 /// Default setup-wizard viewport size. Matches design's 580×640.
 pub const SETUP_WIZARD_INNER_SIZE: Vec2 = Vec2::new(580.0, 640.0);
 
-/// All four providers per design. The label is what the wizard shows;
+/// All five providers per design. The label is what the wizard shows;
 /// `default_env_var` is the hint string under the Env-storage radio
 /// (e.g., `$ANTHROPIC_API_KEY`).
 pub fn providers() -> Vec<(&'static str, &'static str, &'static str)> {
@@ -194,10 +221,15 @@ pub fn connectivity_request(
     (url, headers)
 }
 
-/// Whether the Save-and-start button is enabled. Mirrors the jsx's
-/// `phase === "done"` gate.
+/// Whether the Save-and-start button is enabled. A successful phase is
+/// insufficient on its own: the current form must still match the immutable
+/// provider/key/storage/test snapshot that produced that success.
 pub fn save_enabled(model: &SetupWizardModel) -> bool {
     matches!(model.phase, WizardPhase::Done)
+        && model
+            .verification_scope
+            .as_ref()
+            .is_some_and(|scope| scope.matches(model))
 }
 
 /// Whether the Verify button is enabled. Mirrors `!key || phase ==
@@ -562,7 +594,7 @@ pub fn draw(ctx: &egui::Context, model: &mut SetupWizardModel) -> Option<SetupOu
                         outcome = Some(SetupOutcome::Cancel);
                     }
                     ui.allocate_space(egui::Vec2::new(ui.available_width() - 180.0, 0.0));
-                    if matches!(model.phase, WizardPhase::Done) {
+                    if save_enabled(model) {
                         let btn = egui::Button::new(
                             RichText::new("Save and start ✓")
                                 .color(theme::ACCENT_INK)
@@ -682,15 +714,49 @@ mod tests {
     }
 
     #[test]
-    fn save_enabled_only_when_phase_is_done() {
+    fn save_enabled_requires_done_and_matching_verification_scope() {
         let mut m = SetupWizardModel::default();
         assert!(!save_enabled(&m));
         m.phase = WizardPhase::Verifying;
         assert!(!save_enabled(&m));
         m.phase = WizardPhase::Error;
         assert!(!save_enabled(&m));
+        m.provider = "anthropic".into();
+        m.key = Zeroizing::new("sk-verified".into());
+        m.verification_scope = Some(SetupVerificationScope::capture(&m));
         m.phase = WizardPhase::Done;
         assert!(save_enabled(&m));
+        m.key = Zeroizing::new("sk-edited".into());
+        assert!(!save_enabled(&m));
+    }
+
+    #[test]
+    fn verification_scope_covers_provider_key_storage_and_test_inputs() {
+        let mut verified = SetupWizardModel {
+            provider: "anthropic".into(),
+            key: Zeroizing::new("sk-verified".into()),
+            storage: Storage::Keychain,
+            test_translation: true,
+            phase: WizardPhase::Done,
+            ..Default::default()
+        };
+        verified.verification_scope = Some(SetupVerificationScope::capture(&verified));
+        assert!(save_enabled(&verified));
+
+        let mut provider_changed = verified.clone();
+        provider_changed.provider = "openai".into();
+        assert!(!save_enabled(&provider_changed));
+
+        let mut key_changed = verified.clone();
+        key_changed.key = Zeroizing::new("sk-edited".into());
+        assert!(!save_enabled(&key_changed));
+
+        let mut storage_changed = verified.clone();
+        storage_changed.storage = Storage::Env;
+        assert!(!save_enabled(&storage_changed));
+
+        verified.test_translation = false;
+        assert!(!save_enabled(&verified));
     }
 
     #[test]

@@ -8,8 +8,7 @@
 //!   - `app.rs::persist_setup_completion` for the live provider
 //!     rebuild after the wizard's Save-and-start (M7 Task 10),
 //!   - `app.rs::spawn_sample_translation_check` for the wizard's
-//!     Verify step (passes per-provider default base URL via
-//!     `base_url_override`).
+//!     Verify step (builds a profile-backed sample config first).
 
 use std::sync::Arc;
 use std::time::Duration;

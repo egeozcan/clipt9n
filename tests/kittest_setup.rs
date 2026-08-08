@@ -282,6 +282,7 @@ fn save_and_start_button_only_visible_in_done_phase() {
     // check2 reach Ok status.
     {
         let mut m = model.lock().unwrap();
+        m.verification_scope = Some(clipt9n::ui::setup::SetupVerificationScope::capture(&m));
         m.phase = WizardPhase::Done;
     }
     harness.run();

@@ -119,9 +119,7 @@ impl super::ClipApp {
     /// config before a single byte is written or a single field of
     /// `self` is touched. A rejected save therefore leaves the running
     /// app exactly as it was, with the user's edits still on screen.
-    /// (Contrast the wizard's `persist_setup_completion`, which can end
-    /// with `self.provider == None`; that's survivable there only
-    /// because the wizard refuses to return to Idle in that state.)
+    /// The setup wizard follows the same candidate/commit/publish ordering.
     fn apply_settings(&mut self, model: &mut SettingsModel) -> Result<(), TranslateError> {
         let cfg_path = self.config_path().to_path_buf();
         let config_dir = cfg_path

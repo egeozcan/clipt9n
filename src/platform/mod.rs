@@ -107,6 +107,17 @@ pub trait Platform {
     /// Used after translation completes so the user lands back in their
     /// previous app automatically. No-op on unsupported platforms.
     fn activate_pid(&self, _pid: i32) {}
+
+    /// Atomically replace `destination` with the same-filesystem `source`.
+    /// Unix rename has replacement semantics; Windows overrides this with
+    /// `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
+    fn replace_file(
+        &self,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> Result<(), std::io::Error> {
+        std::fs::rename(source, destination)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -250,6 +261,20 @@ mod tests {
     fn current_platform_reduced_motion_does_not_panic() {
         // Whatever the OS reports, we just need a clean call.
         let _ = current().reduced_motion();
+    }
+
+    #[test]
+    fn current_platform_atomically_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("candidate.tmp");
+        let destination = dir.path().join("config.toml");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&destination, "old").unwrap();
+
+        current().replace_file(&source, &destination).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new");
+        assert!(!source.exists());
     }
 
     #[test]

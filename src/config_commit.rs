@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 use crate::config::Config;
 use crate::error::TranslateError;
+use crate::platform::Platform;
 use crate::secrets::Secrets;
 
 #[derive(Debug)]
@@ -91,13 +92,15 @@ impl AtomicConfigStore for DiskAtomicConfig {
             temp.sync_all().map_err(|e| {
                 TranslateError::Config(format!("syncing {}: {e}", temp_path.display()))
             })?;
-            std::fs::rename(&temp_path, &self.path).map_err(|e| {
-                TranslateError::Config(format!(
-                    "replacing {} with {}: {e}",
-                    self.path.display(),
-                    temp_path.display()
-                ))
-            })?;
+            crate::platform::current()
+                .replace_file(&temp_path, &self.path)
+                .map_err(|e| {
+                    TranslateError::Config(format!(
+                        "replacing {} with {}: {e}",
+                        self.path.display(),
+                        temp_path.display()
+                    ))
+                })?;
             Ok(())
         })();
         if staged.is_err() {
@@ -297,6 +300,24 @@ mod tests {
             .commit(candidate(), credential());
         assert!(result.is_err());
         assert_eq!(fs.contents(), old_toml);
+    }
+
+    #[test]
+    fn disk_atomic_config_replaces_existing_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[provider]\ntype = \"anthropic\"\n").unwrap();
+
+        DiskAtomicConfig::new(&path).replace(&candidate()).unwrap();
+
+        let persisted = Config::load(&path).unwrap();
+        assert_eq!(persisted.provider.kind, "openai");
+        assert_eq!(persisted.provider.model, "gpt-4o-mini");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "temporary file should be renamed, not left behind"
+        );
     }
 
     #[test]

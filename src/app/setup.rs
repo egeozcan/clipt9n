@@ -12,6 +12,11 @@ impl super::ClipApp {
         ctx: &egui::Context,
         mut model: crate::ui::setup::SetupWizardModel,
     ) {
+        // Reject edits made between frames before draining results. This
+        // prevents a result for the prior immutable scope from touching the
+        // newly-edited model.
+        invalidate_changed_verification(&mut self.setup_verification_gen, &mut model);
+
         // First, drain any check results sitting on our channel.
         while let Ok((verification_id, check, result)) = self.setup_check_rx.try_recv() {
             let start_sample = verification_id == model.verification_id
@@ -34,7 +39,12 @@ impl super::ClipApp {
             }
         }
 
-        let outcome = crate::ui::setup::draw(ctx, &mut model);
+        let mut outcome = crate::ui::setup::draw(ctx, &mut model);
+        // Edits can occur inside draw, including in the same frame as a Save
+        // click. Invalidate and suppress that outcome before any persistence.
+        if invalidate_changed_verification(&mut self.setup_verification_gen, &mut model) {
+            outcome = None;
+        }
 
         match outcome {
             Some(crate::ui::setup::SetupOutcome::Cancel) => {
@@ -54,6 +64,7 @@ impl super::ClipApp {
                 };
                 seed_setup_verification(&mut self.setup_verification_gen, &mut model);
                 model.verification_key = key.clone();
+                model.verification_scope = Some(capture_setup_scope(&model));
                 model.phase = crate::ui::setup::WizardPhase::Verifying;
                 model.check1 = crate::ui::setup::CheckStatus::Running;
                 model.check2 = crate::ui::setup::CheckStatus::Idle;
@@ -134,7 +145,7 @@ impl super::ClipApp {
         // The wizard's selected provider may differ from the running
         // self.provider (which was built from the cfg at startup, possibly
         // with a placeholder key). Build a fresh provider from the
-        // wizard's typed key + the wizard's selected provider kind +
+        // verification key + the wizard's selected provider kind +
         // the kind-default base URL.
         let provider_kind = provider_kind.to_string();
         let cfg = self.cfg.clone();
@@ -214,6 +225,9 @@ impl super::ClipApp {
         &mut self,
         model: &crate::ui::setup::SetupWizardModel,
     ) -> Result<(), TranslateError> {
+        // Defense in depth: Save is rejected unless the current model still
+        // matches the immutable scope that reached Done.
+        let key = verified_key_for_save(model)?;
         let profile = crate::llm::profiles::provider_profile(&model.provider)?;
         let mut candidate = self.cfg.clone();
         let provider_changed = candidate.provider.kind != profile.id;
@@ -231,28 +245,11 @@ impl super::ClipApp {
         candidate.provider.api_key.env_var = profile.env_var.to_string();
         candidate.validate()?;
 
-        let (key, credential) = match model.storage {
-            crate::ui::setup::Storage::Keychain => (
-                model.key.clone(),
-                crate::config_commit::Credential::Store(model.key.clone()),
-            ),
-            crate::ui::setup::Storage::Env => {
-                if !model.key.is_empty() {
-                    return Err(TranslateError::Config(format!(
-                        "cannot save a typed API key to environment storage; set {} and clear the key field",
-                        profile.env_var
-                    )));
-                }
-                let key = crate::secrets::resolve(&candidate.provider.api_key)
-                    .get_api_key()
-                    .map_err(|_| {
-                        TranslateError::Config(format!(
-                            "environment storage requires {}; export it before Save",
-                            profile.env_var
-                        ))
-                    })?;
-                (key, crate::config_commit::Credential::Keep)
+        let credential = match model.storage {
+            crate::ui::setup::Storage::Keychain => {
+                crate::config_commit::Credential::Store(key.clone())
             }
+            crate::ui::setup::Storage::Env => crate::config_commit::Credential::Keep,
         };
 
         // Provider construction is the final non-I/O gate. Neither live
@@ -301,12 +298,29 @@ fn verification_key(
         })
 }
 
+fn capture_setup_scope(
+    model: &crate::ui::setup::SetupWizardModel,
+) -> crate::ui::setup::SetupVerificationScope {
+    crate::ui::setup::SetupVerificationScope::capture(model)
+}
+
 pub(super) fn seed_setup_verification(
     generation: &mut u64,
     model: &mut crate::ui::setup::SetupWizardModel,
 ) {
     *generation = generation.wrapping_add(1);
     model.verification_id = crate::ui::setup::VerificationId(*generation);
+    model.verification_scope = None;
+    model.verification_key.clear();
+}
+
+fn reset_setup_verification(model: &mut crate::ui::setup::SetupWizardModel) {
+    model.verification_scope = None;
+    model.verification_key.clear();
+    model.phase = crate::ui::setup::WizardPhase::Entry;
+    model.check1 = crate::ui::setup::CheckStatus::Idle;
+    model.check2 = crate::ui::setup::CheckStatus::Idle;
+    model.err_msg.clear();
 }
 
 fn invalidate_setup_verification(
@@ -314,6 +328,55 @@ fn invalidate_setup_verification(
     model: &mut crate::ui::setup::SetupWizardModel,
 ) {
     seed_setup_verification(generation, model);
+    reset_setup_verification(model);
+}
+
+fn invalidate_changed_verification(
+    generation: &mut u64,
+    model: &mut crate::ui::setup::SetupWizardModel,
+) -> bool {
+    let changed = model
+        .verification_scope
+        .as_ref()
+        .is_some_and(|scope| !scope.matches(model));
+    if changed {
+        invalidate_setup_verification(generation, model);
+    }
+    changed
+}
+
+fn verified_key_for_save(
+    model: &crate::ui::setup::SetupWizardModel,
+) -> Result<zeroize::Zeroizing<String>, TranslateError> {
+    if !crate::ui::setup::save_enabled(model) {
+        return Err(TranslateError::Config(
+            "setup inputs changed after verification; verify again before Save".into(),
+        ));
+    }
+
+    if model.storage == crate::ui::setup::Storage::Env {
+        if !model.key.is_empty() {
+            let profile = crate::llm::profiles::provider_profile(&model.provider)?;
+            return Err(TranslateError::Config(format!(
+                "cannot save a typed API key to environment storage; set {} and clear the key field",
+                profile.env_var
+            )));
+        }
+        let current = verification_key(model)?;
+        if current != model.verification_key {
+            return Err(TranslateError::Config(
+                "environment API key changed after verification; verify again before Save".into(),
+            ));
+        }
+        return Ok(current);
+    }
+
+    if model.key != model.verification_key {
+        return Err(TranslateError::Config(
+            "API key changed after verification; verify again before Save".into(),
+        ));
+    }
+    Ok(model.verification_key.clone())
 }
 
 fn apply_setup_result(
@@ -322,7 +385,12 @@ fn apply_setup_result(
     check: crate::ui::setup::SetupCheck,
     result: Result<(), String>,
 ) -> bool {
-    if verification_id != model.verification_id {
+    if verification_id != model.verification_id
+        || !model
+            .verification_scope
+            .as_ref()
+            .is_some_and(|scope| scope.matches(model))
+    {
         return false;
     }
 
@@ -412,11 +480,15 @@ mod tests {
     #[test]
     fn stale_verification_result_cannot_advance_current_wizard() {
         let mut model = crate::ui::setup::SetupWizardModel {
+            provider: "anthropic".into(),
+            key: zeroize::Zeroizing::new("sk-current".into()),
             verification_id: crate::ui::setup::VerificationId(2),
+            verification_key: zeroize::Zeroizing::new("sk-current".into()),
             phase: crate::ui::setup::WizardPhase::Verifying,
             check1: crate::ui::setup::CheckStatus::Running,
             ..Default::default()
         };
+        model.verification_scope = Some(capture_setup_scope(&model));
 
         assert!(!apply_setup_result(
             &mut model,
@@ -447,6 +519,10 @@ mod tests {
 
         let mut reopened = crate::ui::setup::SetupWizardModel::default();
         seed_setup_verification(&mut generation, &mut reopened);
+        reopened.provider = "anthropic".into();
+        reopened.key = zeroize::Zeroizing::new("sk-reopened".into());
+        reopened.verification_key = reopened.key.clone();
+        reopened.verification_scope = Some(capture_setup_scope(&reopened));
         reopened.phase = crate::ui::setup::WizardPhase::Verifying;
         reopened.check1 = crate::ui::setup::CheckStatus::Running;
         assert!(!apply_setup_result(
@@ -456,6 +532,55 @@ mod tests {
             Ok(()),
         ));
         assert_eq!(reopened.check1, crate::ui::setup::CheckStatus::Running);
+    }
+
+    fn verified_model(
+        key: &str,
+        phase: crate::ui::setup::WizardPhase,
+    ) -> crate::ui::setup::SetupWizardModel {
+        let mut model = crate::ui::setup::SetupWizardModel {
+            provider: "openai".into(),
+            key: zeroize::Zeroizing::new(key.into()),
+            storage: crate::ui::setup::Storage::Keychain,
+            test_translation: true,
+            phase,
+            verification_id: crate::ui::setup::VerificationId(7),
+            verification_key: zeroize::Zeroizing::new(key.into()),
+            ..Default::default()
+        };
+        model.verification_scope = Some(capture_setup_scope(&model));
+        model
+    }
+
+    #[test]
+    fn edit_during_verification_invalidates_result_before_model_mutation() {
+        let mut generation = 7;
+        let mut model = verified_model("sk-verified", crate::ui::setup::WizardPhase::Verifying);
+        let verification_id = model.verification_id;
+        model.key = zeroize::Zeroizing::new("sk-edited".into());
+
+        assert!(invalidate_changed_verification(&mut generation, &mut model));
+        assert_eq!(model.phase, crate::ui::setup::WizardPhase::Entry);
+        assert_ne!(model.verification_id, verification_id);
+        assert!(!apply_setup_result(
+            &mut model,
+            verification_id,
+            crate::ui::setup::SetupCheck::Connectivity,
+            Ok(()),
+        ));
+        assert!(!crate::ui::setup::save_enabled(&model));
+    }
+
+    #[test]
+    fn edit_after_done_cannot_save_an_unverified_model() {
+        let mut generation = 7;
+        let mut model = verified_model("sk-verified", crate::ui::setup::WizardPhase::Done);
+        model.provider = "deepseek".into();
+
+        assert!(invalidate_changed_verification(&mut generation, &mut model));
+        assert_eq!(model.phase, crate::ui::setup::WizardPhase::Entry);
+        assert!(!crate::ui::setup::save_enabled(&model));
+        assert!(verified_key_for_save(&model).is_err());
     }
 
     #[test]
