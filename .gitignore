@@ -6,3 +6,8 @@
 /fuzz/corpus
 /.worktrees/
 /.pi-subagents/
+/.idea/
+/config.toml
+/history.db
+/.history-key
+/api-key

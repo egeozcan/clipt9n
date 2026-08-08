@@ -23,17 +23,9 @@ impl Drop for KeychainEntryCleanup {
     }
 }
 
-fn enabled() -> bool {
-    std::env::var("CLIPT9N_KEYCHAIN_INTEGRATION").as_deref() == Ok("1")
-}
-
 #[test]
-fn keychain_round_trip_when_enabled() {
-    if !enabled() {
-        eprintln!("skipping: set CLIPT9N_KEYCHAIN_INTEGRATION=1 to run");
-        return;
-    }
-
+#[ignore = "requires an interactive OS keychain available to the test process"]
+fn keychain_round_trip() {
     let account = format!("integration-{}", std::process::id());
     let secrets = KeychainSecrets::new("clipt9n-test", &account);
     assert!(
@@ -46,24 +38,8 @@ fn keychain_round_trip_when_enabled() {
         .unwrap();
     let _cleanup = KeychainEntryCleanup::new("clipt9n-test", &account);
 
-    // The actual round-trip read. Skips with a diagnostic on the
-    // common macOS unsigned-binary path: SecItemAdd returns OK but
-    // the item is never persisted, so the immediate readback returns
-    // NoEntry. That isn't a code regression — it's a platform
-    // constraint that requires running from a properly signed app
-    // bundle. Keep the test green so CI on signed runners enforces
-    // the invariant; let unsigned dev runs skip with context.
-    match secrets.get_api_key() {
-        Ok(key) => {
-            assert_eq!(&*key, "sk-test-keychain-roundtrip");
-        }
-        Err(e) => {
-            eprintln!(
-                "skipping: keychain readback failed ({e}). On macOS, \
-                 SecItemAdd silently fails to persist when called from \
-                 unsigned binaries — re-run from clipt9n.app or a signed \
-                 CI runner."
-            );
-        }
-    }
+    let key = secrets
+        .get_api_key()
+        .expect("keychain readback must succeed after a successful write");
+    assert_eq!(&*key, "sk-test-keychain-roundtrip");
 }

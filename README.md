@@ -126,7 +126,7 @@ The menu bar actions still work even if the keyboard shortcut is not available.
 Build the app from source:
 
 ```bash
-git clone https://github.com/<you>/clipt9n.git
+git clone https://github.com/egeozcan/clipt9n.git
 cd clipt9n
 scripts/package-macos.sh
 ```
@@ -137,7 +137,7 @@ Then copy the built app into Applications:
 cp -R target/release/bundle/osx/clipt9n.app /Applications/
 ```
 
-Because local builds are not notarized, macOS may ask you to confirm the first launch. Right-click the app, choose **Open**, and confirm.
+The packaging script builds and verifies a universal app containing both Apple Silicon and Intel binaries. Local builds receive only an ad-hoc signature; they are not Developer ID signed or notarized. macOS may ask you to confirm the first launch. Right-click the app, choose **Open**, and confirm.
 
 ## Install On Linux
 
