@@ -5,7 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Write};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use crossbeam_channel::Sender;
@@ -67,6 +67,30 @@ pub(crate) fn install(rt: &Runtime, tx: Sender<()>, wake: impl Fn() + Send + 'st
 /// by `History` after writing the keyfile. On non-Unix platforms the
 /// equivalent caller path no-ops via `cfg(not(unix))` dispatch in
 /// `src/history/crypto.rs`.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+fn validate_owner(actual_uid: u32, effective_uid: u32, path: &Path) -> std::io::Result<()> {
+    if actual_uid == effective_uid {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "secret file must be owned by the current user: {}",
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn validate_metadata_owner(metadata: &std::fs::Metadata, path: &Path) -> std::io::Result<()> {
+    // SAFETY: geteuid has no preconditions and does not retain pointers.
+    let effective_uid = unsafe { libc::geteuid() };
+    validate_owner(metadata.uid(), effective_uid, path)
+}
+
 pub(crate) fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
@@ -87,6 +111,7 @@ pub(crate) fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
             ),
         ));
     }
+    validate_metadata_owner(&metadata, path)?;
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms)
 }
@@ -104,6 +129,7 @@ pub(crate) fn secure_read_file(path: &Path) -> std::io::Result<Vec<u8>> {
             format!("secret source is not a regular file: {}", path.display()),
         ));
     }
+    validate_metadata_owner(&metadata, path)?;
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(Error::new(
             ErrorKind::PermissionDenied,
@@ -151,6 +177,7 @@ pub(crate) fn secure_atomic_write(
             .custom_flags(libc::O_NOFOLLOW)
             .open(&temp_path)?;
         let metadata = temp.metadata()?;
+        validate_metadata_owner(&metadata, &temp_path)?;
         if !metadata.file_type().is_file()
             || metadata.file_type().is_block_device()
             || metadata.file_type().is_char_device()
@@ -202,6 +229,7 @@ pub(crate) fn rename_legacy_key_to_recovery(source: &Path, recovery: &Path) -> s
             format!("legacy key is not a regular file: {}", source.display()),
         ));
     }
+    validate_metadata_owner(&source_meta, source)?;
     set_owner_only_permissions(source)?;
     match std::fs::symlink_metadata(recovery) {
         Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -240,7 +268,7 @@ fn reject_unsafe_destination(path: &Path) -> std::io::Result<()> {
                 path.display()
             ),
         )),
-        Ok(_) => Ok(()),
+        Ok(metadata) => validate_metadata_owner(&metadata, path),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
@@ -252,6 +280,18 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn owner_validation_rejects_a_file_owned_by_another_user() {
+        let error = validate_owner(501, 502, Path::new("secret")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("owned by the current user"));
+    }
+
+    #[test]
+    fn owner_validation_accepts_the_effective_user() {
+        validate_owner(501, 501, Path::new("secret")).unwrap();
+    }
 
     #[test]
     fn set_owner_only_permissions_writes_0o600() {

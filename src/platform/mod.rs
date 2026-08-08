@@ -170,6 +170,21 @@ pub trait Platform {
     ) -> Result<(), std::io::Error> {
         std::fs::rename(source, destination)
     }
+
+    /// Make a completed atomic replacement durable in its containing
+    /// directory. Unix directory entries require an explicit fsync; Windows'
+    /// native replacement uses `MOVEFILE_WRITE_THROUGH` and keeps the default.
+    fn sync_parent_directory(&self, parent: &std::path::Path) -> Result<(), std::io::Error> {
+        #[cfg(unix)]
+        {
+            unix::sync_directory(parent)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = parent;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -339,14 +354,13 @@ pub(crate) fn create_file_symlink_for_test(
     std::os::windows::fs::symlink_file(target, link)
 }
 
-#[cfg(all(test, unix))]
-pub(crate) fn secure_file_storage_supported_for_test() -> bool {
-    true
+pub(crate) const fn secure_file_storage_supported() -> bool {
+    cfg!(unix)
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
 pub(crate) fn secure_file_storage_supported_for_test() -> bool {
-    false
+    secure_file_storage_supported()
 }
 
 #[cfg(test)]

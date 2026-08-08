@@ -95,15 +95,6 @@ enum ClipboardContents {
     },
 }
 
-impl ClipboardContents {
-    fn text(&self) -> Option<&str> {
-        match self {
-            Self::Text(text) => Some(text),
-            Self::Empty | Self::Image { .. } => None,
-        }
-    }
-}
-
 trait DesktopClipboard {
     fn snapshot(&mut self) -> Result<ClipboardContents, TranslateError>;
     fn read_copied_text(&mut self) -> Result<String, TranslateError>;
@@ -213,6 +204,13 @@ impl<C: DesktopClipboard> Drop for ClipboardRestoreGuard<'_, C> {
     }
 }
 
+fn selection_probe_text() -> String {
+    let mut random = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut random);
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("clipt9n-selection-probe-{suffix}")
+}
+
 fn capture_selection_with<C: DesktopClipboard, P: Platform>(
     clipboard: &mut C,
     platform: &P,
@@ -222,9 +220,20 @@ fn capture_selection_with<C: DesktopClipboard, P: Platform>(
     // trigger focus changes in applications with custom clipboard handling.
     let target = DesktopTarget::from_identity(platform.active_destination_identity());
     let original = clipboard.snapshot()?;
-    let original_text = original.text().map(String::from);
     let before_change_count = platform.clipboard_change_count();
     let restore = ClipboardRestoreGuard::new(clipboard, original);
+    // Linux and Windows do not expose a clipboard generation through the
+    // current platform seam. Put a unique non-secret probe on the clipboard
+    // before Copy so a no-op gesture is distinguishable even when the selected
+    // text happens to equal the user's original clipboard. The restore guard
+    // puts text, image, or empty contents back on every exit path.
+    let probe = if before_change_count.is_none() {
+        let probe = selection_probe_text();
+        restore.clipboard.write_text(&probe)?;
+        Some(probe)
+    } else {
+        None
+    };
 
     platform.copy_selection_to_clipboard()?;
     std::thread::sleep(copy_delay);
@@ -232,7 +241,7 @@ fn capture_selection_with<C: DesktopClipboard, P: Platform>(
     let after_change_count = platform.clipboard_change_count();
     let copy_changed = match (before_change_count, after_change_count) {
         (Some(before), Some(after)) => after != before,
-        _ => original_text.as_deref() != Some(selected_text.as_str()),
+        _ => probe.as_deref() != Some(selected_text.as_str()),
     };
     if selected_text.trim().is_empty() || !copy_changed {
         return Err(TranslateError::EmptyOrNonTextClipboard);
@@ -284,6 +293,7 @@ mod tests {
     struct FakeClipboard {
         contents: FakeContents,
         copy_result: Result<String, TranslateError>,
+        read_current_contents: bool,
         restore_count: usize,
     }
 
@@ -292,6 +302,7 @@ mod tests {
             Self {
                 contents: FakeContents::Text(text.to_string()),
                 copy_result: Ok("selected".to_string()),
+                read_current_contents: false,
                 restore_count: 0,
             }
         }
@@ -315,6 +326,14 @@ mod tests {
         }
 
         fn read_copied_text(&mut self) -> Result<String, TranslateError> {
+            if self.read_current_contents {
+                return match &self.contents {
+                    FakeContents::Text(text) => Ok(text.clone()),
+                    FakeContents::Empty | FakeContents::Image { .. } => {
+                        Err(TranslateError::EmptyOrNonTextClipboard)
+                    }
+                };
+            }
             std::mem::replace(&mut self.copy_result, Ok("selected".to_string()))
         }
 
@@ -348,6 +367,7 @@ mod tests {
         paste_count: Cell<usize>,
         change_count: Cell<i64>,
         suppress_copy_change: Cell<bool>,
+        generation_available: Cell<bool>,
     }
 
     impl Platform for FakePlatform {
@@ -368,7 +388,9 @@ mod tests {
         }
 
         fn clipboard_change_count(&self) -> Option<i64> {
-            Some(self.change_count.get())
+            self.generation_available
+                .get()
+                .then(|| self.change_count.get())
         }
     }
 
@@ -393,6 +415,7 @@ mod tests {
         let mut clipboard = FakeClipboard {
             contents: FakeContents::Empty,
             copy_result: Ok("selected".into()),
+            read_current_contents: false,
             restore_count: 0,
         };
         let platform = FakePlatform::default();
@@ -414,6 +437,7 @@ mod tests {
         let mut clipboard = FakeClipboard {
             contents: image.clone(),
             copy_result: Ok("selected".into()),
+            read_current_contents: false,
             restore_count: 0,
         };
         let platform = FakePlatform::default();
@@ -452,9 +476,9 @@ mod tests {
     }
 
     #[test]
-    fn capture_rejects_copy_that_did_not_change_the_clipboard() {
+    fn capture_rejects_copy_that_did_not_change_the_clipboard_without_generation_counter() {
         let mut clipboard = FakeClipboard::with_text("saved");
-        clipboard.copy_result = Ok("saved".into());
+        clipboard.read_current_contents = true;
         let platform = FakePlatform {
             suppress_copy_change: Cell::new(true),
             ..Default::default()
@@ -470,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_accepts_same_text_when_copy_changed_the_clipboard() {
+    fn capture_accepts_same_text_without_generation_counter_when_copy_succeeds() {
         let mut clipboard = FakeClipboard::with_text("same text");
         clipboard.copy_result = Ok("same text".into());
         let platform = FakePlatform::default();

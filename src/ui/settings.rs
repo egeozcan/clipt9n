@@ -239,12 +239,20 @@ pub fn provider_origin_changed(model: &SettingsModel) -> bool {
     }
 }
 
+fn save_enabled_with_file_storage(
+    model: &SettingsModel,
+    secure_file_storage_supported: bool,
+) -> bool {
+    hotkey_conflicts(&model.cfg).is_empty()
+        && unsupported_hotkey_keys(&model.cfg).is_empty()
+        && (model.key_storage != KeyStorage::File || secure_file_storage_supported)
+        && (!provider_origin_changed(model) || model.provider_origin_change_confirmed)
+}
+
 /// Whether Save should be clickable. Blocked only by things the editor
 /// can detect locally; provider/key errors surface after the attempt.
 pub fn save_enabled(model: &SettingsModel) -> bool {
-    hotkey_conflicts(&model.cfg).is_empty()
-        && unsupported_hotkey_keys(&model.cfg).is_empty()
-        && (!provider_origin_changed(model) || model.provider_origin_change_confirmed)
+    save_enabled_with_file_storage(model, crate::platform::secure_file_storage_supported())
 }
 
 /// Paint the settings window. Returns at most one outcome per frame.
@@ -433,17 +441,25 @@ fn draw_provider_tab(
                     KeyStorage::Env,
                     KeyStorage::Env.label(),
                 );
-                ui.selectable_value(
-                    &mut model.key_storage,
-                    KeyStorage::File,
-                    KeyStorage::File.label(),
-                );
+                ui.add_enabled_ui(crate::platform::secure_file_storage_supported(), |ui| {
+                    ui.selectable_value(
+                        &mut model.key_storage,
+                        KeyStorage::File,
+                        KeyStorage::File.label(),
+                    );
+                });
             });
     });
     if !model.keychain_available && model.key_storage == KeyStorage::Keychain {
         hint(
             ui,
             "Keychain is unreachable on this system — pick another store.",
+        );
+    }
+    if !crate::platform::secure_file_storage_supported() && model.key_storage == KeyStorage::File {
+        warn_line(
+            ui,
+            "Key-file storage is unavailable on this platform — choose the keychain or an environment variable before saving.",
         );
     }
     match model.key_storage {
@@ -1014,6 +1030,23 @@ mod tests {
         cfg.hotkey.history.key = cfg.hotkey.key.clone();
         cfg.hotkey.history.enabled = false;
         assert!(hotkey_conflicts(&cfg).is_empty());
+    }
+
+    #[test]
+    fn unsupported_file_storage_blocks_save_until_user_selects_a_supported_store() {
+        let mut model = model_with(Config::default());
+        model.key_storage = KeyStorage::File;
+        assert!(!save_enabled_with_file_storage(&model, false));
+
+        model.key_storage = KeyStorage::Env;
+        assert!(save_enabled_with_file_storage(&model, false));
+    }
+
+    #[test]
+    fn supported_file_storage_can_be_saved() {
+        let mut model = model_with(Config::default());
+        model.key_storage = KeyStorage::File;
+        assert!(save_enabled_with_file_storage(&model, true));
     }
 
     #[test]

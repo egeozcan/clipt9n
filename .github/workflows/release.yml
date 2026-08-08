@@ -31,6 +31,14 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           test "$tag" = "$package_version"
+      - name: audit source package contents
+        run: |
+          package_list="$(mktemp)"
+          cargo package --locked --allow-dirty --list | tee "$package_list"
+          if grep -E '(^|/)(\.idea|\.pi-subagents|\.worktrees)(/|$)|(^|/)(config\.toml|history\.db|\.history-key|api-key|[^/]+\.(db|sqlite|sqlite3)(-[^/]*)?)$' "$package_list"; then
+            echo "source package contains a prohibited local or secret path" >&2
+            exit 1
+          fi
       - name: platform discipline lint
         run: scripts/lint-platform-discipline.sh
       - name: cargo fmt

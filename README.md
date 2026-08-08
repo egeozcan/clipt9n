@@ -32,7 +32,7 @@ While clipt9n is working, it shows an in-progress view with a cancel button.
 
 ![clipt9n translating view](docs/images/translating.png)
 
-When the request finishes, clipt9n shows a notification with a short preview and copies the result to your clipboard.
+When the request finishes, clipt9n shows a metadata-only completion notification and copies the result to your clipboard.
 
 ## First Launch
 

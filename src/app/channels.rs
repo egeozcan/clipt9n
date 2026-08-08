@@ -116,18 +116,15 @@ impl super::ClipApp {
         match crate::glossary::Glossary::load(&self.glossary_path) {
             Ok(g) => {
                 let entry_count = g.len();
-                let is_non_empty = !g.is_empty();
                 *crate::glossary::Glossary::write_shared(&self.glossary) = g;
                 tracing::info!(
                     path = %self.glossary_path.display(),
                     entries = entry_count,
                     "glossary reloaded"
                 );
-                // Clear the malformed flag if the reload produced a
-                // valid, non-empty glossary.
-                if is_non_empty {
-                    self.set_glossary_malformed(false);
-                }
+                // Any successfully parsed glossary is healthy, including an
+                // intentionally empty file.
+                self.set_glossary_malformed(false);
             }
             Err(e) => {
                 tracing::warn!(
@@ -387,6 +384,24 @@ mod tests {
         );
 
         assert_eq!(actions, vec![HotkeyAction::Prompt]);
+    }
+
+    #[test]
+    fn valid_empty_glossary_clears_a_previous_malformed_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let glossary_path = dir.path().join("glossary.toml");
+        std::fs::write(&glossary_path, "").unwrap();
+        let mut app = test_app(glossary_path);
+        assert!(app
+            .glossary_malformed
+            .load(std::sync::atomic::Ordering::Relaxed));
+
+        app.reload_glossary();
+
+        assert!(!app
+            .glossary_malformed
+            .load(std::sync::atomic::Ordering::Relaxed));
+        assert!(crate::glossary::Glossary::read_shared(&app.glossary).is_empty());
     }
 
     #[test]

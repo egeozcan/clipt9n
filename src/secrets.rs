@@ -93,6 +93,34 @@ impl KeychainSecrets {
             ))
         })
     }
+
+    pub(crate) fn snapshot_api_key(&self) -> Result<Option<Zeroizing<String>>, TranslateError> {
+        match self.entry()?.get_password() {
+            Ok(value) => Ok(Some(Zeroizing::new(value))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(TranslateError::SetupWizard(format!(
+                "keychain snapshot failed: {error}"
+            ))),
+        }
+    }
+
+    pub(crate) fn restore_api_key(
+        &self,
+        previous: Option<Zeroizing<String>>,
+    ) -> Result<(), TranslateError> {
+        let entry = self.entry()?;
+        match previous {
+            Some(value) => entry.set_password(&value).map_err(|error| {
+                TranslateError::SetupWizard(format!("keychain rollback write failed: {error}"))
+            }),
+            None => match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(TranslateError::SetupWizard(format!(
+                    "keychain rollback delete failed: {error}"
+                ))),
+            },
+        }
+    }
 }
 
 impl Secrets for KeychainSecrets {

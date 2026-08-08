@@ -228,22 +228,7 @@ impl super::ClipApp {
         // Defense in depth: Save is rejected unless the current model still
         // matches the immutable scope that reached Done.
         let key = verified_key_for_save(model)?;
-        let profile = crate::llm::profiles::provider_profile(&model.provider)?;
-        let mut candidate = self.cfg.clone();
-        let provider_changed = candidate.provider.kind != profile.id;
-        candidate.provider.kind = profile.id.to_string();
-        if provider_changed {
-            candidate.provider.model = profile.default_model.to_string();
-            candidate.provider.base_url = profile.default_base_url.to_string();
-        }
-        candidate.provider.api_key.source = match model.storage {
-            crate::ui::setup::Storage::Keychain => "keychain",
-            crate::ui::setup::Storage::Env => "env",
-        }
-        .into();
-        candidate.provider.api_key.account = profile.account.to_string();
-        candidate.provider.api_key.env_var = profile.env_var.to_string();
-        candidate.validate()?;
+        let candidate = setup_completion_candidate(&self.cfg, model)?;
 
         let credential = match model.storage {
             crate::ui::setup::Storage::Keychain => {
@@ -419,6 +404,29 @@ fn apply_setup_result(
         }
     }
     true
+}
+
+fn setup_completion_candidate(
+    cfg: &crate::config::Config,
+    model: &crate::ui::setup::SetupWizardModel,
+) -> Result<crate::config::Config, TranslateError> {
+    let profile = crate::llm::profiles::provider_profile(&model.provider)?;
+    let mut candidate = cfg.clone();
+    // Verification always uses the selected profile's complete defaults.
+    // Persist that exact provider candidate even when the provider kind did
+    // not change, rather than reviving stale custom values after a rerun.
+    candidate.provider.kind = profile.id.to_string();
+    candidate.provider.model = profile.default_model.to_string();
+    candidate.provider.base_url = profile.default_base_url.to_string();
+    candidate.provider.api_key.source = match model.storage {
+        crate::ui::setup::Storage::Keychain => "keychain",
+        crate::ui::setup::Storage::Env => "env",
+    }
+    .into();
+    candidate.provider.api_key.account = profile.account.to_string();
+    candidate.provider.api_key.env_var = profile.env_var.to_string();
+    candidate.validate()?;
+    Ok(candidate)
 }
 
 fn sample_check_config(
@@ -599,6 +607,26 @@ mod tests {
         }
         assert_eq!(&*key, "sk-from-env");
         assert!(model.key.is_empty());
+    }
+
+    #[test]
+    fn same_provider_rerun_persists_the_profile_candidate_that_was_verified() {
+        let mut cfg = Config::default();
+        cfg.provider.kind = "openai".into();
+        cfg.provider.model = "stale-custom-model".into();
+        cfg.provider.base_url = "https://stale.example/v1".into();
+        cfg.provider.api_key.account = "stale-account".into();
+        cfg.provider.api_key.env_var = "STALE_KEY".into();
+        let model = verified_model("sk-verified", crate::ui::setup::WizardPhase::Done);
+
+        let candidate = setup_completion_candidate(&cfg, &model).unwrap();
+        let profile = crate::llm::profiles::provider_profile("openai").unwrap();
+
+        assert_eq!(candidate.provider.kind, profile.id);
+        assert_eq!(candidate.provider.model, profile.default_model);
+        assert_eq!(candidate.provider.base_url, profile.default_base_url);
+        assert_eq!(candidate.provider.api_key.account, profile.account);
+        assert_eq!(candidate.provider.api_key.env_var, profile.env_var);
     }
 
     #[tokio::test]

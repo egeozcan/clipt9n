@@ -10,15 +10,15 @@ M8 release readiness requires:
 
 ## Automated evidence (2026-08-08)
 
-The commands below were run in the `fix/release-ci` worktree on Apple Silicon macOS. Results are updated only from command output; environment-bound checks remain blocked below.
+The commands below were most recently run in the `fix/final-wave` worktree on Apple Silicon macOS. Results are updated only from command output; environment-bound checks remain blocked below.
 
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | **PASSED** |
 | `cargo clippy --all-targets --all-features -- -D warnings` | **PASSED**; upstream `block 0.1.6` future-incompatibility warning remains visible |
-| `cargo test --all-features` | **PASSED**; 363 passed, 1 intentionally ignored keychain integration test |
+| `cargo test --all-features` | **PASSED**; 454 passed, 1 intentionally ignored keychain integration test |
 | `scripts/lint-platform-discipline.sh` | **PASSED** |
-| `cargo package --allow-dirty --list` | **PASSED**; 103 entries, no prohibited secret/local paths |
+| `cargo package --allow-dirty --list` | **PASSED**; 107 entries, no prohibited secret/local paths |
 | `cargo build --release` | **PASSED** |
 | `cargo +1.88.0 check --locked` | **PASSED** on rustc 1.88.0 |
 | `cargo +nightly fuzz run history_decrypt_fuzz -- -runs=100` | **PASSED**; 100 runs completed without a failing input |
@@ -104,7 +104,7 @@ Mark each row with `OS / date / result`. Rows mirror the M7 README smoke matrix.
 | Linux | Open glossary launches via xdg-open | Default editor opens | **BLOCKED** — requires interactive x86_64 Linux desktop with xdg-open and a configured editor |
 | Windows | Tray icon in shell tray | Visible | **BLOCKED** — requires interactive x86_64 Windows desktop with Explorer shell |
 | Windows | Right-click tray → menu | All 7 items present | **BLOCKED** — requires interactive x86_64 Windows desktop with Explorer shell |
-| Windows | Open glossary via cmd /C start | Default editor opens | **BLOCKED** — requires interactive x86_64 Windows desktop with a configured editor |
+| Windows | Open glossary via native `ShellExecuteW` | Default editor opens without a command shell | **BLOCKED** — requires interactive x86_64 Windows desktop with a configured editor |
 
 ## Accessibility matrix
 

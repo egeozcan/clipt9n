@@ -127,6 +127,14 @@ impl super::ClipApp {
             .ok_or_else(|| TranslateError::Config("config path has no parent".into()))?
             .to_path_buf();
 
+        if model.key_storage == KeyStorage::File
+            && !crate::platform::secure_file_storage_supported()
+        {
+            return Err(TranslateError::Config(
+                "secure file-backed secret storage is unavailable on this platform; choose the OS keychain or an environment variable".into(),
+            ));
+        }
+
         if crate::ui::settings::provider_origin_changed(model)
             && !model.provider_origin_change_confirmed
         {
