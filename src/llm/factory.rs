@@ -20,6 +20,7 @@ use crate::config::Config;
 use crate::error::TranslateError;
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::openai::OpenAiCompatibleProvider;
+use crate::llm::profiles::{provider_profile, ProviderImplementation};
 use crate::llm::LlmProvider;
 
 /// Construct the configured `LlmProvider` from `cfg.provider.kind` and
@@ -32,24 +33,20 @@ pub fn build_provider(
 ) -> Result<Arc<dyn LlmProvider>, TranslateError> {
     let timeout = Duration::from_secs(cfg.provider.timeout_seconds);
     let base_url = base_url_override.unwrap_or(&cfg.provider.base_url);
-    let provider: Arc<dyn LlmProvider> = match cfg.provider.kind.as_str() {
-        "anthropic" => Arc::new(AnthropicProvider::new(
+    let profile = provider_profile(&cfg.provider.kind)?;
+    let provider: Arc<dyn LlmProvider> = match profile.implementation {
+        ProviderImplementation::Anthropic => Arc::new(AnthropicProvider::new(
             base_url,
             key,
             &cfg.provider.model,
             timeout,
         )?),
-        "openai" | "gemini" | "ollama" | "deepseek" => Arc::new(OpenAiCompatibleProvider::new(
+        ProviderImplementation::OpenAiCompatible => Arc::new(OpenAiCompatibleProvider::new(
             base_url,
             key,
             &cfg.provider.model,
             timeout,
         )?),
-        other => {
-            return Err(TranslateError::Config(format!(
-                "unknown provider type '{other}'; expected one of: anthropic, openai, gemini, ollama, deepseek"
-            )));
-        }
     };
     Ok(provider)
 }

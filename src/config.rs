@@ -388,48 +388,40 @@ impl Config {
     /// hardcoded default exactly — custom values are never overwritten.
     fn normalize(&mut self) {
         let kind = self.provider.kind.as_str();
-        let (default_model, default_url, default_account) = match kind {
-            "anthropic" => (
-                "claude-haiku-4-5-20251001",
-                "https://api.anthropic.com/v1",
-                "anthropic",
-            ),
-            "openai" => ("gpt-4o-mini", "https://api.openai.com/v1", "openai"),
-            "gemini" => (
-                "gemini-2.0-flash",
-                "https://generativelanguage.googleapis.com/v1beta/openai",
-                "gemini",
-            ),
-            "ollama" => ("llama3.2", "http://localhost:11434/v1", "ollama"),
-            "deepseek" => (
-                "deepseek-v4-flash",
-                "https://api.deepseek.com/v1",
-                "deepseek",
-            ),
-            _ => return, // unknown provider — leave config as-is
+        let Ok(profile) = crate::llm::profiles::provider_profile(kind) else {
+            return;
         };
+        let default_model = profile.default_model;
+        let default_url = profile.default_base_url;
+        let default_account = profile.account;
 
         // Detect if the model matches the default for a DIFFERENT provider.
         let model_is_stale = self.provider.model != default_model
-            && all_default_models()
+            && crate::llm::profiles::PROVIDER_PROFILES
                 .iter()
-                .any(|&(provider, m)| provider != kind && self.provider.model == m);
+                .any(|candidate| {
+                    candidate.id != kind && self.provider.model == candidate.default_model
+                });
         if model_is_stale {
             self.provider.model = default_model.to_string();
         }
 
         // Same heuristic for base_url.
         let url_is_stale = self.provider.base_url != default_url
-            && all_default_urls()
+            && crate::llm::profiles::PROVIDER_PROFILES
                 .iter()
-                .any(|&(provider, u)| provider != kind && self.provider.base_url == u);
+                .any(|candidate| {
+                    candidate.id != kind && self.provider.base_url == candidate.default_base_url
+                });
         if url_is_stale {
             self.provider.base_url = default_url.to_string();
         }
 
         // Same for the API key account name.
         if self.provider.api_key.account != default_account
-            && all_default_accounts().contains(&self.provider.api_key.account.as_str())
+            && crate::llm::profiles::PROVIDER_PROFILES
+                .iter()
+                .any(|candidate| candidate.account == self.provider.api_key.account)
         {
             self.provider.api_key.account = default_account.to_string();
         }
@@ -487,38 +479,6 @@ impl Config {
         std::fs::write(path, toml_str)
             .map_err(|e| TranslateError::Config(format!("writing {}: {e}", path.display())))
     }
-}
-
-/// Hardcoded default models for every known provider, used by
-/// `Config::normalize` to detect stale cross-provider defaults.
-fn all_default_models() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("anthropic", "claude-haiku-4-5-20251001"),
-        ("openai", "gpt-4o-mini"),
-        ("gemini", "gemini-2.0-flash"),
-        ("ollama", "llama3.2"),
-        ("deepseek", "deepseek-v4-flash"),
-    ]
-}
-
-/// Hardcoded default base URLs for every known provider.
-fn all_default_urls() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("anthropic", "https://api.anthropic.com/v1"),
-        ("openai", "https://api.openai.com/v1"),
-        (
-            "gemini",
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-        ),
-        ("ollama", "http://localhost:11434/v1"),
-        ("deepseek", "https://api.deepseek.com/v1"),
-    ]
-}
-
-/// Known provider account names — values a user would only have if
-/// they previously ran the setup wizard for that provider.
-fn all_default_accounts() -> Vec<&'static str> {
-    vec!["anthropic", "openai", "gemini", "ollama", "deepseek"]
 }
 
 /// Logical hotkey modifier as authored by the user. Mapped to the

@@ -4,6 +4,7 @@ pub mod anthropic;
 pub mod client;
 pub mod factory;
 pub mod openai;
+pub mod profiles;
 pub mod prompts;
 pub mod templates;
 

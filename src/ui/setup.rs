@@ -104,13 +104,18 @@ pub const SETUP_WIZARD_INNER_SIZE: Vec2 = Vec2::new(580.0, 640.0);
 /// `default_env_var` is the hint string under the Env-storage radio
 /// (e.g., `$ANTHROPIC_API_KEY`).
 pub fn providers() -> Vec<(&'static str, &'static str, &'static str)> {
-    vec![
-        ("anthropic", "Anthropic (Claude)", "ANTHROPIC_API_KEY"),
-        ("openai", "OpenAI", "OPENAI_API_KEY"),
-        ("gemini", "Google Gemini", "GEMINI_API_KEY"),
-        ("ollama", "Ollama (local)", "OLLAMA_API_KEY"),
-        ("deepseek", "DeepSeek", "DEEPSEEK_API_KEY"),
-    ]
+    const LABELS: [&str; 5] = [
+        "Anthropic (Claude)",
+        "OpenAI",
+        "Google Gemini",
+        "Ollama (local)",
+        "DeepSeek",
+    ];
+    crate::llm::profiles::PROVIDER_PROFILES
+        .iter()
+        .zip(LABELS)
+        .map(|(profile, label)| (profile.id, label, profile.env_var))
+        .collect()
 }
 
 /// Look up the provider tuple by id. Returns `("anthropic", ..., ...)`
@@ -126,28 +131,20 @@ pub fn provider_meta(id: &str) -> (&'static str, &'static str, &'static str) {
 /// sample-translation spawn (Task 9) to construct a fresh provider
 /// from the user's selection.
 pub fn default_base_url(provider_kind: &str) -> &'static str {
-    match provider_kind {
-        "anthropic" => "https://api.anthropic.com/v1",
-        "openai" => "https://api.openai.com/v1",
-        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
-        "ollama" => "http://localhost:11434/v1",
-        "deepseek" => "https://api.deepseek.com/v1",
-        _ => "https://api.anthropic.com/v1",
-    }
+    crate::llm::profiles::provider_profile(provider_kind)
+        .or_else(|_| crate::llm::profiles::provider_profile("anthropic"))
+        .expect("anthropic provider profile")
+        .default_base_url
 }
 
 /// Default model for each provider. Used by `persist_setup_completion`
 /// to auto-select a sensible model when the user switches provider
 /// in the setup wizard.
 pub fn default_model(provider_kind: &str) -> &'static str {
-    match provider_kind {
-        "anthropic" => "claude-haiku-4-5-20251001",
-        "openai" => "gpt-4o-mini",
-        "gemini" => "gemini-2.0-flash",
-        "ollama" => "llama3.2",
-        "deepseek" => "deepseek-v4-flash",
-        _ => "claude-haiku-4-5-20251001",
-    }
+    crate::llm::profiles::provider_profile(provider_kind)
+        .or_else(|_| crate::llm::profiles::provider_profile("anthropic"))
+        .expect("anthropic provider profile")
+        .default_model
 }
 
 /// Which check produced a result. The App receives this in a channel
