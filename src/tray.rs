@@ -59,6 +59,8 @@ pub const ID_HISTORY: &str = "clipt9n.history";
 pub const ID_GLOSSARY_EDIT: &str = "clipt9n.glossary.edit";
 pub const ID_GLOSSARY_OPEN: &str = "clipt9n.glossary.open";
 pub const ID_GLOSSARY_RELOAD: &str = "clipt9n.glossary.reload";
+pub const ID_TEMPLATES_EDIT: &str = "clipt9n.templates.edit";
+pub const ID_TEMPLATES_RELOAD: &str = "clipt9n.templates.reload";
 pub const ID_ACCESSIBILITY_SETTINGS: &str = "clipt9n.accessibility.settings";
 pub const ID_RERUN_WIZARD: &str = "clipt9n.wizard";
 pub const ID_SETTINGS: &str = "clipt9n.settings";
@@ -197,6 +199,20 @@ impl TrayHandle {
         menu.append(&MenuItem::with_id(
             ID_GLOSSARY_RELOAD,
             "Reload glossary",
+            true,
+            None,
+        ))
+        .map_err(menu_err)?;
+        menu.append(&MenuItem::with_id(
+            ID_TEMPLATES_EDIT,
+            "Edit prompt templates…",
+            true,
+            None,
+        ))
+        .map_err(menu_err)?;
+        menu.append(&MenuItem::with_id(
+            ID_TEMPLATES_RELOAD,
+            "Reload prompt templates",
             true,
             None,
         ))

@@ -9,9 +9,12 @@
 //! never be able to write a config that the next launch refuses to
 //! load.
 //!
-//! Not editable here on purpose: `[templates]`. Overrides are compiled
-//! once at startup and a bad Jinja template is a hard startup abort, so
-//! they stay file-only; the Behavior tab points at the config folder.
+//! Not editable here on purpose: `[templates]`. Those are override
+//! *paths*, not values a user tunes — the template bodies themselves get
+//! their own window (`ui/templates.rs`, "Edit prompt templates…" in the
+//! tray), which validates through the startup loader before it writes.
+//! Editing the paths remains a config-file job; the Behavior tab points
+//! at the config folder.
 
 use egui::{Color32, RichText, Stroke, TextEdit, Vec2};
 use zeroize::Zeroizing;

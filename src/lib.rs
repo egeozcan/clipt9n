@@ -76,6 +76,11 @@ pub struct Cli {
     /// the way back when the icon is hidden.
     #[arg(long = "glossary")]
     pub glossary: bool,
+
+    /// Launch straight into the prompt-template editor. Same rationale
+    /// as `--settings` and `--glossary`.
+    #[arg(long = "templates")]
+    pub templates: bool,
 }
 
 impl Cli {

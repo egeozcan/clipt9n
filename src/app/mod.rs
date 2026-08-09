@@ -3,6 +3,7 @@
 //! prompt-window state machine. All UI is paint-only (`src/ui/prompt.rs`);
 //! input handling lives in the sub-modules.
 
+mod atomic;
 mod channels;
 mod glossary;
 mod history;
@@ -10,6 +11,7 @@ mod prompt;
 mod pure;
 mod settings;
 mod setup;
+mod templates;
 #[cfg(test)]
 mod test_support;
 mod translation;
@@ -48,6 +50,9 @@ pub enum InitialState {
     /// `--glossary`: land in the glossary editor. Seeded from the
     /// glossary file the same way the tray menu item seeds it.
     Glossary,
+    /// `--templates`: land in the prompt-template editor. Same
+    /// rationale as `Glossary`.
+    Templates,
 }
 
 /// Top-level UI state machine.
@@ -112,6 +117,13 @@ enum AppState {
     ShowingGlossary {
         model: crate::ui::glossary::GlossaryModel,
     },
+    /// Prompt-template editor is open. The model holds a working copy
+    /// of all four sources; nothing reaches `self.templates` or disk
+    /// until Save validates and writes. Boxed because the four template
+    /// bodies make it much the largest variant.
+    ShowingTemplates {
+        model: Box<crate::ui::templates::TemplatesModel>,
+    },
     /// First-launch setup wizard is open. Persists the API key into
     /// the keychain (or env-var hint), runs connectivity + sample-
     /// translation checks, and persists the resulting config back to
@@ -149,6 +161,7 @@ impl AppState {
             AppState::ShowingResult { .. } => "showing_result",
             AppState::ShowingHistory { .. } => "showing_history",
             AppState::ShowingGlossary { .. } => "showing_glossary",
+            AppState::ShowingTemplates { .. } => "showing_templates",
             AppState::SetupWizard { .. } => "setup_wizard",
             AppState::Settings { .. } => "settings",
             AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
@@ -187,9 +200,15 @@ pub struct ClipApp {
     /// dispatch sites `.as_ref().expect(...)` rely on this invariant.
     provider: Option<std::sync::Arc<dyn LlmProvider>>,
 
-    /// Compiled templates (built-in + user overrides). Immutable for the
-    /// lifetime of the app — overrides are validated at startup and
-    /// changes require a restart.
+    /// Compiled templates (built-in + user overrides). Swappable, so the
+    /// template editor's Save and the tray's "Reload prompt templates"
+    /// can install a new set without a restart (`app/templates.rs`).
+    ///
+    /// Every swap goes through `Templates::load`, the same call
+    /// main.rs makes at startup — so what runs after a swap is exactly
+    /// what the next launch would load. Translation workers clone this
+    /// Arc at dispatch, so a request already in flight finishes against
+    /// the templates it started with.
     templates: std::sync::Arc<crate::llm::templates::Templates>,
 
     /// Glossary loaded from `<config_dir>/<cfg.glossary.file>`. Wrapped
@@ -381,7 +400,7 @@ impl ClipApp {
         accessibility_revoked: bool,
         hotkey_in_use: bool,
     ) -> Self {
-        cc.egui_ctx.set_visuals(theme::visuals());
+        theme::install(&cc.egui_ctx);
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -560,6 +579,7 @@ impl ClipApp {
             AppState::SetupWizard { .. } => Some(crate::ui::setup::SETUP_WIZARD_INNER_SIZE),
             AppState::Settings { .. } => Some(crate::ui::settings::SETTINGS_INNER_SIZE),
             AppState::ShowingGlossary { .. } => Some(crate::ui::glossary::GLOSSARY_INNER_SIZE),
+            AppState::ShowingTemplates { .. } => Some(crate::ui::templates::TEMPLATES_INNER_SIZE),
             _ => None,
         }
     }
@@ -581,6 +601,11 @@ impl ClipApp {
             InitialState::Glossary => {
                 self.app_state = AppState::ShowingGlossary {
                     model: self.build_glossary_model(),
+                };
+            }
+            InitialState::Templates => {
+                self.app_state = AppState::ShowingTemplates {
+                    model: Box::new(self.build_templates_model()),
                 };
             }
         }
@@ -609,7 +634,10 @@ impl ClipApp {
 fn dismiss_on_blur(state: &AppState) -> bool {
     !matches!(
         state,
-        AppState::Settings { .. } | AppState::SetupWizard { .. } | AppState::ShowingGlossary { .. }
+        AppState::Settings { .. }
+            | AppState::SetupWizard { .. }
+            | AppState::ShowingGlossary { .. }
+            | AppState::ShowingTemplates { .. }
     )
 }
 
@@ -703,6 +731,7 @@ impl eframe::App for ClipApp {
             }
             AppState::ShowingHistory { model } => self.update_showing_history(ctx, model),
             AppState::ShowingGlossary { model } => self.update_showing_glossary(ctx, model),
+            AppState::ShowingTemplates { model } => self.update_showing_templates(ctx, model),
             AppState::SetupWizard { model } => self.update_setup_wizard(ctx, model),
             AppState::Settings { model } => self.update_settings(ctx, model),
             AppState::ShowingResult {
@@ -747,9 +776,16 @@ mod focus_dismiss_tests {
         };
         assert!(!dismiss_on_blur(&setup));
         assert!(!dismiss_on_blur(&settings));
+        let templates = AppState::ShowingTemplates {
+            model: Box::new(crate::ui::templates::TemplatesModel::default()),
+        };
         assert!(
             !dismiss_on_blur(&glossary),
             "the glossary editor holds typed work; blur must not discard it"
+        );
+        assert!(
+            !dismiss_on_blur(&templates),
+            "the template editor holds typed work; blur must not discard it"
         );
         assert!(dismiss_on_blur(&AppState::Showing));
         assert!(dismiss_on_blur(&AppState::EnteringCustom {

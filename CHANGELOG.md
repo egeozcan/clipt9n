@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Prompt-template editor: **Edit prompt templates…** in the menu bar
+  opens the four action templates for editing, with a per-action
+  variable list and a preview rendered from sample values. Save
+  validates every template through the same loader startup uses, writes
+  atomically, and swaps the live templates in place — no restart.
+  **Reset to default** restores the built-in text, and saving then
+  removes the override file rather than writing a copy of it. Templates
+  are no longer fixed for the lifetime of the process; **Reload prompt
+  templates** picks up edits made outside the app, keeping the previous
+  templates if the new ones fail to parse. Also reachable with
+  `--templates`.
 - Glossary editor: **Edit glossary…** in the menu bar opens a table of
   glossary entries with add, edit, delete, and search. Save validates
   before writing, writes atomically, and reloads the live glossary. A

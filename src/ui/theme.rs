@@ -70,6 +70,21 @@ pub fn visuals() -> Visuals {
     v
 }
 
+/// Install the palette on a context.
+///
+/// Not `ctx.set_visuals(visuals())`: that writes only the slot for
+/// whatever `ctx.theme()` is at the time, leaving the other slot on
+/// egui's stock palette. clipt9n has one palette and follows nothing, so
+/// on a light-mode desktop the stock slot is what renders — white
+/// `TextEdit` backgrounds and pale-blue selection under our dark panels,
+/// worst in the windows with the most widgets. Fill both slots and pin
+/// the preference so a system theme change at sunset cannot swap them.
+pub fn install(ctx: &egui::Context) {
+    ctx.set_visuals_of(egui::Theme::Dark, visuals());
+    ctx.set_visuals_of(egui::Theme::Light, visuals());
+    ctx.set_theme(egui::ThemePreference::Dark);
+}
+
 // ----- Reusable widgets -----
 
 /// Render a kbd-style key cap. Use for footer keymap hints.
@@ -159,5 +174,29 @@ mod tests {
     fn visuals_text_color_is_ink() {
         let v = visuals();
         assert_eq!(v.override_text_color, Some(INK));
+    }
+
+    /// The regression this guards: with only the active slot filled, a
+    /// light-mode desktop rendered every widget with egui's stock light
+    /// palette — white `TextEdit` backgrounds, pale-blue selection —
+    /// while our explicitly-filled panels stayed dark.
+    #[test]
+    fn install_fills_both_theme_slots_and_pins_dark() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let style = ctx.style_of(theme);
+            assert_eq!(
+                style.visuals.extreme_bg_color, BG,
+                "{theme:?} slot kept egui's stock TextEdit background"
+            );
+            assert_eq!(style.visuals.panel_fill, PANEL, "{theme:?} slot");
+            assert_eq!(
+                style.visuals.selection.stroke.color, ACCENT,
+                "{theme:?} slot"
+            );
+        }
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
     }
 }

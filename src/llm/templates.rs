@@ -6,9 +6,11 @@
 //!   - Renders with all known variables stubbed to verify no undeclared
 //!     references → unknown var → `TranslateError::Template("<file> line <N>: undefined variable or render error: <detail>")`
 //!
-//! Validation runs once; the resulting `Templates` is immutable for the
-//! lifetime of the app (templates are NOT reloaded on SIGHUP — only the
-//! glossary is, per spec §5.4).
+//! Validation runs on every load, and `Templates` is swappable at
+//! runtime: the template editor's Save and the tray's "Reload prompt
+//! templates" both call `load` again and install the result
+//! (`app/templates.rs`). SIGHUP still reloads only the glossary, per
+//! spec §5.4 — templates have their own menu item instead.
 
 use std::path::Path;
 
@@ -76,7 +78,19 @@ pub enum TemplateKind {
 }
 
 impl TemplateKind {
-    fn name(self) -> &'static str {
+    /// Every kind, in the order the editor lists them and `Templates`
+    /// stores them.
+    pub fn all() -> [Self; 4] {
+        [
+            Self::Translate,
+            Self::FixGrammar,
+            Self::Rewrite,
+            Self::Custom,
+        ]
+    }
+
+    /// Config key and override file stem (`fix_grammar` → `fix_grammar.j2`).
+    pub fn name(self) -> &'static str {
         match self {
             TemplateKind::Translate => "translate",
             TemplateKind::FixGrammar => "fix_grammar",
@@ -85,12 +99,53 @@ impl TemplateKind {
         }
     }
 
-    fn built_in_source(self) -> &'static str {
+    /// Human-readable name for the editor's kind list.
+    pub fn label(self) -> &'static str {
+        match self {
+            TemplateKind::Translate => "Translate",
+            TemplateKind::FixGrammar => "Fix grammar",
+            TemplateKind::Rewrite => "Rewrite",
+            TemplateKind::Custom => "Custom",
+        }
+    }
+
+    pub fn built_in_source(self) -> &'static str {
         match self {
             TemplateKind::Translate => prompts::TRANSLATE,
             TemplateKind::FixGrammar => prompts::FIX_GRAMMAR,
             TemplateKind::Rewrite => prompts::REWRITE,
             TemplateKind::Custom => prompts::CUSTOM,
+        }
+    }
+
+    /// The override path this kind gets when config leaves it unset.
+    /// Matches `TemplatesConfig::default()`.
+    pub fn default_rel_path(self) -> String {
+        format!("templates/{}.j2", self.name())
+    }
+
+    /// Variables that carry a value for this kind. Every template is
+    /// rendered with all four names bound, so referencing one outside
+    /// this list is *accepted* but always renders empty — which is why
+    /// the editor shows the meaningful subset rather than the whole set.
+    pub fn variables(self) -> &'static [&'static str] {
+        match self {
+            TemplateKind::Translate => &["target_language", "source_language", "glossary_block"],
+            TemplateKind::FixGrammar | TemplateKind::Rewrite => {
+                &["source_language", "glossary_block"]
+            }
+            TemplateKind::Custom => &["user_instruction", "source_language", "glossary_block"],
+        }
+    }
+
+    /// Stub values used to validate and to render the editor preview.
+    /// The two must agree: a preview the user can see is only honest if
+    /// it goes through the same substitution Save checks against.
+    fn stub_context(self) -> (&'static str, &'static str) {
+        match self {
+            TemplateKind::Translate => ("Stub", ""),
+            TemplateKind::FixGrammar | TemplateKind::Rewrite => ("", ""),
+            TemplateKind::Custom => ("", "stub"),
         }
     }
 }
@@ -205,7 +260,7 @@ fn load_one(
 /// Validate a template by parsing it (catches syntax errors) and
 /// rendering it with every known variable stubbed (catches references to
 /// undeclared variables). Errors include `<file> line <N>` context.
-fn validate_template_source(
+pub fn validate_template_source(
     source: &str,
     path: &Path,
     kind: TemplateKind,
@@ -222,22 +277,8 @@ fn validate_template_source(
     let tmpl = env
         .get_template(kind.name())
         .map_err(|e| TranslateError::Template(format!("{}: load error: {e}", path.display())))?;
-    let mut undeclared: Vec<_> = tmpl
-        .undeclared_variables(false)
-        .into_iter()
-        .filter(|name| {
-            !matches!(
-                name.as_str(),
-                "source_language" | "target_language" | "user_instruction" | "glossary_block"
-            )
-        })
-        .collect();
-    undeclared.sort();
-    let (target_language, user_instruction) = match kind {
-        TemplateKind::Translate => ("Stub", ""),
-        TemplateKind::FixGrammar | TemplateKind::Rewrite => ("", ""),
-        TemplateKind::Custom => ("", "stub"),
-    };
+    let undeclared_note = undeclared_note(&tmpl);
+    let (target_language, user_instruction) = kind.stub_context();
     let contexts = [
         context! {
             source_language => "stub",
@@ -254,11 +295,6 @@ fn validate_template_source(
     ];
     for ctx in contexts {
         if let Err(e) = tmpl.render(ctx) {
-            let undeclared_note = if undeclared.is_empty() {
-                String::new()
-            } else {
-                format!("; undeclared variables: {}", undeclared.join(", "))
-            };
             return Err(TranslateError::Template(format!(
                 "{} line {}: undefined variable or render error: {e}{undeclared_note}",
                 path.display(),
@@ -273,6 +309,64 @@ fn err_line(e: &minijinja::Error) -> String {
     e.line()
         .map(|n| n.to_string())
         .unwrap_or_else(|| "?".to_string())
+}
+
+/// Render a loose template source against sample values, for the
+/// editor's preview pane. Not a substitute for
+/// `validate_template_source`: this renders one context with realistic
+/// values, where validation renders the empty- and non-empty-glossary
+/// cases with stubs. Save still goes through validation.
+pub fn render_preview(source: &str, kind: TemplateKind) -> Result<String, TranslateError> {
+    let mut env = Environment::new();
+    env.set_undefined_behavior(UndefinedBehavior::Strict);
+    env.add_template(kind.name(), source).map_err(|e| {
+        TranslateError::Template(format!("line {}: parse error: {e}", err_line(&e)))
+    })?;
+    let tmpl = env
+        .get_template(kind.name())
+        .map_err(|e| TranslateError::Template(format!("load error: {e}")))?;
+    let (target_language, user_instruction) = match kind {
+        TemplateKind::Translate => ("German", ""),
+        TemplateKind::FixGrammar | TemplateKind::Rewrite => ("", ""),
+        TemplateKind::Custom => ("", "make this more formal"),
+    };
+    tmpl.render(context! {
+        source_language => "English",
+        target_language => target_language,
+        user_instruction => user_instruction,
+        glossary_block => "\nGLOSSARY — these terms MUST be translated exactly as specified:\n- \"Smart Table\" → \"Smart Table\"",
+    })
+    .map_err(|e| {
+        TranslateError::Template(format!(
+            "line {}: undefined variable or render error: {e}{}",
+            err_line(&e),
+            undeclared_note(&tmpl),
+        ))
+    })
+}
+
+/// Names a template references beyond the four the renderer binds.
+/// Strict undefined behavior turns each of those into a render failure,
+/// and minijinja's own message does not say which name was missing — so
+/// both the validator and the preview append this list. Empty when the
+/// template only uses known variables (the failure was something else).
+fn undeclared_note(tmpl: &minijinja::Template<'_, '_>) -> String {
+    let mut undeclared: Vec<_> = tmpl
+        .undeclared_variables(false)
+        .into_iter()
+        .filter(|name| {
+            !matches!(
+                name.as_str(),
+                "source_language" | "target_language" | "user_instruction" | "glossary_block"
+            )
+        })
+        .collect();
+    undeclared.sort();
+    if undeclared.is_empty() {
+        String::new()
+    } else {
+        format!("; undeclared variables: {}", undeclared.join(", "))
+    }
 }
 
 /// Render a template (built-in or override) with the given context.

@@ -87,6 +87,10 @@ Mark each row with `OS / date / result`. Rows mirror the M7 README smoke matrix.
 | macOS | Open history menu item | History window appears | [ ] |
 | macOS | Open glossary menu item | Default editor opens glossary.toml | [ ] |
 | macOS | Reload glossary menu item | Glossary re-reads without restart | [ ] |
+| macOS | Edit prompt templates menu item | Template editor opens with all four actions | [ ] |
+| macOS | Template edit → Save | Next translation uses the new prompt with no restart | [ ] |
+| macOS | Template Reset to default → Save | Override file deleted; built-in prompt runs again | [ ] |
+| macOS | Reload prompt templates menu item | Externally edited .j2 takes effect without restart | [ ] |
 | macOS | Re-run setup wizard menu item | Wizard window appears | [ ] |
 | macOS | Hide icon → confirm | Tray disappears; relaunch w/o flag still hidden | [ ] |
 | macOS | Hide icon → cancel | Tray remains; no state.toml change | [ ] |

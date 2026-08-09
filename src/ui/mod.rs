@@ -6,6 +6,7 @@ pub mod result;
 pub mod settings;
 pub mod setup;
 pub mod size_confirm;
+pub mod templates;
 pub mod theme;
 pub mod translating;
 pub mod tray_modal;

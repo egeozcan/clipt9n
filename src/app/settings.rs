@@ -40,6 +40,7 @@ impl super::ClipApp {
             }
             super::AppState::SetupWizard { .. } => Some("the setup wizard is open"),
             super::AppState::ShowingGlossary { .. } => Some("the glossary editor is open"),
+            super::AppState::ShowingTemplates { .. } => Some("the template editor is open"),
             _ => None,
         };
         if let Some(reason) = busy {

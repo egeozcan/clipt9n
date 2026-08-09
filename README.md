@@ -58,6 +58,8 @@ clipt9n runs quietly in the menu bar. From the menu, you can:
 - Edit the glossary in a built-in editor.
 - Open the glossary file in your own editor.
 - Reload the glossary after editing the file outside clipt9n.
+- Edit the prompt templates in a built-in editor.
+- Reload the prompt templates after editing the files outside clipt9n.
 - Open settings.
 - Re-run the setup wizard.
 - Hide the menu bar icon.
@@ -119,6 +121,63 @@ note = "Always preserve as-is"
 ```
 
 The app notices matching glossary terms before sending a request and includes them in the instruction to the provider. Use **Reload glossary** from the menu bar after editing the file outside clipt9n.
+
+## Prompt Templates
+
+Every action sends the provider a system prompt built from a template.
+The four that ship with clipt9n — translate, fix grammar, rewrite, and
+custom — are good defaults, but you can replace any of them if you want
+different rules, a different tone, or extra instructions for your own
+work.
+
+### Editing in the app
+
+Choose **Edit prompt templates…** from the menu bar, or launch
+`clipt9n --templates`. Pick an action from the list on the left and edit
+its text. Each action shows the variables it can use; **Preview** renders
+the template with sample values so you can see what the provider will
+actually receive.
+
+Nothing is written until you press Save, and Cancel throws the whole
+session away. Save checks all four templates first: an unclosed tag or a
+variable that does not exist is reported with its line number, and no
+file is touched. Once the templates are written, clipt9n loads them
+immediately — no restart.
+
+**Reset to default** puts the built-in text back. Saving after that
+deletes your override file, so the action goes back to the template the
+app ships with.
+
+### Editing the files directly
+
+Overrides live in a `templates` folder next to `config.toml`, one file
+per action:
+
+```text
+templates/translate.j2
+templates/fix_grammar.j2
+templates/rewrite.j2
+templates/custom.j2
+```
+
+They use [minijinja](https://docs.rs/minijinja) syntax. Available
+variables:
+
+| Variable | Available in | Meaning |
+| --- | --- | --- |
+| `{{ glossary_block }}` | all | Matching glossary terms, or empty |
+| `{{ source_language }}` | all | Detected source language |
+| `{{ target_language }}` | translate | The language you picked |
+| `{{ user_instruction }}` | custom | What you typed in slot 6 |
+
+A file that is missing means "use the built-in", so you only need the
+templates you actually changed.
+
+Use **Reload prompt templates** from the menu bar after editing these
+files outside clipt9n. A template that fails to parse on reload is
+reported in the log and the previous templates keep running — but note
+that the same broken file stops the app from starting next time, so fix
+it before you quit.
 
 ## macOS Permissions
 
@@ -190,16 +249,17 @@ key or model takes effect on the next translation. Two changes need a
 relaunch and say so in the window: hotkey edits (registered once at
 startup) and turning history on or off.
 
-If the menu bar icon is hidden, reach the settings and glossary windows
-with:
+If the menu bar icon is hidden, reach the settings, glossary, and
+template windows with:
 
 ```bash
 clipt9n --settings
 clipt9n --glossary
+clipt9n --templates
 ```
 
-Everything the window covers, plus prompt-template overrides, also lives
-in the config file. On macOS, the default path is:
+Everything the window covers, plus the prompt-template override paths,
+also lives in the config file. On macOS, the default path is:
 
 ```text
 ~/Library/Application Support/clipboard-translator/config.toml

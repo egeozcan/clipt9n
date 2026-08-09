@@ -165,6 +165,8 @@ impl super::ClipApp {
             crate::tray::ID_GLOSSARY_EDIT => self.dispatch_edit_glossary(ctx),
             crate::tray::ID_GLOSSARY_OPEN => self.dispatch_open_glossary(),
             crate::tray::ID_GLOSSARY_RELOAD => self.dispatch_reload_glossary(),
+            crate::tray::ID_TEMPLATES_EDIT => self.dispatch_edit_templates(ctx),
+            crate::tray::ID_TEMPLATES_RELOAD => self.dispatch_reload_templates(),
             crate::tray::ID_SETTINGS => self.dispatch_open_settings(ctx),
             crate::tray::ID_OPEN_CONFIG => self.dispatch_open_config(),
             crate::tray::ID_ACCESSIBILITY_SETTINGS => self.dispatch_open_accessibility_settings(),
@@ -252,6 +254,7 @@ impl super::ClipApp {
                 Some("a translation is in flight")
             }
             AppState::ShowingGlossary { .. } => Some("the glossary editor is open"),
+            AppState::ShowingTemplates { .. } => Some("the template editor is open"),
             _ => None,
         };
         if let Some(reason) = busy {
