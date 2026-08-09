@@ -5,6 +5,7 @@
 use egui::{Key, Vec2, ViewportCommand};
 
 use super::pure;
+use crate::platform::Platform;
 use crate::ui::prompt_default_inner_size;
 
 impl super::ClipApp {
@@ -14,7 +15,33 @@ impl super::ClipApp {
     /// the viewer still opens but with a warning banner; this lets the
     /// user verify the toast and explore an empty (or partially
     /// readable) database.
+    ///
+    /// Only opens from `Idle`. The gate lives here rather than at the
+    /// call sites so no summon path can forget it — the tray's "Open
+    /// history…" did, and would replace an open settings or glossary
+    /// editor along with the work in it.
     pub(super) fn summon_history(&mut self, ctx: &egui::Context) {
+        // Re-entrant: a second summon refocuses the viewer it already
+        // has instead of re-querying, which would drop the user's
+        // selection and scroll position.
+        if matches!(self.app_state, super::AppState::ShowingHistory { .. }) {
+            pure::reset_focus_loss_latch(&mut self.has_been_focused);
+            self.set_window_visible(ctx, true);
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
+            crate::platform::current().activate_app();
+            return;
+        }
+        if !matches!(self.app_state, super::AppState::Idle) {
+            // Mid-wizard / mid-editor / mid-translate: bring focus to
+            // whatever is open rather than destroying it.
+            tracing::info!(
+                state = self.app_state.label(),
+                "history viewer request ignored"
+            );
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
+            return;
+        }
+
         let mut model = crate::ui::history::HistoryModel::default();
         let disabled = self
             .history_disabled
@@ -225,5 +252,72 @@ impl super::ClipApp {
         )));
         self.app_state = super::AppState::Idle;
         self.set_window_visible(ctx, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::test_app;
+    use super::super::{AppState, ClipApp};
+
+    /// An app parked in `state`, with a glossary path that exists so
+    /// nothing in the summon path has to touch a real store.
+    fn app_in(state: AppState) -> (tempfile::TempDir, ClipApp) {
+        let dir = tempfile::tempdir().unwrap();
+        let glossary_path = dir.path().join("glossary.toml");
+        std::fs::write(&glossary_path, "").unwrap();
+        let mut app = test_app(glossary_path);
+        app.app_state = state;
+        (dir, app)
+    }
+
+    fn glossary_editor_with_unsaved_work(app: &ClipApp) -> AppState {
+        let mut model = app.build_glossary_model();
+        model.entries.push(crate::glossary::GlossaryEntry {
+            source: "unsaved".into(),
+            target: "work".into(),
+            languages: vec!["*".into()],
+            note: None,
+        });
+        AppState::ShowingGlossary { model }
+    }
+
+    #[test]
+    fn summoning_history_does_not_clobber_the_open_glossary_editor() {
+        let (_dir, mut app) = app_in(AppState::Idle);
+        app.app_state = glossary_editor_with_unsaved_work(&app);
+
+        app.summon_history(&egui::Context::default());
+
+        match &app.app_state {
+            AppState::ShowingGlossary { model } => assert!(
+                model.dirty(),
+                "the history viewer must not discard typed glossary entries"
+            ),
+            other => panic!("history replaced the glossary editor: {}", other.label()),
+        }
+    }
+
+    #[test]
+    fn summoning_history_does_not_clobber_the_open_settings_editor() {
+        let (_dir, mut app) = app_in(AppState::Idle);
+        let model = Box::new(app.build_settings_model());
+        app.app_state = AppState::Settings { model };
+
+        app.summon_history(&egui::Context::default());
+
+        assert!(
+            matches!(app.app_state, AppState::Settings { .. }),
+            "the history viewer must not replace an open settings editor"
+        );
+    }
+
+    #[test]
+    fn summoning_history_from_idle_opens_the_viewer() {
+        let (_dir, mut app) = app_in(AppState::Idle);
+
+        app.summon_history(&egui::Context::default());
+
+        assert!(matches!(app.app_state, AppState::ShowingHistory { .. }));
     }
 }

@@ -135,6 +135,27 @@ enum AppState {
     },
 }
 
+impl AppState {
+    /// Stable snake_case name for logs. Kept next to the variants so a
+    /// new state can't silently log as something else.
+    fn label(&self) -> &'static str {
+        match self {
+            AppState::Idle => "idle",
+            AppState::Showing => "showing",
+            AppState::EnteringCustom { .. } => "entering_custom",
+            AppState::ConfirmingSize { .. } => "confirming_size",
+            AppState::Translating { .. } => "translating",
+            AppState::TranslatingInline { .. } => "translating_inline",
+            AppState::ShowingResult { .. } => "showing_result",
+            AppState::ShowingHistory { .. } => "showing_history",
+            AppState::ShowingGlossary { .. } => "showing_glossary",
+            AppState::SetupWizard { .. } => "setup_wizard",
+            AppState::Settings { .. } => "settings",
+            AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CustomKey {
     Submit,

@@ -71,13 +71,9 @@ impl super::ClipApp {
                         ctx.send_viewport_cmd(ViewportCommand::Focus);
                     }
                 }
-                HotkeyAction::History => {
-                    if matches!(self.app_state, AppState::Idle) {
-                        self.summon_history(ctx);
-                    } else {
-                        ctx.send_viewport_cmd(ViewportCommand::Focus);
-                    }
-                }
+                // No gate here: `summon_history` owns it, so the tray
+                // menu and this path can't drift apart.
+                HotkeyAction::History => self.summon_history(ctx),
                 HotkeyAction::Selection => {
                     if matches!(self.app_state, AppState::Idle) {
                         self.show_window_from_selection(ctx);
@@ -221,20 +217,7 @@ impl super::ClipApp {
 
     pub(super) fn dispatch_rerun_wizard(&mut self, ctx: &egui::Context) {
         tracing::info!(
-            current_state = match &self.app_state {
-                AppState::Idle => "idle",
-                AppState::Showing => "showing",
-                AppState::EnteringCustom { .. } => "entering_custom",
-                AppState::ConfirmingSize { .. } => "confirming_size",
-                AppState::Translating { .. } => "translating",
-                AppState::TranslatingInline { .. } => "translating_inline",
-                AppState::ShowingHistory { .. } => "showing_history",
-                AppState::ShowingGlossary { .. } => "showing_glossary",
-                AppState::SetupWizard { .. } => "setup_wizard",
-                AppState::Settings { .. } => "settings",
-                AppState::ConfirmingTrayHide { .. } => "confirming_tray_hide",
-                AppState::ShowingResult { .. } => "showing_result",
-            },
+            current_state = self.app_state.label(),
             "dispatch_rerun_wizard"
         );
         // Already in the wizard? Don't reseed the model (would lose
@@ -250,15 +233,29 @@ impl super::ClipApp {
             crate::platform::current().activate_app();
             return;
         }
-        // The glossary editor holds unsaved entries, and unlike the
-        // settings editor it has no stake in the provider the wizard
-        // exists to fix — so there is no reason for the wizard to win
-        // here, and every reason not to destroy the user's typing.
-        if matches!(self.app_state, AppState::ShowingGlossary { .. }) {
-            tracing::info!(
-                reason = "the glossary editor is open",
-                "setup wizard request ignored"
-            );
+        // Refuse the states that own work this would destroy.
+        //
+        // A translation in flight has a worker whose outcome is matched
+        // against the current state; replacing it here means a normal
+        // translation never reaches the clipboard or history and an
+        // inline replacement silently never pastes. The glossary editor
+        // holds unsaved entries, and unlike the settings editor it has
+        // no stake in the provider the wizard exists to fix — so there
+        // is no reason for the wizard to win there, and every reason
+        // not to destroy the user's typing.
+        //
+        // The settings editor is deliberately *not* on this list: it
+        // edits the same provider the wizard is here to repair, so the
+        // wizard taking over is the point.
+        let busy = match &self.app_state {
+            AppState::Translating { .. } | AppState::TranslatingInline { .. } => {
+                Some("a translation is in flight")
+            }
+            AppState::ShowingGlossary { .. } => Some("the glossary editor is open"),
+            _ => None,
+        };
+        if let Some(reason) = busy {
+            tracing::info!(reason, "setup wizard request ignored");
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             return;
         }
@@ -297,6 +294,58 @@ mod tests {
     use std::sync::Arc;
 
     use super::super::test_support::test_app;
+
+    /// An app parked mid-translation, with the on-disk glossary the
+    /// wizard's keychain probe path expects to exist.
+    fn app_translating(state: AppState) -> (tempfile::TempDir, super::super::ClipApp) {
+        let dir = tempfile::tempdir().unwrap();
+        let glossary_path = dir.path().join("glossary.toml");
+        std::fs::write(&glossary_path, "").unwrap();
+        let mut app = test_app(glossary_path);
+        app.app_state = state;
+        (dir, app)
+    }
+
+    #[test]
+    fn rerunning_the_wizard_does_not_clobber_an_in_flight_translation() {
+        let (_dir, mut app) = app_translating(AppState::Translating {
+            gen: 7,
+            action_label: "Translate".into(),
+            overlay_label: "Translating…".into(),
+            started_at: std::time::Instant::now(),
+            preview_mode: false,
+        });
+
+        app.dispatch_rerun_wizard(&egui::Context::default());
+
+        match &app.app_state {
+            AppState::Translating { gen, .. } => assert_eq!(
+                *gen, 7,
+                "the wizard must not replace the state the worker's outcome is matched against"
+            ),
+            other => panic!(
+                "the wizard discarded a running translation: {}",
+                other.label()
+            ),
+        }
+    }
+
+    #[test]
+    fn rerunning_the_wizard_does_not_clobber_an_in_flight_inline_replacement() {
+        let (_dir, mut app) = app_translating(AppState::TranslatingInline {
+            gen: 3,
+            action_label: "Replace".into(),
+            started_at: std::time::Instant::now(),
+            target: crate::desktop_io::DesktopTarget::for_test(42, 1),
+        });
+
+        app.dispatch_rerun_wizard(&egui::Context::default());
+
+        assert!(
+            matches!(app.app_state, AppState::TranslatingInline { gen: 3, .. }),
+            "clobbering this state means the replacement silently never pastes"
+        );
+    }
 
     #[test]
     fn pressed_then_released_dispatches_one_action() {
